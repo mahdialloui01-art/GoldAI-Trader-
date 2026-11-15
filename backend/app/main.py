@@ -220,6 +220,13 @@ class TechnicalAnalysisRequest(BaseModel):
     candles: list[Candle] = Field(min_length=60, max_length=500)
 
 
+class MultiTimeframeAnalysisRequest(BaseModel):
+    symbol: str = "GOLD"
+    m5: list[Candle] = Field(min_length=60, max_length=500)
+    m15: list[Candle] = Field(min_length=60, max_length=500)
+    h1: list[Candle] = Field(min_length=60, max_length=500)
+
+
 _TIMEFRAME_SECONDS = {
     "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
     "H1": 3600, "H4": 14400, "D1": 86400,
@@ -395,6 +402,61 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
         "risk_note": "ATR مقياس للتذبذب وليس وقف خسارة مضموناً. يلزم توافق الأطر الأعلى واختبار المخاطر والأخبار قبل أي صفقة.",
         "generated_at": now,
         "execution_enabled": False,
+    }
+
+
+@app.post("/api/v1/analysis/multi-timeframe")
+def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
+    """Require aligned M5 entry, M15 confirmation and H1 directional bias."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+
+    analyses = {
+        "M5": technical_analysis(TechnicalAnalysisRequest(
+            symbol=request.symbol, timeframe="M5", candles=request.m5
+        )),
+        "M15": technical_analysis(TechnicalAnalysisRequest(
+            symbol=request.symbol, timeframe="M15", candles=request.m15
+        )),
+        "H1": technical_analysis(TechnicalAnalysisRequest(
+            symbol=request.symbol, timeframe="H1", candles=request.h1
+        )),
+    }
+    directions = {frame: result["direction"] for frame, result in analyses.items()}
+    entry = directions["M5"]
+    reasons: list[str] = []
+
+    if entry == Direction.WAIT:
+        final_direction = Direction.WAIT
+        reasons.append("إطار M5 لا يقدم نقطة دخول مؤكدة.")
+    elif directions["M15"] != entry or directions["H1"] != entry:
+        final_direction = Direction.WAIT
+        reasons.append("تعارض بين M5 وM15 وH1؛ تم إلغاء الإشارة حتى تتوافق الأطر.")
+    else:
+        final_direction = entry
+        reasons.append("توافق M5 للدخول مع M15 للتأكيد وH1 للاتجاه العام.")
+
+    if any(result["spread_atr_ratio"] > 0.15 for result in analyses.values()):
+        final_direction = Direction.WAIT
+        reasons.append("فلتر السبريد منع الصفقة في إطار واحد على الأقل.")
+
+    confidence_score = 0
+    if final_direction != Direction.WAIT:
+        confidence_score = min(
+            85,
+            round(sum(result["confidence_score"] for result in analyses.values()) / 3),
+        )
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "direction": final_direction,
+        "confidence_score": confidence_score,
+        "confidence_note": "مؤشر توافق داخلي غير معاير، وليس احتمال نجاح الصفقة.",
+        "timeframes": analyses,
+        "alignment": directions,
+        "reasons": reasons,
+        "execution_enabled": False,
+        "generated_at": datetime.now(timezone.utc),
     }
 
 
