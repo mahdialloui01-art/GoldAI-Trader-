@@ -15,6 +15,7 @@ input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
 input bool EnableDemoExecution = false;
 input double DemoDailyLossLimitPercent = 10.0;
+input double DemoMaxRiskPerTradePercent = 0.25;
 input ulong DemoMagicNumber = 26111601;
 input int DemoMaxDeviationPoints = 30;
 input double DemoMaxSpreadPoints = 1000.0;
@@ -30,6 +31,7 @@ int OnInit()
       StringFind(CandleDataUrl, "https://") != 0 ||
       StringFind(DemoSignalUrl, "https://") != 0 ||
       DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 10.0 ||
+      DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||
       DemoMaxDeviationPoints < 0 || DemoMaxSpreadPoints <= 0 ||
       CandleBarsPerTimeframe < 60 || CandleBarsPerTimeframe > 500 ||
       MinQuoteIntervalMilliseconds < 50 || MinQuoteIntervalMilliseconds > 5000)
@@ -309,6 +311,8 @@ void TryDemoTrade()
    double lots = JsonNumber(payload, "recommended_lots");
    double stop = JsonNumber(payload, "stop_loss");
    double target = JsonNumber(payload, "take_profit");
+   double signalRisk = JsonNumber(payload, "risk_percent");
+   if(signalRisk <= 0 || signalRisk > DemoMaxRiskPerTradePercent) return;
    double vmin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MAX);
    double step = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
@@ -320,6 +324,30 @@ void TryDemoTrade()
    double minimumStopDistance = (double)stopsLevel * SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
    stop = NormalizeDouble(stop, digits);
    target = NormalizeDouble(target, digits);
+
+   // Independent terminal-side risk verification using broker-calculated P/L.
+   ENUM_ORDER_TYPE orderType;
+   double estimatedEntry = 0.0;
+   if(direction == "BUY") { orderType = ORDER_TYPE_BUY; estimatedEntry = tick.ask; }
+   else if(direction == "SELL) { orderType = ORDER_TYPE_SELL; estimatedEntry = tick.bid; }
+   else return;
+   double estimatedStopPnl = 0.0;
+   if(!OrderCalcProfit(orderType, RequiredSymbol, lots, estimatedEntry, stop, estimatedStopPnl))
+   {
+      Print("GoldAI DEMO blocked: broker could not calculate stop-loss risk. error=", GetLastError());
+      return;
+   }
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double maxRiskMoney = equity * DemoMaxRiskPerTradePercent / 100.0;
+   if(equity <= 0 || estimatedStopPnl >= 0 ||
+      (-estimatedStopPnl * 1.05) > maxRiskMoney)
+   {
+      Print("GoldAI DEMO blocked: independent risk check failed. estimated loss=",
+            DoubleToString(-estimatedStopPnl, 2), " max with 5% buffer=",
+            DoubleToString(maxRiskMoney, 2));
+      return;
+   }
+
    trade.SetExpertMagicNumber(DemoMagicNumber);
    trade.SetDeviationInPoints(DemoMaxDeviationPoints);
    trade.SetTypeFillingBySymbol(RequiredSymbol);
