@@ -1,12 +1,12 @@
 // GoldAI Trader - MT5 broker quote bridge (quotes only; no order execution)
 #property strict
 #property version   "1.0"
-#property description "Streams the broker XAUUSD Bid/Ask quote to GoldAI Trader."
+#property description "Streams the broker GOLD Bid/Ask quote to GoldAI Trader."
 
 input string BackendUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/quote";
 input string BridgeToken = "CHANGE_ME";
 input int SendIntervalSeconds = 1;
-input string RequiredSymbol = "XAUUSD";
+input string RequiredSymbol = "GOLD";
 
 int OnInit()
 {
@@ -38,8 +38,8 @@ void OnTimer()
    double point = SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
    double spreadPoints = (tick.ask - tick.bid) / point;
    string body = StringFormat(
-      "{\"symbol\":\"XAUUSD\",\"bid\":%s,\"ask\":%s,\"last\":%s,\"timestamp\":\"%s\",\"digits\":%d,\"point\":%s,\"spread_points\":%s}",
-      DoubleToString(tick.bid, digits), DoubleToString(tick.ask, digits),
+      "{\"symbol\":\"%s\",\"bid\":%s,\"ask\":%s,\"last\":%s,\"timestamp\":\"%s\",\"digits\":%d,\"point\":%s,\"spread_points\":%s}",
+      RequiredSymbol, DoubleToString(tick.bid, digits), DoubleToString(tick.ask, digits),
       DoubleToString(tick.last, digits), stamp, digits,
       DoubleToString(point, 10), DoubleToString(spreadPoints, 1));
 
