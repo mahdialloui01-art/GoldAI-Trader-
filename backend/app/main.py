@@ -2860,6 +2860,8 @@ async def mt5_demo_signal(
         authorization.removeprefix("Bearer ").strip(), expected
     ):
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
+    if not math.isfinite(daily_loss_percent) or daily_loss_percent < 0 or daily_loss_percent > 100:
+        raise HTTPException(status_code=422, detail="daily_loss_percent must be between 0 and 100.")
     if settings.live_trading_enabled or settings.trading_mode.lower() != "paper":
         raise HTTPException(status_code=503, detail="Demo signal service is locked by the global safety policy.")
     if not settings.demo_execution_enabled:
