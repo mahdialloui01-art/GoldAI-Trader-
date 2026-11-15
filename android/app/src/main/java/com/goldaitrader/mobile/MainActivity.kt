@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
     private var goldPrice by mutableStateOf("—")
     private var quoteStatus by mutableStateOf("في انتظار بيانات الوسيط")
     private var quoteReceived by mutableStateOf(false)
+    private var quoteLoading = false
     private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
@@ -215,12 +216,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshGold() {
+        if (quoteLoading) return
         if (!backendConfigured) {
             goldPrice = "غير متاح"
             quoteReceived = false
             quoteStatus = "يلزم خادم HTTPS متاح؛ لا يوجد اتصال محلي من الهاتف"
             return
         }
+        quoteLoading = true
         quoteStatus = "جارٍ جلب سعر الذهب..."
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
@@ -242,6 +245,7 @@ class MainActivity : ComponentActivity() {
                     } finally { c.disconnect() }
                 } catch (_: Exception) { null }
             }
+            quoteLoading = false
             if (result == null) {
                 goldPrice = "غير متاح"
                 quoteReceived = false
@@ -277,8 +281,8 @@ private fun GoldAiApp(
         onRefreshGold()
         onRefreshContext()
         while (true) {
-            delay(60_000)
-            onRefreshContext()
+            delay(2_000)
+            onRefreshGold()
         }
     }
     Surface(Modifier.fillMaxSize(), color = Night) {
