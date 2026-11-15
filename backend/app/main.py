@@ -140,15 +140,20 @@ def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(def
     return {"accepted": True, "symbol": settings.broker_gold_symbol.upper(), "source": "MT5"}
 
 
-@app.get("/api/v1/market/snapshot")
-def market_snapshot() -> dict:
-    """Return only a fresh broker quote; never silently fall back to public spot."""
+def _fresh_mt5_quote() -> dict:
+    """Return a fresh broker quote or fail closed when MT5 is unavailable."""
     if _latest_mt5_quote is None:
         raise HTTPException(status_code=503, detail="Waiting for a fresh GOLD quote from MetaTrader 5.")
     age = max(0, int((datetime.now(timezone.utc) - _latest_mt5_quote["source_updated_at"].astimezone(timezone.utc)).total_seconds()))
     if age > settings.market_quote_max_age_seconds:
         raise HTTPException(status_code=503, detail="MT5 quote is stale; market signals must remain paused.")
     return {**_latest_mt5_quote, "age_seconds": age}
+
+
+@app.get("/api/v1/market/snapshot")
+def market_snapshot() -> dict:
+    """Return only a fresh broker quote; never silently fall back to public spot."""
+    return _fresh_mt5_quote()
 
 
 @app.get("/api/v1/market/spot-reference")
@@ -202,6 +207,8 @@ async def market_spot_reference() -> dict:
 
 @app.post("/api/v1/signals/evaluate", response_model=SignalResponse)
 def evaluate_signal(request: SignalRequest) -> SignalResponse:
+    # Never evaluate a trade setup without a fresh quote from the configured broker.
+    _fresh_mt5_quote()
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail=f"The initial release supports {settings.broker_gold_symbol} only.")
 
