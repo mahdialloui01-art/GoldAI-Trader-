@@ -68,9 +68,12 @@ The bridge transmits quotes only. It does not place orders. Trading remains pape
 
 ## Economic calendar and news protection
 
-Configure `ECONOMIC_CALENDAR_API_KEY` on the backend using a private Trading Economics API key. Never commit the real key or send it to the Android app.
+XOOMAR is the primary no-key calendar provider for upcoming high-impact US releases. It aggregates schedules published by the BLS, BEA, Census Bureau, Federal Reserve and Department of Labor. A free optional key can be configured as `XOOMAR_API_KEY` on the backend only (sent as `X-API-Key`); do not commit it or send it to Android.
 
-- `GET /api/v1/calendar/us-high-impact?days_ahead=7` retrieves high-impact US releases in UTC.
+- `GET /api/v1/calendar/us-high-impact?days_ahead=7` retrieves validated high-impact US releases in UTC. Source credit: [Data: XOOMAR](https://xoomar.com/markets/api/calendar).
+- The connector rejects stale envelopes, malformed events and timezone-naive timestamps. Provider failures return HTTP 503, keeping the news filter fail-closed.
+- XOOMAR does not provide consensus forecasts; forecast is deliberately left empty. The calendar can protect around scheduled releases, but cannot estimate a pre-release surprise or generate a pre-news BUY/SELL prediction.
+- `ECONOMIC_CALENDAR_API_KEY` remains necessary only for the separate Trading Economics historical-calendar import endpoint; it is not required for the upcoming-news filter.
 - `GET /api/v1/analysis/news-filter` returns WAIT when a high-impact event falls inside the configured pre/post-event blackout window.
 - The default blackout is 30 minutes before and after each event. Set `NEWS_BLACKOUT_BEFORE_MINUTES` and `NEWS_BLACKOUT_AFTER_MINUTES` to adjust it.
 - Missing credentials, provider errors, or malformed calendar data fail closed with HTTP 503; no news-free assumption is made.
