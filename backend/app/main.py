@@ -427,6 +427,44 @@ async def gold_macro_analysis() -> dict:
         else:
             bias = "MIXED_OR_NEUTRAL"
             explanation = "العوامل الكلية متباينة أو حركتها غير كافية لتحديد انحياز واضح."
+
+        # Transparent heuristic pressure score. This is deliberately NOT a
+        # probability and is not calibrated against forward GOLD returns.
+        def clamp_unit(value: float) -> float:
+            return max(-1.0, min(1.0, value))
+
+        real_component = clamp_unit(real_change_bp / 10.0)
+        dollar_component = clamp_unit(dollar_change_pct / 0.20)
+        nominal_component = clamp_unit(nominal_change_bp / 15.0)
+        raw_pressure = (
+            0.50 * real_component
+            + 0.35 * dollar_component
+            + 0.15 * nominal_component
+        )
+        freshness_factors = {
+            name: max(0.0, 1.0 - 0.35 * rows[0]["age_days"] / rows[0]["max_age_days"])
+            for name, rows in observations.items()
+        }
+        freshness_factor = (
+            0.50 * freshness_factors["real_10y_yield"]
+            + 0.35 * freshness_factors["broad_us_dollar_index"]
+            + 0.15 * freshness_factors["nominal_10y_yield"]
+        )
+        adjusted_pressure = raw_pressure * freshness_factor
+        pressure_score = round(50.0 + 50.0 * adjusted_pressure, 1)
+        strength_score = round(abs(adjusted_pressure) * 100.0, 1)
+        strength_label = (
+            "STRONG_HEURISTIC" if strength_score >= 60
+            else "MODERATE_HEURISTIC" if strength_score >= 30
+            else "WEAK_HEURISTIC"
+        )
+        if adjusted_pressure > 0.10:
+            scored_bias = "GOLD_HEADWIND"
+        elif adjusted_pressure < -0.10:
+            scored_bias = "GOLD_SUPPORTIVE"
+        else:
+            scored_bias = "MIXED_OR_NEUTRAL"
+
         return {
             "bias": bias,
             "explanation": explanation,
@@ -435,6 +473,25 @@ async def gold_macro_analysis() -> dict:
                 "nominal_10y_yield_basis_points": round(nominal_change_bp, 2),
                 "real_10y_yield_basis_points": round(real_change_bp, 2),
                 "broad_us_dollar_index_percent": round(dollar_change_pct, 4),
+            },
+            "confidence_engine": {
+                "version": "heuristic_v1",
+                "directional_bias": scored_bias,
+                "pressure_score_0_to_100": pressure_score,
+                "strength_score_0_to_100": strength_score,
+                "strength_label": strength_label,
+                "freshness_factor_0_to_1": round(freshness_factor, 3),
+                "series_freshness_factors": {key: round(value, 3) for key, value in freshness_factors.items()},
+                "component_scores_minus1_to_plus1": {
+                    "real_yield": round(real_component, 3),
+                    "broad_us_dollar": round(dollar_component, 3),
+                    "nominal_yield": round(nominal_component, 3),
+                },
+                "weights": {"real_yield": 0.50, "broad_us_dollar": 0.35, "nominal_yield": 0.15},
+                "calibration_status": "NOT_CALIBRATED",
+                "is_probability": False,
+                "is_trade_entry_signal": False,
+                "note": "Heuristic daily macro pressure score only. Requires out-of-sample calibration against broker GOLD returns before predictive use.",
             },
             "source": "Federal Reserve Bank of St. Louis FRED",
             "generated_at": now,
