@@ -952,7 +952,8 @@ def test_pre_release_news_analysis_blocks_small_sample_and_wide_spread():
 
 
 def test_historical_news_study_groups_events_and_deducts_spread_slippage():
-    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    # Keep the entire synthetic event series safely in the past as time advances.
+    base = datetime.now(timezone.utc) - timedelta(days=1000)
     observations = []
     for index in range(30):
         before = 2600.0
