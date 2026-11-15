@@ -6,26 +6,28 @@
 input string BackendUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/quote";
 input string CandleDataUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/candles";
 input string BridgeToken = "CHANGE_ME";
-input int SendIntervalSeconds = 1;
+input int MinQuoteIntervalMilliseconds = 250;
 input int CandleRefreshSeconds = 60;
 input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
 
 datetime lastCandleSend = 0;
+ulong lastQuoteSendMs = 0;
 
 int OnInit()
 {
    if(StringLen(BridgeToken) < 24 ||
       StringFind(BackendUrl, "https://") != 0 ||
       StringFind(CandleDataUrl, "https://") != 0 ||
-      CandleBarsPerTimeframe < 60 || CandleBarsPerTimeframe > 500)
+      CandleBarsPerTimeframe < 60 || CandleBarsPerTimeframe > 500 ||
+      MinQuoteIntervalMilliseconds < 50 || MinQuoteIntervalMilliseconds > 5000)
    {
       Print("Configure HTTPS quote/candle URLs, a long BridgeToken and 60-500 candles.");
       return INIT_PARAMETERS_INCORRECT;
    }
    if(_Symbol != RequiredSymbol)
       Print("Attach this EA to ", RequiredSymbol, ". Current chart: ", _Symbol);
-   EventSetTimer(MathMax(1, SendIntervalSeconds));
+   EventSetTimer(1);
    return INIT_SUCCEEDED;
 }
 
@@ -92,10 +94,20 @@ void SendQuote()
          DoubleToString(contractSize, 4), DoubleToString(accountEquity, 2),
          accountCurrency);
    }
+   datetime serverNow = TimeTradeServer();
+   if(serverNow <= 0) serverNow = TimeCurrent();
+   int serverUtcOffset = (int)(serverNow - TimeGMT());
+   string tickTimestamp = UtcStamp(tick.time - serverUtcOffset);
+   if(tick.time_msc > 0)
+   {
+      int milliseconds = (int)(tick.time_msc % 1000);
+      tickTimestamp = StringSubstr(tickTimestamp, 0, StringLen(tickTimestamp) - 1) +
+                      StringFormat(".%03dZ", milliseconds);
+   }
    string body = StringFormat(
       "{\"symbol\":\"%s\",\"bid\":%s,\"ask\":%s,\"last\":%s,\"timestamp\":\"%s\",\"digits\":%d,\"point\":%s,\"spread_points\":%s%s}",
       RequiredSymbol, DoubleToString(tick.bid, digits), DoubleToString(tick.ask, digits),
-      DoubleToString(tick.last, digits), UtcStamp(TimeGMT()), digits,
+      DoubleToString(tick.last, digits), tickTimestamp, digits,
       DoubleToString(point, 10), DoubleToString(spreadPoints, 1), specJson);
    PostJson(BackendUrl, body);
 }
@@ -155,11 +167,20 @@ void SendCandleBatch()
       Print("GoldAI closed candle batch sent. Bars per timeframe: ", CandleBarsPerTimeframe);
 }
 
+void OnTick()
+{
+   if(_Symbol != RequiredSymbol) return;
+   ulong nowMs = GetTickCount64();
+   if(lastQuoteSendMs != 0 &&
+      nowMs - lastQuoteSendMs < (ulong)MinQuoteIntervalMilliseconds)
+      return;
+   lastQuoteSendMs = nowMs;
+   SendQuote();
+}
+
 void OnTimer()
 {
    if(_Symbol != RequiredSymbol) return;
-   SendQuote();
-
    datetime now = TimeCurrent();
    if(lastCandleSend == 0 || now - lastCandleSend >= MathMax(30, CandleRefreshSeconds))
    {
