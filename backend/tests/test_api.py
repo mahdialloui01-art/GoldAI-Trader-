@@ -612,3 +612,115 @@ def test_gold_macro_analysis_rejects_stale_observations(monkeypatch):
     response = client.get("/api/v1/analysis/gold-macro")
     assert response.status_code == 503
     assert "stale" in response.json()["detail"]
+
+
+
+def _set_quote_with_xm_contract(equity=1000.0, volume_min=0.1):
+    _set_fresh_quote()
+    main._latest_mt5_quote.update({
+        "tick_size": 0.1,
+        "tick_value_loss": 1.0,
+        "tick_value_profit": 1.0,
+        "volume_min": volume_min,
+        "volume_max": 100.0,
+        "volume_step": 0.1,
+        "contract_size": 100.0,
+        "account_equity": equity,
+        "account_currency": "USD",
+    })
+
+
+def test_mt5_quote_accepts_complete_contract_metadata(monkeypatch):
+    monkeypatch.setattr(main.settings, "mt5_bridge_token", "test-secret")
+    payload = {
+        "symbol": "GOLD", "bid": 2300.0, "ask": 2300.2,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "digits": 2, "point": 0.01, "spread_points": 20,
+        "tick_size": 0.1, "tick_value_loss": 1.0, "tick_value_profit": 1.0,
+        "volume_min": 0.1, "volume_max": 100.0, "volume_step": 0.1,
+        "contract_size": 100.0, "account_equity": 1000.0, "account_currency": "USD",
+    }
+    response = client.post(
+        "/api/v1/mt5/quote", json=payload,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert response.status_code == 200, response.text
+    assert main._latest_mt5_quote["tick_value_loss"] == 1.0
+    assert main._latest_mt5_quote["account_currency"] == "USD"
+
+
+def test_mt5_quote_rejects_partial_contract_metadata(monkeypatch):
+    monkeypatch.setattr(main.settings, "mt5_bridge_token", "test-secret")
+    payload = {
+        "symbol": "GOLD", "bid": 2300.0, "ask": 2300.2,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "digits": 2, "point": 0.01, "spread_points": 20,
+        "tick_size": 0.1,
+    }
+    response = client.post(
+        "/api/v1/mt5/quote", json=payload,
+        headers={"Authorization": "Bearer test-secret"},
+    )
+    assert response.status_code == 422
+    assert "complete set" in response.json()["detail"]
+
+
+def test_position_size_uses_broker_tick_value_and_rounds_down_to_volume_step():
+    _set_quote_with_xm_contract(equity=1000.0)
+    response = client.post("/api/v1/risk/position-size", json={
+        "stop_distance_points": 100,
+        "risk_percent": 0.5,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["approved"] is True
+    assert body["recommended_lots"] == 0.5
+    assert body["estimated_stop_loss_amount"] == 5.0
+    assert body["estimated_risk_percent"] == 0.5
+    assert body["account_currency"] == "USD"
+    assert body["execution_enabled"] is False
+
+
+def test_position_size_never_rounds_up_to_broker_minimum_lot():
+    _set_quote_with_xm_contract(equity=100.0, volume_min=0.1)
+    response = client.post("/api/v1/risk/position-size", json={
+        "stop_distance_points": 100,
+        "risk_percent": 0.5,
+    })
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approved"] is False
+    assert body["recommended_lots"] == 0.0
+    assert "smallest broker-allowed lot" in body["reason"]
+
+
+def test_position_size_blocks_when_daily_loss_limit_is_reached():
+    _set_quote_with_xm_contract()
+    response = client.post("/api/v1/risk/position-size", json={
+        "stop_distance_points": 100,
+        "risk_percent": 0.5,
+        "daily_loss_percent": 2.0,
+    })
+    assert response.status_code == 200
+    assert response.json()["recommended_lots"] == 0.0
+    assert response.json()["approved"] is False
+
+
+def test_position_size_fails_closed_without_contract_metadata():
+    _set_fresh_quote()
+    response = client.post("/api/v1/risk/position-size", json={
+        "stop_distance_points": 100,
+        "risk_percent": 0.5,
+    })
+    assert response.status_code == 503
+    assert "metadata" in response.json()["detail"]
+
+
+def test_position_size_rejects_risk_above_configured_limit():
+    _set_quote_with_xm_contract()
+    response = client.post("/api/v1/risk/position-size", json={
+        "stop_distance_points": 100,
+        "risk_percent": 0.75,
+    })
+    assert response.status_code == 422
+    assert "configured maximum" in response.json()["detail"]
