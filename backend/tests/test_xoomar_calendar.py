@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -58,12 +59,11 @@ def event(**overrides):
     return row
 
 
-@pytest.mark.asyncio
-async def test_loads_high_impact_events_without_key_and_never_invents_forecast(monkeypatch):
+def test_loads_high_impact_events_without_key_and_never_invents_forecast(monkeypatch):
     FakeClient.payload = envelope([event(), event(importance="med")])
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
-    result = await xoomar_calendar.load_xoomar_high_impact_events()
+    result = asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
 
     assert len(result) == 1
     assert result[0]["event"] == "Consumer Price Index"
@@ -78,7 +78,7 @@ async def test_optional_api_key_is_sent_only_as_header(monkeypatch):
     FakeClient.payload = envelope([event()])
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
-    await xoomar_calendar.load_xoomar_high_impact_events(api_key="secret-test-key")
+    asyncio.run(xoomar_calendar.load_xoomar_high_impact_events(api_key="secret-test-key"))
 
     assert FakeClient.request[2] == {"X-API-Key": "secret-test-key"}
     assert "secret-test-key" not in str(FakeClient.request[1])
@@ -90,7 +90,7 @@ async def test_rejects_stale_calendar(monkeypatch):
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
     with pytest.raises(ValueError, match="freshness"):
-        await xoomar_calendar.load_xoomar_high_impact_events()
+        asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
 
 
 @pytest.mark.asyncio
