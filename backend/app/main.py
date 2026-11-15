@@ -1507,6 +1507,18 @@ def _pearson_correlation(xs: list[float], ys: list[float]) -> float | None:
     return round(covariance / denominator, 6)
 
 
+def _compounded_max_drawdown_percent(returns_percent: list[float]) -> float:
+    """Maximum peak-to-trough drawdown for a chronological sequence of net returns."""
+    equity = peak = 1.0
+    max_drawdown = 0.0
+    for value in returns_percent:
+        equity *= max(0.0, 1.0 + value / 100.0)
+        peak = max(peak, equity)
+        if peak > 0:
+            max_drawdown = max(max_drawdown, (peak - equity) / peak * 100.0)
+    return round(max_drawdown, 5)
+
+
 @app.post("/api/v1/news/historical-study")
 def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
     """Study historical news surprises against observed GOLD reactions, net of simple spread/slippage costs."""
@@ -1520,16 +1532,28 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
     for item in request.observations:
         if item.released_at.tzinfo is None:
             raise HTTPException(status_code=422, detail="Every released_at timestamp must include a timezone.")
+        if not item.event_type.strip():
+            raise HTTPException(status_code=422, detail="event_type must not be empty.")
         normalized_times.append(item.released_at.astimezone(timezone.utc))
         for horizon in ("gold_1m", "gold_5m", "gold_15m", "gold_60m"):
             if getattr(item, horizon) <= 0:
                 raise HTTPException(status_code=422, detail=f"{horizon} must be positive.")
 
+    # Sort by actual release time before any path-dependent risk metric is calculated.
+    ordered_observations = sorted(
+        zip(normalized_times, request.observations), key=lambda pair: pair[0]
+    )
+    overlap_pairs = sum(
+        1 for index, (left_time, _) in enumerate(ordered_observations)
+        for right_time, _ in ordered_observations[index + 1:]
+        if (right_time - left_time).total_seconds() < 60 * 60
+    )
+
     grouped: dict[str, list[dict]] = {}
-    for item in request.observations:
+    for released_at, item in ordered_observations:
         surprise_z = (item.actual - item.consensus) / item.surprise_scale
         cost_percent = ((item.spread_points + 2 * item.slippage_points) * item.point / item.gold_before) * 100
-        row = {"surprise_z": surprise_z, "cost_percent": cost_percent}
+        row = {"released_at": released_at, "surprise_z": surprise_z, "cost_percent": cost_percent}
         for horizon in ("1m", "5m", "15m", "60m"):
             price = getattr(item, f"gold_{horizon}")
             row[horizon] = ((price / item.gold_before) - 1) * 100
@@ -1545,8 +1569,12 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
             horizons[horizon] = {
                 "mean_gold_return_percent": round(statistics.mean(values), 5),
                 "median_gold_return_percent": round(statistics.median(values), 5),
-                "positive_move_rate_percent": round(sum(value > 0 for value in values) / count * 100, 2),
+                "gross_positive_rate_percent": round(sum(value > 0 for value in values) / count * 100, 2),
                 "mean_net_return_after_spread_slippage_percent": round(statistics.mean(net_values), 5),
+                "median_net_return_percent": round(statistics.median(net_values), 5),
+                "net_positive_rate_percent": round(sum(value > 0 for value in net_values) / count * 100, 2),
+                "net_return_std_percent": round(statistics.stdev(net_values), 5) if count > 1 else None,
+                "max_drawdown_on_chronological_compounded_net_returns_percent": _compounded_max_drawdown_percent(net_values),
             }
         correlation = _pearson_correlation(
             [row["surprise_z"] for row in rows],
@@ -1556,6 +1584,7 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
             "event_type": event_type,
             "sample_count": count,
             "sample_quality": "MINIMUM_RESEARCH_SAMPLE_MET" if count >= 30 else "EXPLORATORY_ONLY",
+            "sample_quality_note": "30 observations is only a minimum descriptive threshold; it is not enough to validate a predictive model.",
             "surprise_vs_gold_5m_correlation": correlation,
             "horizons": horizons,
             "notes": [
@@ -1572,6 +1601,13 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
         "data_policy": {
             "requires_actual_and_consensus": True,
             "requires_pre_release_and_post_release_gold_prices": True,
+            "observations_sorted_by_release_time_for_risk_metrics": True,
+            "overlapping_60m_event_windows": overlap_pairs,
+            "overlap_warning": (
+                "Some releases occur within 60 minutes of each other; their gold reactions may be confounded."
+                if overlap_pairs else None
+            ),
+            "net_cost_model": "spread plus twice supplied slippage; commissions, swaps, gaps and execution failures excluded",
             "no_future_data_used_to_create_pre_release_forecasts": True,
             "execution_enabled": False,
             "mode": "RESEARCH_ONLY",
