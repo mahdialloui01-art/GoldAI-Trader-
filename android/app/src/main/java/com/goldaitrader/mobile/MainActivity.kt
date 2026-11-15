@@ -197,12 +197,12 @@ class MainActivity : ComponentActivity() {
                         } else "لا توجد موانع مسجلة"
                         val plan = j.optJSONObject("setup_plan")
                         val levels = if (plan != null) {
-                            " — دخول مرجعي: \${plan.optString("entry_reference")} — وقف: \${plan.optString("stop_loss_reference")}"
+                            " — دخول مرجعي: ${plan.optString("entry_reference")} — وقف: ${plan.optString("stop_loss_reference")}"
                         } else ""
-                        "القرار: $decision — توافق: \${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText$levels"
+                        "القرار: $decision — توافق: ${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText$levels"
                     }
                 } catch (e: Exception) {
-                    "متوقف أو ينتظر شموع MT5: \${e.message ?: "لا توجد تغذية حديثة للأطر الأربعة"}"
+                    "متوقف أو ينتظر شموع MT5: ${e.message ?: "لا توجد تغذية حديثة للأطر الأربعة"}"
                 }
                 listOf(macro, news, engine, headlines, expert)
             }
