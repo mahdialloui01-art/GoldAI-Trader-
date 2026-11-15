@@ -962,6 +962,10 @@ def test_historical_news_study_groups_events_and_deducts_spread_slippage():
     assert result["horizons"]["5m"]["mean_gold_return_percent"] < 0
     assert result["horizons"]["5m"]["mean_net_return_after_spread_slippage_percent"] < result["horizons"]["5m"]["mean_gold_return_percent"]
     assert body["data_policy"]["execution_enabled"] is False
+    horizon = result["horizons"]["5m"]
+    assert "net_positive_rate_percent" in horizon
+    assert "max_drawdown_on_chronological_compounded_net_returns_percent" in horizon
+    assert body["data_policy"]["observations_sorted_by_release_time_for_risk_metrics"] is True
 
 
 def test_historical_news_study_marks_small_samples_exploratory():
