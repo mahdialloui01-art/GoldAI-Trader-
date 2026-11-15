@@ -15,7 +15,7 @@ android {
         versionCode = 2
         versionName = "0.2.0"
         val apiBaseUrl = project.findProperty("GOLDAI_API_BASE_URL")?.toString()
-            ?: "http://10.0.2.2:8000"
+            ?: ""
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 
