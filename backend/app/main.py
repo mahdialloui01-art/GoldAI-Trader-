@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,13 +18,15 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
     max_daily_loss_percent: float = Field(default=2.0, gt=0, le=5.0)
+    gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
+    market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
 
 
 settings = Settings()
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XAUUSD analysis and risk-control service.",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 
@@ -91,11 +94,51 @@ def get_config() -> dict:
 
 
 @app.get("/api/v1/market/snapshot")
-def market_snapshot() -> dict:
-    raise HTTPException(
-        status_code=503,
-        detail="No market-data provider is connected yet. Do not use placeholder prices for trading.",
-    )
+async def market_snapshot() -> dict:
+    """Return an indicative spot reference, never a broker execution quote."""
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(settings.gold_spot_api_url)
+            response.raise_for_status()
+            payload = response.json()
+        price = float(payload["price"])
+        updated_at = datetime.fromisoformat(
+            str(payload["updatedAt"]).replace("Z", "+00:00")
+        )
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        age_seconds = max(
+            0, int((datetime.now(timezone.utc) - updated_at.astimezone(timezone.utc)).total_seconds())
+        )
+        if price <= 0:
+            raise ValueError("Provider returned a non-positive price.")
+        if age_seconds > settings.market_quote_max_age_seconds:
+            raise HTTPException(
+                status_code=503,
+                detail="Gold spot quote is stale; no price is being presented as live.",
+            )
+        return {
+            "symbol": "XAUUSD",
+            "price": price,
+            "currency": payload.get("currency", "USD"),
+            "unit": "troy_ounce",
+            "source": "gold-api.com",
+            "source_updated_at": updated_at,
+            "age_seconds": age_seconds,
+            "quote_type": "indicative_spot",
+            "tradable_quote": False,
+            "warning": (
+                "Indicative spot reference only. It may differ from your broker's "
+                "XAUUSD bid/ask and must not be used alone to execute trades."
+            ),
+        }
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Gold spot provider is unavailable or returned invalid data.",
+        ) from exc
 
 
 @app.post("/api/v1/signals/evaluate", response_model=SignalResponse)
