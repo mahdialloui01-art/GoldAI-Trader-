@@ -15,7 +15,7 @@ android {
         versionCode = 2
         versionName = "0.2.0"
         val apiBaseUrl = project.findProperty("GOLDAI_API_BASE_URL")?.toString()
-            ?: ""
+            ?: "https://goldai-trader-api.onrender.com"
         buildConfigField("String", "API_BASE_URL", "\"$apiBaseUrl\"")
     }
 
