@@ -862,3 +862,68 @@ def test_market_regime_detects_strong_downtrend():
     assert result["market_regime"] == "TRENDING_DOWN"
     assert result["indicators"]["adx14_wilder"] >= 25
     assert result["indicators"]["minus_di14"] > result["indicators"]["plus_di14"]
+
+
+def test_pre_release_news_analysis_returns_probabilities_and_paper_candidate():
+    _set_fresh_quote()
+    release = datetime.now(timezone.utc) + timedelta(minutes=60)
+    response = client.post("/api/v1/news/pre-release-analysis", json={
+        "symbol": "GOLD",
+        "event_id": "US_RETAIL_SALES_2026_11",
+        "event_name": "US Retail Sales",
+        "release_at": release.isoformat(),
+        "consensus": 0.2,
+        "model_estimate": 0.8,
+        "historical_error_std": 0.2,
+        "historical_samples": 150,
+        "gold_direction_if_above": "BEARISH",
+        "gold_direction_if_inline": "MIXED",
+        "gold_direction_if_below": "BULLISH",
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    probs = body["scenario_probabilities"]
+    assert abs(sum(probs.values()) - 1.0) < 0.00001
+    assert body["decision"] == "PRE_NEWS_SETUP_CANDIDATE"
+    assert body["most_likely_gold_direction"] == "BEARISH"
+    assert body["execution_enabled"] is False
+    assert body["risk_policy"]["mode"] == "PAPER_ONLY"
+
+
+def test_pre_release_news_analysis_fails_closed_without_quote():
+    main._latest_mt5_quote = None
+    response = client.post("/api/v1/news/pre-release-analysis", json={
+        "event_id": "US_RETAIL", "event_name": "US Retail Sales",
+        "release_at": (datetime.now(timezone.utc) + timedelta(minutes=60)).isoformat(),
+        "consensus": 0.2, "model_estimate": 0.8, "historical_error_std": 0.2,
+        "historical_samples": 150, "gold_direction_if_above": "BEARISH",
+        "gold_direction_if_below": "BULLISH",
+    })
+    assert response.status_code == 503
+
+
+def test_pre_release_news_analysis_rejects_release_too_close():
+    _set_fresh_quote()
+    response = client.post("/api/v1/news/pre-release-analysis", json={
+        "event_id": "US_RETAIL", "event_name": "US Retail Sales",
+        "release_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+        "consensus": 0.2, "model_estimate": 0.8, "historical_error_std": 0.2,
+        "historical_samples": 150, "gold_direction_if_above": "BEARISH",
+        "gold_direction_if_below": "BULLISH",
+    })
+    assert response.status_code == 422
+
+
+def test_pre_release_news_analysis_blocks_small_sample_and_wide_spread():
+    _set_fresh_quote()
+    main._latest_mt5_quote["spread_points"] = 100
+    response = client.post("/api/v1/news/pre-release-analysis", json={
+        "event_id": "US_RETAIL", "event_name": "US Retail Sales",
+        "release_at": (datetime.now(timezone.utc) + timedelta(minutes=60)).isoformat(),
+        "consensus": 0.2, "model_estimate": 0.8, "historical_error_std": 0.2,
+        "historical_samples": 40, "gold_direction_if_above": "BEARISH",
+        "gold_direction_if_below": "BULLISH",
+    })
+    assert response.status_code == 200
+    assert response.json()["decision"] == "NO_TRADE"
+    assert response.json()["execution_enabled"] is False
