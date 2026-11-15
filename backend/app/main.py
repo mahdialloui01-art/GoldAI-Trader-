@@ -2219,3 +2219,213 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
         "generated_at": datetime.now(timezone.utc),
         "disclaimer": "قرار تحليلي تجريبي فقط. لا يضمن الربح ولا يرسل أوامر. يجب التحقق من أسعار وبيانات الوسيط واختبار الأداء التاريخي قبل أي استخدام مالي.",
     }
+
+
+@app.post("/api/v1/analysis/expert")
+async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
+    """Produce a conservative, explainable multi-layer GOLD technical dossier.
+
+    Scores are confluence points, never probabilities. The endpoint only emits a
+    paper candidate when the existing technical, structure, macro and news gates
+    all pass. It never places orders.
+    """
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} is supported.")
+
+    # Reuse the existing full decision pipeline; this also validates all four
+    # broker candle streams and applies the fail-closed macro/news filters.
+    base = await gold_decision_analysis(request)
+    quote = _fresh_mt5_quote()
+    blockers = list(base.get("blockers", []))
+    reasons = list(base.get("reasons", []))
+    mtf = base.get("components", {}).get("multi_timeframe")
+    if not isinstance(mtf, dict) or not isinstance(mtf.get("timeframes"), dict):
+        return {
+            **base,
+            "analysis_level": "EXPERT_DOSSIER_UNAVAILABLE",
+            "technical_dossier": None,
+            "setup_plan": None,
+            "blockers": sorted(set(blockers + ["TECHNICAL_DOSSIER_UNAVAILABLE"])),
+            "policy": {
+                "mode": "PAPER_ONLY", "live_trading_enabled": False,
+                "execution_enabled": False, "scores_are_probabilities": False,
+            },
+        }
+
+    frames = {
+        "M5": request.m5, "M15": request.m15,
+        "H1": request.h1, "H4": request.h4,
+    }
+    weights = {"M5": 1.0, "M15": 1.5, "H1": 2.0, "H4": 2.5}
+    frame_reports: dict[str, dict] = {}
+    weighted_score = 0.0
+    total_weight = sum(weights.values())
+    for timeframe, candles in frames.items():
+        technical = mtf["timeframes"][timeframe]
+        direction_value = technical.get("direction", "WAIT")
+        direction = direction_value.value if isinstance(direction_value, Direction) else str(direction_value)
+        regime = _market_regime_analysis(candles)
+        structure = _price_action_analysis(candles, 3, 3, 0.12)
+        indicators = technical.get("indicators", {})
+        rsi = float(indicators.get("rsi14_wilder", 50.0))
+        histogram = float(indicators.get("macd_histogram", 0.0))
+        adx = float(regime["indicators"]["adx14_wilder"])
+        frame_score = 0.0
+        evidence: list[str] = []
+
+        if direction == "BUY":
+            frame_score += 2.0
+            evidence.append("المؤشرات الأساسية تميل للصعود")
+        elif direction == "SELL":
+            frame_score -= 2.0
+            evidence.append("المؤشرات الأساسية تميل للهبوط")
+
+        if regime["market_regime"] == "TRENDING_UP":
+            frame_score += 1.0
+            evidence.append("ADX يؤكد بيئة اتجاه صاعد")
+        elif regime["market_regime"] == "TRENDING_DOWN":
+            frame_score -= 1.0
+            evidence.append("ADX يؤكد بيئة اتجاه هابط")
+
+        if structure["market_structure"] == "UPTREND":
+            frame_score += 1.0
+            evidence.append("القمم والقيعان المؤكدة تصاعدية")
+        elif structure["market_structure"] == "DOWNTREND":
+            frame_score -= 1.0
+            evidence.append("القمم والقيعان المؤكدة تنازلية")
+
+        if rsi >= 55 and histogram > 0:
+            frame_score += 0.75
+            evidence.append("الزخم RSI وMACD إيجابي")
+        elif rsi <= 45 and histogram < 0:
+            frame_score -= 0.75
+            evidence.append("الزخم RSI وMACD سلبي")
+        elif 45 < rsi < 55:
+            evidence.append("الزخم محايد نسبياً")
+
+        if regime["market_regime"] == "HIGH_VOLATILITY":
+            evidence.append("تحذير: تقلب مرتفع في هذا الإطار")
+        if "BUY_SIDE_LIQUIDITY_SWEEP" in structure["events"]:
+            evidence.append("رصد سحب سيولة فوق قمة مؤكدة؛ يحتاج تأكيداً")
+        if "SELL_SIDE_LIQUIDITY_SWEEP" in structure["events"]:
+            evidence.append("رصد سحب سيولة تحت قاع مؤكد؛ يحتاج تأكيداً")
+        if "BULLISH_BREAK_OF_STRUCTURE" in structure["events"]:
+            evidence.append("كسر هيكل صاعد مؤكد بالإغلاق")
+        if "BEARISH_BREAK_OF_STRUCTURE" in structure["events"]:
+            evidence.append("كسر هيكل هابط مؤكد بالإغلاق")
+
+        weighted_score += frame_score * weights[timeframe]
+        frame_reports[timeframe] = {
+            "direction": direction,
+            "weight": weights[timeframe],
+            "confluence_points": round(frame_score, 2),
+            "market_regime": regime["market_regime"],
+            "adx14": regime["indicators"]["adx14_wilder"],
+            "atr14": regime["indicators"]["atr14_wilder"],
+            "rsi14": round(rsi, 2),
+            "macd_histogram": round(histogram, 6),
+            "market_structure": structure["market_structure"],
+            "confirmed_events": structure["events"],
+            "liquidity_pools": structure["liquidity_pools"],
+            "recent_fair_value_gaps": structure["fair_value_gaps"],
+            "order_block_candidate": structure["order_block_candidate"],
+            "evidence": evidence,
+        }
+
+    max_score = 4.75 * total_weight
+    confluence = round(min(100.0, abs(weighted_score) / max_score * 100), 1)
+    expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
+    decision = str(base.get("decision", "WAIT"))
+    if decision not in ("BUY", "SELL"):
+        expert_direction = "WAIT"
+    elif expert_direction != decision or confluence < 45:
+        blockers.append("EXPERT_CONFLUENCE_NOT_CONFIRMED")
+        reasons.append("طبقة التوافق المتقدم لا تؤكد اتجاه القرار الأساسي؛ تم تحويل القرار إلى WAIT.")
+        decision = "WAIT"
+
+    # Spread is evaluated against M5 ATR, not against a fixed dollar threshold.
+    m5_atr = float(frame_reports["M5"]["atr14"])
+    spread_price = float(quote["spread_points"]) * float(quote["point"])
+    spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else float("inf")
+    if spread_atr_ratio > 0.15:
+        blockers.append("SPREAD_TOO_HIGH_FOR_M5_VOLATILITY")
+        reasons.append("السبريد مرتفع مقارنة بتذبذب M5؛ تم منع إعداد الدخول.")
+        decision = "WAIT"
+
+    setup_plan = None
+    if decision in ("BUY", "SELL"):
+        entry = float(quote["ask"] if decision == "BUY" else quote["bid"])
+        stop_distance = max(1.5 * m5_atr, 3.0 * spread_price)
+        m5_structure = _price_action_analysis(request.m5, 3, 3, 0.12)
+        if decision == "BUY":
+            swing = m5_structure.get("last_confirmed_swing_low")
+            stop = entry - stop_distance
+            if swing and float(swing["price"]) < entry:
+                stop = min(stop, float(swing["price"]) - 0.1 * m5_atr)
+            risk_distance = entry - stop
+            targets = {f"target_{rr}R": round(entry + risk_distance * rr, quote["digits"]) for rr in (1, 2, 3)}
+        else:
+            swing = m5_structure.get("last_confirmed_swing_high")
+            stop = entry + stop_distance
+            if swing and float(swing["price"]) > entry:
+                stop = max(stop, float(swing["price"]) + 0.1 * m5_atr)
+            risk_distance = stop - entry
+            targets = {f"target_{rr}R": round(entry - risk_distance * rr, quote["digits"]) for rr in (1, 2, 3)}
+        setup_plan = {
+            "direction": decision,
+            "entry_reference": round(entry, quote["digits"]),
+            "stop_loss_reference": round(stop, quote["digits"]),
+            "risk_distance_price": round(risk_distance, quote["digits"]),
+            "targets": targets,
+            "stop_method": "max(1.5 x M5 ATR, 3 x spread), widened beyond latest confirmed opposing swing when applicable",
+            "risk_reward_targets": [1, 2, 3],
+            "status": "PAPER_RESEARCH_ONLY",
+            "warning": "مستويات حسابية مرجعية وليست أوامر أو ضماناً للتنفيذ أو الربح. يجب إعادة حساب الحجم وفق مواصفات عقد XM.",
+        }
+
+    if decision == "WAIT" and "NO_TRADE" not in blockers:
+        blockers.append("NO_FULL_CONFLUENCE")
+    grade = (
+        "HIGH_CONFLUENCE" if confluence >= 70 else
+        "MODERATE_CONFLUENCE" if confluence >= 45 else
+        "LOW_CONFLUENCE"
+    )
+    return {
+        **base,
+        "decision": decision,
+        "status": "PAPER_CANDIDATE" if decision in ("BUY", "SELL") else "NO_TRADE",
+        "blockers": sorted(set(blockers)),
+        "analysis_level": "ADVANCED_MULTI_LAYER_TECHNICAL_DOSSIER",
+        "technical_dossier": {
+            "confluence_score": confluence,
+            "score_type": "HEURISTIC_CONFLUENCE_NOT_PROBABILITY",
+            "weighted_directional_points": round(weighted_score, 2),
+            "maximum_absolute_points": round(max_score, 2),
+            "confluence_grade": grade,
+            "dominant_technical_direction": expert_direction,
+            "timeframes": frame_reports,
+            "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4),
+            "methodology": [
+                "EMA/RSI/MACD technical direction",
+                "Wilder ADX and ATR market regime",
+                "confirmed swing structure, BOS and liquidity sweep candidates",
+                "equal highs/lows, FVG and heuristic order-block candidates",
+                "weighted M5/M15/H1/H4 confluence",
+                "broker spread and existing macro/news fail-closed gates",
+            ],
+            "limitations": [
+                "Order blocks and liquidity events are rule-based chart candidates, not verified institutional order flow.",
+                "Confluence score is not a win probability and has not been calibrated against out-of-sample XM GOLD returns.",
+                "Only the supplied closed broker candles are analyzed; this endpoint does not create an independent candle feed.",
+            ],
+        },
+        "setup_plan": setup_plan,
+        "policy": {
+            "mode": "PAPER_ONLY",
+            "live_trading_enabled": False,
+            "execution_enabled": False,
+            "scores_are_probabilities": False,
+            "automatic_order_placement": False,
+        },
+        "generated_at": datetime.now(timezone.utc),
+    }
