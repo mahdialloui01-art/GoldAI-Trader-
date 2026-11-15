@@ -886,8 +886,11 @@ def test_pre_release_news_analysis_returns_probabilities_and_paper_candidate():
     body = response.json()
     probs = body["scenario_probabilities"]
     assert abs(sum(probs.values()) - 1.0) < 0.00001
-    assert body["decision"] == "PRE_NEWS_SETUP_CANDIDATE"
-    assert body["most_likely_gold_direction"] == "BEARISH"
+    # Client-supplied validation claims must never unlock a trade candidate.
+    assert body["decision"] == "NO_TRADE"
+    assert body["most_likely_gold_direction"] == "UNCONFIRMED"
+    assert body["forecast_inputs"]["client_validation_claim_ignored"] is True
+    assert body["forecast_inputs"]["server_side_model_registry_verified"] is False
     assert body["execution_enabled"] is False
     assert body["risk_policy"]["mode"] == "PAPER_ONLY"
 
