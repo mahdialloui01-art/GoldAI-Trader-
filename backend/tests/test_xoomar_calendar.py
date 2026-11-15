@@ -73,8 +73,7 @@ def test_loads_high_impact_events_without_key_and_never_invents_forecast(monkeyp
     assert FakeClient.request[2] == {}
 
 
-@pytest.mark.asyncio
-async def test_optional_api_key_is_sent_only_as_header(monkeypatch):
+def test_optional_api_key_is_sent_only_as_header(monkeypatch):
     FakeClient.payload = envelope([event()])
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
@@ -84,8 +83,7 @@ async def test_optional_api_key_is_sent_only_as_header(monkeypatch):
     assert "secret-test-key" not in str(FakeClient.request[1])
 
 
-@pytest.mark.asyncio
-async def test_rejects_stale_calendar(monkeypatch):
+def test_rejects_stale_calendar(monkeypatch):
     FakeClient.payload = envelope([], datetime.now(timezone.utc) - timedelta(days=4))
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
@@ -93,19 +91,17 @@ async def test_rejects_stale_calendar(monkeypatch):
         asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
 
 
-@pytest.mark.asyncio
-async def test_rejects_timezone_naive_release_time(monkeypatch):
+def test_rejects_timezone_naive_release_time(monkeypatch):
     FakeClient.payload = envelope([event(scheduledAt="2026-11-20T13:30:00")])
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
     with pytest.raises(ValueError, match="timezone"):
-        await xoomar_calendar.load_xoomar_high_impact_events()
+        asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
 
 
-@pytest.mark.asyncio
-async def test_rejects_missing_data_array(monkeypatch):
+def test_rejects_missing_data_array(monkeypatch):
     FakeClient.payload = {"updatedAt": datetime.now(timezone.utc).isoformat()}
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
 
     with pytest.raises(ValueError, match="array"):
-        await xoomar_calendar.load_xoomar_high_impact_events()
+        asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
