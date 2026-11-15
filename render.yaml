@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: goldai-trader-api
+    runtime: python
+    plan: free
+    region: frankfurt
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.4
+      - key: APP_ENV
+        value: production
+      - key: TRADING_MODE
+        value: paper
+      - key: LIVE_TRADING_ENABLED
+        value: "false"
+      - key: MT5_BRIDGE_TOKEN
+        generateValue: true
+      - key: FRED_API_KEY
+        sync: false
+      - key: XOOMAR_API_KEY
+        sync: false
+      - key: MAX_RISK_PER_TRADE_PERCENT
+        value: "0.5"
+      - key: MAX_DAILY_LOSS_PERCENT
+        value: "2.0"
+      - key: BROKER_GOLD_SYMBOL
+        value: GOLD
