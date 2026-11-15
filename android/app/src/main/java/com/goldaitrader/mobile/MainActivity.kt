@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
                             val detail = try { JSONObject(body).optString("detail", "HTTP $code") } catch (_: Exception) { "HTTP $code" }
                             throw IllegalStateException(detail)
                         }
-                        JSONObject(body)
+                        return JSONObject(body)
                     } finally { c.disconnect() }
                 }
                 val macro = try {
