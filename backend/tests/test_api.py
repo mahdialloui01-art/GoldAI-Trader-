@@ -271,15 +271,17 @@ def test_multi_timeframe_requires_all_three_frames_to_align():
         "m5": strong_bullish_candles("M5"),
         "m15": strong_bullish_candles("M15"),
         "h1": strong_bullish_candles("H1"),
+        "h4": strong_bullish_candles("H4"),
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["execution_enabled"] is False
-    assert set(body["timeframes"]) == {"M5", "M15", "H1"}
+    assert set(body["timeframes"]) == {"M5", "M15", "H1", "H4"}
     assert body["alignment"]["M5"] == "BUY"
     assert body["alignment"]["M15"] == "BUY"
     assert body["alignment"]["H1"] == "BUY"
+    assert body["alignment"]["H4"] == "BUY"
     assert body["direction"] == "BUY"
 
 
@@ -289,7 +291,8 @@ def test_multi_timeframe_fails_closed_when_one_frame_is_stale():
         "symbol": "GOLD",
         "m5": _technical_payload("M5")["candles"],
         "m15": _technical_payload("M15")["candles"],
-        "h1": _technical_payload("H1", start_offset_seconds=24 * 3600)["candles"],
+        "h1": _technical_payload("H1")["candles"],
+        "h4": _technical_payload("H4", start_offset_seconds=48 * 3600)["candles"],
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
     assert response.status_code == 422
@@ -303,6 +306,7 @@ def test_multi_timeframe_fails_closed_without_mt5_quote():
         "m5": _technical_payload("M5")["candles"],
         "m15": _technical_payload("M15")["candles"],
         "h1": _technical_payload("H1")["candles"],
+        "h4": _technical_payload("H4")["candles"],
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
     assert response.status_code == 503
