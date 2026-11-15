@@ -465,7 +465,7 @@ async def us_high_impact_calendar(days_ahead: int = 7) -> dict:
         "events": events,
         "source": "XOOMAR (aggregated US agency schedules)",
         "source_url": "https://xoomar.com/markets/api/calendar",
-        "attribution": "Data: XOOMAR; underlying schedules from US government agencies.",
+        "attribution": "Data: XOOMAR. " + (events[0]["source_attribution"] if events else "Release schedules are aggregated from the issuing US agencies."),
         "forecast_available": False,
         "execution_enabled": False,
         "note": "Forecast consensus is not provided. Verify release times with the issuing agency; this calendar is not an order signal.",
