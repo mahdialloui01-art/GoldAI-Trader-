@@ -258,11 +258,19 @@ def _set_fresh_quote():
 def test_multi_timeframe_requires_all_three_frames_to_align():
     _set_fresh_quote()
     main._latest_mt5_quote["spread_points"] = 1
+    def strong_bullish_candles(timeframe):
+        candles = _technical_payload(timeframe)["candles"]
+        last = candles[-1]
+        last["open"] = last["close"] - 0.8
+        last["low"] = last["open"] - 0.05
+        last["high"] = last["close"] + 0.05
+        return candles
+
     payload = {
         "symbol": "GOLD",
-        "m5": _technical_payload("M5")["candles"],
-        "m15": _technical_payload("M15")["candles"],
-        "h1": _technical_payload("H1")["candles"],
+        "m5": strong_bullish_candles("M5"),
+        "m15": strong_bullish_candles("M15"),
+        "h1": strong_bullish_candles("H1"),
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
     assert response.status_code == 200, response.text
