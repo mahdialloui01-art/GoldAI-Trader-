@@ -2748,20 +2748,29 @@ class MT5CandleBatch(MultiTimeframeAnalysisRequest):
     """Closed broker candles streamed by the MT5 EA; same GOLD-only timeframe contract."""
 
 
-def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> dict:
+def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
+    """Validate closed broker bars and return non-blocking session-gap diagnostics."""
     now = datetime.now(timezone.utc)
     series = {"M5": batch.m5, "M15": batch.m15, "H1": batch.h1, "H4": batch.h4}
     normalized: dict[str, list[Candle]] = {}
+    quality: dict[str, dict] = {}
     for timeframe, candles in series.items():
+        interval = _TIMEFRAME_SECONDS[timeframe]
         stamps: list[datetime] = []
         copied: list[Candle] = []
         for candle in candles:
             if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
                 raise HTTPException(status_code=422, detail=f"Invalid OHLC values in {timeframe}.")
+            if candle.high < candle.low:
+                raise HTTPException(status_code=422, detail=f"High is below Low in {timeframe}.")
             stamp = candle.time
             if stamp.tzinfo is None:
                 raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamps must include a timezone.")
             stamp = stamp.astimezone(timezone.utc)
+            if stamp.second != 0 or stamp.microsecond != 0:
+                raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamps must be aligned to whole minutes.")
+            if stamp.minute % (interval // 60) != 0:
+                raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamp is not aligned to its timeframe.")
             stamps.append(stamp)
             copied.append(Candle(
                 time=stamp, open=candle.open, high=candle.high, low=candle.low,
@@ -2769,11 +2778,28 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> dict:
             ))
         if any(current <= previous for previous, current in zip(stamps, stamps[1:])):
             raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamps must be strictly increasing.")
+        deltas = [(current - previous).total_seconds() for previous, current in zip(stamps, stamps[1:])]
+        if any(delta < interval for delta in deltas):
+            raise HTTPException(status_code=422, detail=f"{timeframe} contains overlapping or too-close candle timestamps.")
         age = (now - stamps[-1]).total_seconds()
-        if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
-            raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale or from the future.")
+        if age < interval - 5:
+            raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle does not appear to be fully closed.")
+        if age > interval * 2 + 60:
+            raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale.")
+        # Longer gaps can be legitimate weekends, holidays, or broker session breaks.
+        # Report them for visibility instead of rejecting valid market closures.
+        gaps = [int(delta) for delta in deltas if delta > interval + 1]
         normalized[timeframe] = copied
-    return normalized
+        quality[timeframe] = {
+            "bars_received": len(copied),
+            "latest_closed_bar_time": stamps[-1],
+            "latest_bar_age_seconds": max(0, int(age)),
+            "session_gaps_observed": len(gaps),
+            "largest_gap_seconds": max(gaps, default=0),
+            "strictly_increasing": True,
+            "timeframe_spacing_valid": True,
+        }
+    return normalized, quality
 
 
 @app.post("/api/v1/mt5/candles")
@@ -2790,10 +2816,20 @@ def receive_mt5_candles(
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
     if batch.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} candles are accepted.")
-    normalized = _validate_mt5_candle_batch(batch)
+    normalized, quality = _validate_mt5_candle_batch(batch)
+    # Never let a delayed/replayed request roll the live cache back to older bars.
+    if _latest_mt5_candles is not None:
+        previous = _latest_mt5_candles["timeframes"]
+        for timeframe, rows in normalized.items():
+            if rows[-1].time < previous[timeframe][-1].time:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Out-of-order {timeframe} candle batch rejected; cached data is newer.",
+                )
     _latest_mt5_candles = {
         "symbol": settings.broker_gold_symbol.upper(),
         "timeframes": normalized,
+        "data_quality": quality,
         "received_at": datetime.now(timezone.utc),
         "source": "Authenticated MetaTrader 5 broker candle feed",
     }
@@ -2803,6 +2839,7 @@ def receive_mt5_candles(
         "source": _latest_mt5_candles["source"],
         "candle_counts": {frame: len(rows) for frame, rows in normalized.items()},
         "latest_candle_times": {frame: rows[-1].time for frame, rows in normalized.items()},
+        "data_quality": quality,
         "execution_enabled": False,
     }
 
@@ -2827,6 +2864,7 @@ async def live_expert_technical_analysis() -> dict:
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
         "candle_counts": {frame: len(rows) for frame, rows in series.items()},
+        "data_quality": _latest_mt5_candles.get("data_quality", {}),
         "feed_age_seconds": max(0, int((now - _latest_mt5_candles["received_at"]).total_seconds())),
         "closed_candles_only": True,
     }
