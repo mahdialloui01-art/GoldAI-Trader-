@@ -141,6 +141,8 @@ The backend includes a strict parser at `backend/app/calendar_import.py` for a u
 - Wilder ADX/ATR market regime classification.
 - Confirmed swing structure, BOS candidates, liquidity-sweep candidates, equal highs/lows, FVGs and heuristic order-block candidates.
 - Weighted M5/M15/H1/H4 confluence, with the score explicitly marked as a heuristic and never a win probability.
+- Closed-candle microstructure context: candle-body/close-location strength, engulfing and rejection patterns, EMA20 slope and EMA20/EMA50 separation normalized by ATR.
+- Optional broker tick-volume participation versus the previous 20-bar median. Missing/zero tick volume is explicitly reported as unavailable and never treated as bearish evidence.
 - Broker spread relative to M5 ATR, plus the existing macro and high-impact-news fail-closed gates.
 - Reference stop and 1R/2R/3R target levels only when every existing decision gate and the expert confluence layer pass.
 
