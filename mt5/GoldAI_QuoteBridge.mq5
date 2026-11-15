@@ -1,18 +1,27 @@
-// GoldAI Trader - MT5 quote + closed-candle bridge (no order execution)
+// GoldAI Trader - MT5 bridge with optional guarded DEMO-only execution
 #property strict
-#property version   "2.0"
+#include <Trade/Trade.mqh>
+CTrade trade;
+#property version   "2.1"
 #property description "Streams XM GOLD Bid/Ask and closed M5/M15/H1/H4 candles to GoldAI Trader."
 
 input string BackendUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/quote";
 input string CandleDataUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/candles";
+input string DemoSignalUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/demo/signal";
 input string BridgeToken = "CHANGE_ME";
 input int MinQuoteIntervalMilliseconds = 250;
 input int CandleRefreshSeconds = 60;
 input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
+input bool EnableDemoExecution = false;
+input double DemoDailyLossLimitPercent = 10.0;
+input ulong DemoMagicNumber = 26111601;
+input int DemoMaxDeviationPoints = 30;
+input double DemoMaxSpreadPoints = 1000.0;
 
 datetime lastCandleSend = 0;
 ulong lastQuoteSendMs = 0;
+datetime lastDemoDecisionBar = 0;
 
 int OnInit()
 {
@@ -167,6 +176,158 @@ void SendCandleBatch()
       Print("GoldAI closed candle batch sent. Bars per timeframe: ", CandleBarsPerTimeframe);
 }
 
+
+bool IsDemoAccount()
+{
+   return (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO;
+}
+
+double TodayAccountLossPercent()
+{
+   datetime now = TimeTradeServer();
+   if(now <= 0) now = TimeCurrent();
+   MqlDateTime parts;
+   TimeToStruct(now, parts);
+   parts.hour = 0; parts.min = 0; parts.sec = 0;
+   datetime dayStart = StructToTime(parts);
+   if(!HistorySelect(dayStart, now)) return 100.0;
+   double realized = 0.0;
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong ticket = HistoryDealGetTicket(i);
+      if(ticket == 0) continue;
+      ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL) continue;
+      realized += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      realized += HistoryDealGetDouble(ticket, DEAL_SWAP);
+      realized += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+   }
+   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
+   double startBalance = balance - realized;
+   if(startBalance <= 0) return 100.0;
+   double netToday = realized + AccountInfoDouble(ACCOUNT_EQUITY) - balance;
+   return MathMax(0.0, -netToday / startBalance * 100.0);
+}
+
+int CountOurOpenPositions()
+{
+   int count = 0;
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) == RequiredSymbol &&
+         (ulong)PositionGetInteger(POSITION_MAGIC) == DemoMagicNumber) count++;
+   }
+   return count;
+}
+
+string JsonValue(string payload, string key)
+{
+   string marker = "\"" + key + "\":";
+   int start = StringFind(payload, marker);
+   if(start < 0) return "";
+   start += StringLen(marker);
+   while(start < StringLen(payload) && StringGetCharacter(payload, start) == ' ') start++;
+   if(start >= StringLen(payload)) return "";
+   if(StringGetCharacter(payload, start) == '"')
+   {
+      start++;
+      int finish = StringFind(payload, "\"", start);
+      if(finish < 0) return "";
+      return StringSubstr(payload, start, finish - start);
+   }
+   int finish = start;
+   while(finish < StringLen(payload) && StringGetCharacter(payload, finish) != ',' &&
+         StringGetCharacter(payload, finish) != '}') finish++;
+   string value = StringSubstr(payload, start, finish - start);
+   StringTrimLeft(value);
+   StringTrimRight(value);
+   return value;
+}
+
+double JsonNumber(string payload, string key)
+{
+   return StringToDouble(JsonValue(payload, key));
+}
+
+bool FetchDemoSignal(double dailyLoss, string &payload)
+{
+   string url = DemoSignalUrl + "?daily_loss_percent=" + DoubleToString(dailyLoss, 4);
+   char data[], result[];
+   ArrayResize(data, 0);
+   string headers = "Authorization: Bearer " + BridgeToken + "\r\n";
+   string responseHeaders;
+   ResetLastError();
+   int status = WebRequest("GET", url, headers, 10000, data, result, responseHeaders);
+   if(status != 200)
+   {
+      Print("GoldAI demo signal HTTP status=", status, " error=", GetLastError());
+      return false;
+   }
+   payload = CharArrayToString(result, 0, -1, CP_UTF8);
+   return StringLen(payload) > 0;
+}
+
+void TryDemoTrade()
+{
+   if(!EnableDemoExecution) return;
+   if((ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE) != ACCOUNT_TRADE_MODE_DEMO)
+   {
+      Print("GoldAI DEMO EXECUTION BLOCKED: this is not an MT5 DEMO account.");
+      return;
+   }
+   if(_Symbol != RequiredSymbol || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
+      !MQLInfoInteger(MQL_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return;
+   datetime bar = iTime(RequiredSymbol, PERIOD_M5, 0);
+   if(bar <= 0 || bar == lastDemoDecisionBar) return;
+   lastDemoDecisionBar = bar;
+   if(CountOurOpenPositions() > 0) return;
+   double dailyLoss = TodayAccountLossPercent();
+   if(dailyLoss >= DemoDailyLossLimitPercent)
+   {
+      Print("GoldAI daily loss lock: ", DoubleToString(dailyLoss, 2), "%");
+      return;
+   }
+   MqlTick tick;
+   if(!SymbolInfoTick(RequiredSymbol, tick) || tick.bid <= 0 || tick.ask < tick.bid) return;
+   double point = SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
+   if(point <= 0 || (tick.ask - tick.bid) / point > DemoMaxSpreadPoints) return;
+   string payload;
+   if(!FetchDemoSignal(dailyLoss, payload)) return;
+   if(JsonValue(payload, "candidate_ready") != "true") return;
+   if(JsonValue(payload, "symbol") != RequiredSymbol) return;
+   string direction = JsonValue(payload, "decision");
+   double lots = JsonNumber(payload, "recommended_lots");
+   double stop = JsonNumber(payload, "stop_loss");
+   double target = JsonNumber(payload, "take_profit");
+   double vmin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
+   if(lots <= 0 || stop <= 0 || target <= 0 || step <= 0) return;
+   lots = NormalizeDouble(MathFloor((lots + 1e-10) / step) * step, 8);
+   if(lots < vmin || lots > vmax) return;
+   int digits = (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS);
+   stop = NormalizeDouble(stop, digits);
+   target = NormalizeDouble(target, digits);
+   trade.SetExpertMagicNumber(DemoMagicNumber);
+   trade.SetDeviationInPoints(DemoMaxDeviationPoints);
+   trade.SetTypeFillingBySymbol(RequiredSymbol);
+   bool sent = false;
+   if(direction == "BUY" && stop < tick.bid && target > tick.ask)
+      sent = trade.Buy(lots, RequiredSymbol, 0.0, stop, target, "GoldAI DEMO BUY");
+   else if(direction == "SELL" && stop > tick.ask && target < tick.bid)
+      sent = trade.Sell(lots, RequiredSymbol, 0.0, stop, target, "GoldAI DEMO SELL");
+   else return;
+   if(sent && (trade.ResultRetcode() == TRADE_RETCODE_DONE ||
+               trade.ResultRetcode() == TRADE_RETCODE_PLACED))
+      Print("GoldAI DEMO order accepted: ", direction, " lots=", DoubleToString(lots, 2),
+            " SL=", DoubleToString(stop, digits), " TP=", DoubleToString(target, digits));
+   else
+      Print("GoldAI DEMO order rejected. retcode=", trade.ResultRetcode(),
+            " ", trade.ResultRetcodeDescription());
+}
+
 void OnTick()
 {
    if(_Symbol != RequiredSymbol) return;
@@ -187,4 +348,5 @@ void OnTimer()
       SendCandleBatch();
       lastCandleSend = now;
    }
+   TryDemoTrade();
 }
