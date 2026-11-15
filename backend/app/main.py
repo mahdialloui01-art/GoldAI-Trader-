@@ -205,6 +205,112 @@ async def market_spot_reference() -> dict:
         ) from exc
 
 
+class Candle(BaseModel):
+    time: datetime
+    open: float = Field(gt=0)
+    high: float = Field(gt=0)
+    low: float = Field(gt=0)
+    close: float = Field(gt=0)
+    tick_volume: int = Field(default=0, ge=0)
+
+
+class TechnicalAnalysisRequest(BaseModel):
+    symbol: str = "GOLD"
+    timeframe: str
+    candles: list[Candle] = Field(min_length=60, max_length=500)
+
+
+def _ema(values: list[float], period: int) -> float:
+    alpha = 2 / (period + 1)
+    result = values[0]
+    for value in values[1:]:
+        result = alpha * value + (1 - alpha) * result
+    return result
+
+
+def _rsi(values: list[float], period: int = 14) -> float:
+    changes = [values[i] - values[i - 1] for i in range(1, len(values))]
+    gains = [max(change, 0) for change in changes[-period:]]
+    losses = [max(-change, 0) for change in changes[-period:]]
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
+def _atr(candles: list[Candle], period: int = 14) -> float:
+    ranges = []
+    for i in range(1, len(candles)):
+        current, previous = candles[i], candles[i - 1]
+        ranges.append(max(
+            current.high - current.low,
+            abs(current.high - previous.close),
+            abs(current.low - previous.close),
+        ))
+    return sum(ranges[-period:]) / period
+
+
+@app.post("/api/v1/analysis/technical")
+def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
+    """Deterministic technical analysis from broker OHLC candles; no fabricated signals."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+    quote = _fresh_mt5_quote()
+    candles = request.candles
+    for candle in candles:
+        if candle.high < max(candle.open, candle.close, candle.low):
+            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+        if candle.low > min(candle.open, candle.close, candle.high):
+            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+    closes = [item.close for item in candles]
+    ema20, ema50 = _ema(closes[-50:], 20), _ema(closes[-50:], 50)
+    rsi14, atr14 = _rsi(closes), _atr(candles)
+    last = candles[-1]
+    score = 0
+    reasons = []
+    if ema20 > ema50 and last.close > ema20:
+        score += 2
+        reasons.append("الاتجاه صاعد: EMA20 أعلى EMA50 والسعر فوق EMA20.")
+    elif ema20 < ema50 and last.close < ema20:
+        score -= 2
+        reasons.append("الاتجاه هابط: EMA20 أسفل EMA50 والسعر تحت EMA20.")
+    else:
+        reasons.append("الاتجاه غير حاسم؛ المتوسطات والسعر غير متوافقة.")
+    if 52 <= rsi14 <= 68:
+        score += 1
+        reasons.append("زخم شرائي إيجابي دون تشبع واضح.")
+    elif 32 <= rsi14 <= 48:
+        score -= 1
+        reasons.append("زخم بيعي سلبي دون تشبع واضح.")
+    elif rsi14 > 70 or rsi14 < 30:
+        reasons.append("RSI في منطقة تشبع؛ تجنب مطاردة الحركة.")
+    if last.close > last.open:
+        score += 1
+    elif last.close < last.open:
+        score -= 1
+    direction = Direction.BUY if score >= 3 else Direction.SELL if score <= -3 else Direction.WAIT
+    confidence = min(85, 50 + abs(score) * 8) if direction != Direction.WAIT else 0
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "timeframe": request.timeframe.upper(),
+        "direction": direction,
+        "confidence": confidence,
+        "indicators": {
+            "ema20": round(ema20, 3), "ema50": round(ema50, 3),
+            "rsi14": round(rsi14, 2), "atr14": round(atr14, 3),
+            "last_close": last.close,
+        },
+        "broker_quote": {"bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"]},
+        "candle_count": len(candles),
+        "reasons": reasons,
+        "risk_note": "ATR is a volatility measure, not a guaranteed stop distance. Confirm higher timeframes and event risk before any trade.",
+        "generated_at": datetime.now(timezone.utc),
+        "execution_enabled": False,
+    }
+
+
 @app.post("/api/v1/signals/evaluate", response_model=SignalResponse)
 def evaluate_signal(request: SignalRequest) -> SignalResponse:
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
