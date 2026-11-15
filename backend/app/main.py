@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 import asyncio
 from enum import Enum
 from decimal import Decimal, ROUND_DOWN
@@ -52,7 +52,7 @@ settings = Settings()
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
-    version="0.3.0",
+    version="0.4.0",
 )
 
 from .news_reaction import router as news_reaction_router
@@ -569,7 +569,7 @@ def _parse_news_feed_xml(xml_text: str, feed_name: str, source: str, category: s
         if published is None or published.tzinfo is None:
             continue
         published = published.astimezone(timezone.utc)
-        if published > datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=10):
+        if published > datetime.now(timezone.utc) + timedelta(minutes=10):
             continue
         summary = fields.get("description") or fields.get("summary") or fields.get("encoded") or ""
         summary = re.sub(r"<[^>]*>", " ", unescape(summary))
@@ -721,7 +721,7 @@ async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
     now = datetime.now(timezone.utc)
     return [
         event for event in _NEWS_CALENDAR_CACHE
-        if now - __import__("datetime").timedelta(days=1) <= event["date"] <= now + __import__("datetime").timedelta(days=days_ahead)
+        if now - timedelta(days=1) <= event["date"] <= now + timedelta(days=days_ahead)
     ]
 
 
