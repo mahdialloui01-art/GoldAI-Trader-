@@ -358,3 +358,54 @@ def test_technical_analysis_fails_closed_without_mt5_quote():
     main._latest_mt5_quote = None
     response = client.post("/api/v1/analysis/technical", json=_technical_payload())
     assert response.status_code == 503
+
+
+def test_price_action_endpoint_returns_structure_features_without_authorizing_trades():
+    _set_fresh_quote()
+    payload = _technical_payload("M5", count=120)
+    response = client.post("/api/v1/analysis/price-action", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["symbol"] == "GOLD"
+    assert body["timeframe"] == "M5"
+    assert body["market_structure"] in {"UPTREND", "DOWNTREND", "RANGE_OR_TRANSITION", "UNCONFIRMED"}
+    assert "swing_highs" in body and "swing_lows" in body
+    assert "liquidity_pools" in body
+    assert "fair_value_gaps" in body
+    assert body["signal"] == "WAIT"
+    assert body["execution_enabled"] is False
+    assert body["swing_confirmation"]["repainting"] is False
+
+
+def test_confirmed_swings_never_include_unconfirmed_right_edge():
+    candles = [
+        main.Candle(time=datetime.now(timezone.utc) - timedelta(minutes=100 - i),
+                    open=100 + (i % 3), high=100 + (i % 3) + (5 if i == 10 else 0),
+                    low=95 + (i % 3), close=99 + (i % 3))
+        for i in range(100)
+    ]
+    highs, lows = main._confirmed_swings(candles, 3, 3)
+    assert all(item["index"] <= len(candles) - 4 for item in highs + lows)
+    assert all(item["index"] >= 3 for item in highs + lows)
+
+
+def test_price_action_rejects_stale_candles_and_never_uses_them():
+    _set_fresh_quote()
+    payload = _technical_payload("M5", start_offset_seconds=3600)
+    response = client.post("/api/v1/analysis/price-action", json=payload)
+    assert response.status_code == 422
+    assert "stale" in response.json()["detail"]
+
+
+def test_price_action_fails_closed_without_mt5_quote():
+    main._latest_mt5_quote = None
+    response = client.post("/api/v1/analysis/price-action", json=_technical_payload("M5"))
+    assert response.status_code == 503
+
+
+def test_price_action_rejects_unsupported_symbol():
+    _set_fresh_quote()
+    payload = _technical_payload("M5")
+    payload["symbol"] = "XAUUSD"
+    response = client.post("/api/v1/analysis/price-action", json=payload)
+    assert response.status_code == 400
