@@ -477,55 +477,48 @@ def test_price_action_uses_only_confirmed_pivots_for_break_levels():
 
 
 
+def _sample_xoomar_event(event_name="CPI", event_time=None):
+    return {
+        "event_id": "bls:test-event",
+        "event": event_name,
+        "category": "October 2026",
+        "date": event_time or (datetime.now(timezone.utc) + timedelta(hours=2)),
+        "importance": 3,
+        "date_span": "0",
+        "actual": "",
+        "forecast": "",
+        "previous": "",
+        "source": "bls",
+        "source_url": "https://xoomar.com/markets/api/calendar",
+        "unit": "%",
+        "forecast_available": False,
+        "data_provider": "XOOMAR",
+        "source_attribution": "Release schedules and figures from the issuing US agencies.",
+        "data_updated_at": datetime.now(timezone.utc),
+    }
+
+
 def test_economic_calendar_returns_only_high_impact_us_events(monkeypatch):
-    monkeypatch.setattr(main.settings, "economic_calendar_api_key", "calendar-test-key")
-    future = (datetime.now(timezone.utc) + timedelta(hours=2)).replace(tzinfo=None).isoformat()
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return [
-                {"CalendarId": "1", "Date": future, "Event": "CPI", "Category": "Inflation",
-                 "Importance": 3, "DateSpan": "0", "Forecast": "2.5%", "Source": "BLS"},
-                {"CalendarId": "2", "Date": future, "Event": "Low impact", "Importance": 1},
-            ]
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *args):
-            return None
-        async def get(self, url, params, headers):
-            assert "/calendar/country/united%20states/" in url
-            assert params["importance"] == "3"
-            assert headers["Authorization"] == "calendar-test-key"
-            return FakeResponse()
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    async def fake_load(days_ahead=7, api_key=""):
+        assert days_ahead == 3
+        return [_sample_xoomar_event()]
+    monkeypatch.setattr(main, "load_xoomar_high_impact_events", fake_load)
     response = client.get("/api/v1/calendar/us-high-impact?days_ahead=3")
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["event_count"] == 1
     assert body["events"][0]["event"] == "CPI"
     assert body["events"][0]["importance"] == 3
+    assert body["source"].startswith("XOOMAR")
+    assert body["forecast_available"] is False
     assert body["execution_enabled"] is False
 
 
 def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
-    monkeypatch.setattr(main.settings, "economic_calendar_api_key", "calendar-test-key")
-    event_time = (datetime.now(timezone.utc) + timedelta(minutes=10)).replace(tzinfo=None).isoformat()
-    class FakeResponse:
-        def raise_for_status(self):
-            pass
-        def json(self):
-            return [{"CalendarId": "9", "Date": event_time, "Event": "FOMC Rate Decision",
-                     "Importance": 3, "DateSpan": "0"}]
-    class FakeClient:
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *args):
-            return None
-        async def get(self, *args, **kwargs):
-            return FakeResponse()
-    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    event_time = datetime.now(timezone.utc) + timedelta(minutes=10)
+    async def fake_load(days_ahead=7, api_key=""):
+        return [_sample_xoomar_event("FOMC Rate Decision", event_time)]
+    monkeypatch.setattr(main, "load_xoomar_high_impact_events", fake_load)
     response = client.get("/api/v1/analysis/news-filter")
     assert response.status_code == 200, response.text
     body = response.json()
@@ -533,14 +526,16 @@ def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
     assert body["trading_allowed"] is False
     assert body["active_events"][0]["event"] == "FOMC Rate Decision"
     assert body["fail_closed"] is True
+    assert body["calendar_source"] == "XOOMAR"
 
 
-def test_news_filter_fails_closed_when_calendar_is_not_configured(monkeypatch):
-    monkeypatch.setattr(main.settings, "economic_calendar_api_key", "")
+def test_news_filter_fails_closed_when_calendar_is_unavailable(monkeypatch):
+    async def fail_load(days_ahead=7, api_key=""):
+        raise httpx.ConnectError("provider unavailable")
+    monkeypatch.setattr(main, "load_xoomar_high_impact_events", fail_load)
     response = client.get("/api/v1/analysis/news-filter")
     assert response.status_code == 503
-    assert "not configured" in response.json()["detail"]
-
+    assert "unavailable" in response.json()["detail"].lower()
 
 def test_news_filter_fails_closed_when_provider_is_unavailable(monkeypatch):
     monkeypatch.setattr(main.settings, "economic_calendar_api_key", "calendar-test-key")
