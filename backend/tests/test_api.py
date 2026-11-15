@@ -1,5 +1,8 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi.testclient import TestClient
 
+import app.main as main
 from app.main import app
 
 client = TestClient(app)
@@ -24,10 +27,81 @@ def test_config_does_not_expose_secrets():
     assert "api_key" not in body
 
 
-def test_market_snapshot_refuses_to_fake_market_data():
+def test_market_snapshot_returns_provider_price_and_marks_it_non_tradable(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "price": 4012.34,
+                "currency": "USD",
+                "updatedAt": datetime.now(timezone.utc).isoformat(),
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            assert url == main.settings.gold_spot_api_url
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    response = client.get("/api/v1/market/snapshot")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["price"] == 4012.34
+    assert body["quote_type"] == "indicative_spot"
+    assert body["tradable_quote"] is False
+    assert body["source"] == "gold-api.com"
+
+
+def test_market_snapshot_rejects_stale_provider_data(monkeypatch):
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {
+                "price": 4012.34,
+                "currency": "USD",
+                "updatedAt": (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(),
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
     response = client.get("/api/v1/market/snapshot")
     assert response.status_code == 503
-    assert "No market-data provider" in response.json()["detail"]
+    assert "stale" in response.json()["detail"]
+
+
+def test_market_snapshot_handles_provider_failure(monkeypatch):
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url):
+            raise main.httpx.ConnectError("offline")
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    response = client.get("/api/v1/market/snapshot")
+    assert response.status_code == 503
 
 
 def test_signal_waits_when_filters_are_not_aligned():
