@@ -1429,9 +1429,13 @@ def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
     ]
     if request.historical_samples < 100:
         reasons.append("عدد العينات أقل من 100؛ الثقة البحثية محدودة.")
-    validation_ok = request.walk_forward_validation_passed and request.walk_forward_test_samples >= 100
-    if not validation_ok:
-        reasons.append("لم يتم تقديم نتيجة اختبار walk-forward خارج العينة تضم 100 حدث على الأقل؛ يمنع ترشيح دخول قبل الخبر.")
+    # Never trust a client-supplied boolean as proof of validation. Until a server-side
+    # model registry stores reproducible metrics and the exact model/data version, fail closed.
+    validation_ok = False
+    reasons.append(
+        "التحقق من walk-forward غير موثق داخل سجل نماذج الخادم؛ "
+        "الحقول المرسلة من التطبيق لا تُعد دليلاً، لذلك يمنع ترشيح الدخول قبل الخبر."
+    )
     if not spread_ok:
         reasons.append("سبريد MT5 أعلى من الحد المسموح لهذا التحليل؛ لا يتم ترشيح صفقة.")
     if enough_edge and spread_ok and request.historical_samples >= 100 and validation_ok:
@@ -1451,8 +1455,10 @@ def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
             "model_estimate": request.model_estimate,
             "historical_error_std": request.historical_error_std,
             "historical_samples": request.historical_samples,
-            "walk_forward_validation_passed": request.walk_forward_validation_passed,
+            "walk_forward_validation_passed": False,
             "walk_forward_test_samples": request.walk_forward_test_samples,
+            "client_validation_claim_ignored": True,
+            "server_side_model_registry_verified": False,
             "distribution_assumption": "normal_out_of_sample_residuals",
             "inline_band_std": 0.25,
         },
