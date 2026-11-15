@@ -207,10 +207,10 @@ async def market_spot_reference() -> dict:
 
 @app.post("/api/v1/signals/evaluate", response_model=SignalResponse)
 def evaluate_signal(request: SignalRequest) -> SignalResponse:
-    # Never evaluate a trade setup without a fresh quote from the configured broker.
-    _fresh_mt5_quote()
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail=f"The initial release supports {settings.broker_gold_symbol} only.")
+    # Never evaluate a trade setup without a fresh quote from the configured broker.
+    _fresh_mt5_quote()
 
     reasons: list[str] = []
     score = 0
