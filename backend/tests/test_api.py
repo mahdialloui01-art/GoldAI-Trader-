@@ -542,3 +542,73 @@ def test_news_filter_fails_closed_when_provider_is_unavailable(monkeypatch):
 def test_economic_calendar_rejects_excessive_date_window():
     response = client.get("/api/v1/calendar/us-high-impact?days_ahead=30")
     assert response.status_code == 422
+
+
+
+def test_gold_macro_analysis_detects_joint_real_yield_and_dollar_headwind(monkeypatch):
+    monkeypatch.setattr(main.settings, "fred_api_key", "fred-test-key")
+    today = datetime.now(timezone.utc).date()
+    yesterday = today - timedelta(days=1)
+    values = {
+        "DGS10": [("4.50", today.isoformat()), ("4.40", yesterday.isoformat())],
+        "DFII10": [("2.50", today.isoformat()), ("2.40", yesterday.isoformat())],
+        "DTWEXBGS": [("102.0", today.isoformat()), ("101.0", yesterday.isoformat())],
+    }
+    class FakeResponse:
+        def __init__(self, series_id):
+            self.series_id = series_id
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"observations": [
+                {"date": date, "value": value} for value, date in values[self.series_id]
+            ]}
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def get(self, url, params):
+            assert url.endswith("/fred/series/observations")
+            assert params["api_key"] == "fred-test-key"
+            return FakeResponse(params["series_id"])
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    response = client.get("/api/v1/analysis/gold-macro")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["bias"] == "GOLD_HEADWIND"
+    assert body["changes"]["real_10y_yield_basis_points"] == 10.0
+    assert body["changes"]["broad_us_dollar_index_percent"] > 0
+    assert body["execution_enabled"] is False
+
+
+def test_gold_macro_analysis_fails_closed_without_fred_key(monkeypatch):
+    monkeypatch.setattr(main.settings, "fred_api_key", "")
+    response = client.get("/api/v1/analysis/gold-macro")
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
+def test_gold_macro_analysis_rejects_stale_observations(monkeypatch):
+    monkeypatch.setattr(main.settings, "fred_api_key", "fred-test-key")
+    old = (datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat()
+    older = (datetime.now(timezone.utc).date() - timedelta(days=11)).isoformat()
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return {"observations": [
+                {"date": old, "value": "4.0"},
+                {"date": older, "value": "3.9"},
+            ]}
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            return None
+        async def get(self, *args, **kwargs):
+            return FakeResponse()
+    monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
+    response = client.get("/api/v1/analysis/gold-macro")
+    assert response.status_code == 503
+    assert "stale" in response.json()["detail"]
