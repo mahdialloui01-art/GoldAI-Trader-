@@ -114,10 +114,13 @@ class MainActivity : ComponentActivity() {
                         }
                         val body = connection.inputStream.bufferedReader().use { it.readText() }
                         val json = JSONObject(body)
-                        val price = json.getDouble("price")
+                        val bid = json.getDouble("bid")
+                        val ask = json.getDouble("ask")
                         val age = json.getInt("age_seconds")
-                        val formatted = "$" + String.format(Locale.US, "%,.2f", price)
-                        Pair(formatted, "سعر استرشادي • مصدر خارجي • عمر البيانات: ${age} ثانية")
+                        val formatted = "$" + String.format(Locale.US, "%,.2f", json.getDouble("mid"))
+                        val details = "Bid: " + String.format(Locale.US, "%.2f", bid) +
+                            "  |  Ask: " + String.format(Locale.US, "%.2f", ask)
+                        Pair(formatted, details + " • MT5 • " + age + "ث")
                     } finally {
                         connection.disconnect()
                     }
@@ -173,7 +176,7 @@ private fun DashboardScreen(
                     Text(quoteStatus, color = Gold, fontSize = 11.sp)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "هذا سعر استرشادي للذهب وليس سعر شراء/بيع وسيطك. لا تستخدمه وحده لتنفيذ الصفقات.",
+                        "السعر من وسيطك عبر MetaTrader 5 (Bid / Ask). البيانات المتأخرة توقف التحليل تلقائياً.",
                         color = Muted,
                         fontSize = 12.sp
                     )
@@ -215,7 +218,7 @@ private fun DashboardScreen(
                     Spacer(Modifier.height(8.dp))
                     StatusLine("خادم التحليل", backendStatus)
                     StatusLine("بيانات الذهب", if (goldPrice == "لم يتم جلب السعر" || goldPrice == "السعر غير متاح") "غير متصلة" else "تم استلام السعر")
-                    StatusLine("MetaTrader 5", "غير مربوط")
+                    StatusLine("MetaTrader 5", if (goldPrice == "لم يتم جلب السعر" || goldPrice == "السعر غير متاح") "في انتظار الربط" else "متصل عبر الخادم")
                     Spacer(Modifier.height(12.dp))
                     Button(
                         onClick = onCheckBackend,
