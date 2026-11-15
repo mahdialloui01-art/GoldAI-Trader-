@@ -750,7 +750,7 @@ def test_backtest_enters_on_next_bar_and_assumes_stop_first(monkeypatch):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["trade_count"] > 0
-    assert body["trades"][0]["entry_time"] == candles[51]["time"]
+    assert datetime.fromisoformat(body["trades"][0]["entry_time"]) == datetime.fromisoformat(candles[51]["time"])
     assert body["trades"][0]["exit_reason"] == "STOP"
     assert body["trades"][0]["net_pnl"] < 0
     assert body["execution_enabled"] is False
