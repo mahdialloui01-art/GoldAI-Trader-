@@ -798,6 +798,10 @@ def _regime_candles(kind="uptrend", count=100):
             close = 100 + index * 0.1
             open_price = close - 0.02
             high, low = close + 0.2, open_price - 0.2
+        elif kind == "downtrend":
+            close = 100 - index * 0.1
+            open_price = close + 0.02
+            high, low = open_price + 0.2, close - 0.2
         elif kind == "range":
             close = 100.0 + (0.2 if index % 2 else 0.0)
             open_price = close + (0.02 if index % 2 else -0.02)
@@ -850,3 +854,11 @@ def test_market_regime_endpoint_returns_analysis_only():
     assert body["execution_enabled"] is False
     assert "adx14_wilder" in body["indicators"]
     assert "atr_vs_recent_median" in body["indicators"]
+
+
+
+def test_market_regime_detects_strong_downtrend():
+    result = main._market_regime_analysis(_regime_candles("downtrend"))
+    assert result["market_regime"] == "TRENDING_DOWN"
+    assert result["indicators"]["adx14_wilder"] >= 25
+    assert result["indicators"]["minus_di14"] > result["indicators"]["plus_di14"]
