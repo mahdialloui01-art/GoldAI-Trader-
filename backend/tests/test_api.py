@@ -991,3 +991,59 @@ def test_historical_news_study_rejects_duplicate_event_ids():
         "observations": [observation, observation],
     })
     assert response.status_code == 422
+
+
+
+def test_historical_news_calendar_imports_point_in_time_events(monkeypatch):
+    main.settings.economic_calendar_api_key = "test-key"
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return [{
+                "CalendarId": "12345", "Date": "2025-01-10T13:30:00",
+                "Event": "Non Farm Payrolls", "Category": "Employment",
+                "Actual": "175K", "Forecast": "150K", "TEForecast": "152K",
+                "Previous": "140K", "Revised": "145K", "Importance": 3,
+                "Unit": "K", "Source": "BLS", "SourceURL": "https://bls.gov",
+                "LastUpdate": "2025-01-10T13:30:00", "Ticker": "NFP",
+            }]
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, url, params, headers):
+            assert "calendar/country/united%20states/indicator/" in url
+            assert headers["Authorization"] == "test-key"
+            return FakeResponse()
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", FakeClient)
+    response = client.get("/api/v1/news/historical-calendar?start_date=2025-01-01&end_date=2025-02-01")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["point_in_time"] is True
+    assert body["event_count"] == 1
+    assert body["events"][0]["actual"] == "175K"
+    assert body["events"][0]["forecast"] == "150K"
+    assert body["price_alignment_required"] is True
+    assert body["execution_enabled"] is False
+
+
+def test_historical_news_calendar_requires_configured_provider(monkeypatch):
+    monkeypatch.setattr(main.settings, "economic_calendar_api_key", "")
+    response = client.get("/api/v1/news/historical-calendar?start_date=2025-01-01&end_date=2025-02-01")
+    assert response.status_code == 503
+
+
+def test_historical_news_calendar_rejects_invalid_range():
+    response = client.get("/api/v1/news/historical-calendar?start_date=2025-02-01&end_date=2025-01-01")
+    assert response.status_code == 422
