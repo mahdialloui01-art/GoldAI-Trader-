@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
     broker_gold_symbol: str = "GOLD"
+    economic_calendar_api_key: str = ""
+    economic_calendar_base_url: str = "https://api.tradingeconomics.com"
+    news_blackout_before_minutes: int = Field(default=30, ge=0, le=240)
+    news_blackout_after_minutes: int = Field(default=30, ge=0, le=240)
 
 
 settings = Settings()
@@ -203,6 +207,108 @@ async def market_spot_reference() -> dict:
             status_code=503,
             detail="Gold spot provider is unavailable or returned invalid data.",
         ) from exc
+
+
+
+async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
+    """Fetch high-impact US calendar events; never substitute guessed or cached data."""
+    if not 1 <= days_ahead <= 14:
+        raise HTTPException(status_code=422, detail="days_ahead must be between 1 and 14.")
+    api_key = settings.economic_calendar_api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Economic calendar is not configured; news-sensitive analysis is paused.")
+
+    now = datetime.now(timezone.utc)
+    start_date = now.date().isoformat()
+    end_date = (now.date()).fromordinal(now.date().toordinal() + days_ahead).isoformat()
+    base_url = settings.economic_calendar_base_url.rstrip("/")
+    url = f"{base_url}/calendar/country/united%20states/{start_date}/{end_date}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                url,
+                params={"importance": "3", "f": "json"},
+                headers={"Authorization": api_key},
+            )
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, list):
+            raise ValueError("Calendar response must be a JSON array.")
+        events = []
+        for item in payload:
+            if not isinstance(item, dict):
+                raise ValueError("Calendar event has an invalid shape.")
+            if int(item.get("Importance", 0) or 0) != 3:
+                continue
+            raw_date = item.get("Date")
+            name = item.get("Event")
+            if not raw_date or not name:
+                raise ValueError("High-impact calendar event is missing its date or name.")
+            event_time = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            if event_time.tzinfo is None:
+                event_time = event_time.replace(tzinfo=timezone.utc)
+            events.append({
+                "event_id": str(item.get("CalendarId", "")),
+                "event": str(name),
+                "category": str(item.get("Category", "")),
+                "date": event_time.astimezone(timezone.utc),
+                "importance": 3,
+                "date_span": str(item.get("DateSpan", "0")),
+                "actual": str(item.get("Actual", "")),
+                "forecast": str(item.get("Forecast", "")),
+                "previous": str(item.get("Previous", "")),
+                "source": str(item.get("Source", "")),
+                "source_url": str(item.get("SourceURL", "")),
+            })
+        return sorted(events, key=lambda event: event["date"])
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="Economic calendar provider failed or returned invalid data; news filter is paused.") from exc
+
+
+@app.get("/api/v1/calendar/us-high-impact")
+async def us_high_impact_calendar(days_ahead: int = 7) -> dict:
+    events = await _load_us_high_impact_events(days_ahead)
+    return {
+        "country": "United States",
+        "importance": 3,
+        "timezone": "UTC",
+        "days_ahead": days_ahead,
+        "event_count": len(events),
+        "events": events,
+        "source": "Trading Economics",
+        "execution_enabled": False,
+        "note": "Economic calendar events can be revised; verify release times with the official source.",
+    }
+
+
+@app.get("/api/v1/analysis/news-filter")
+async def economic_news_filter() -> dict:
+    """Return WAIT during high-impact USD news blackout windows; fail closed on missing data."""
+    events = await _load_us_high_impact_events(7)
+    now = datetime.now(timezone.utc)
+    before = settings.news_blackout_before_minutes
+    after = settings.news_blackout_after_minutes
+    active = []
+    for event in events:
+        delta_minutes = (event["date"] - now).total_seconds() / 60
+        # An estimated-time event blocks its full UTC date because its exact time is unknown.
+        same_estimated_day = event["date_span"] == "1" and event["date"].date() == now.date()
+        if same_estimated_day or -after <= delta_minutes <= before:
+            active.append({**event, "minutes_until_event": round(delta_minutes, 1)})
+    blocked = bool(active)
+    return {
+        "decision": "WAIT" if blocked else "CLEAR",
+        "trading_allowed": not blocked,
+        "reason": "High-impact US event blackout is active." if blocked else "No high-impact US event is inside the configured blackout window.",
+        "blackout_before_minutes": before,
+        "blackout_after_minutes": after,
+        "active_events": active,
+        "checked_at": now,
+        "execution_enabled": False,
+        "fail_closed": True,
+    }
 
 
 class Candle(BaseModel):
