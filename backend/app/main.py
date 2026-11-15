@@ -1470,4 +1470,111 @@ def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
         "disclaimer": "Probabilities are model-based estimates, not calibrated guarantees. This endpoint never places orders.",
         "execution_enabled": False,
     }
-}
+
+class HistoricalNewsObservation(BaseModel):
+    event_id: str = Field(min_length=3, max_length=100)
+    event_type: str = Field(min_length=2, max_length=80)
+    released_at: datetime
+    consensus: float
+    actual: float
+    surprise_scale: float = Field(gt=0, description="Historical standard deviation for this event's actual-minus-consensus surprise.")
+    gold_before: float = Field(gt=0, description="Last executable broker mid immediately before release.")
+    gold_1m: float = Field(gt=0)
+    gold_5m: float = Field(gt=0)
+    gold_15m: float = Field(gt=0)
+    gold_60m: float = Field(gt=0)
+    spread_points: float = Field(ge=0)
+    point: float = Field(gt=0)
+    slippage_points: float = Field(default=0, ge=0)
+
+
+class HistoricalNewsStudyRequest(BaseModel):
+    symbol: str = "GOLD"
+    observations: list[HistoricalNewsObservation] = Field(min_length=1, max_length=2000)
+
+
+def _pearson_correlation(xs: list[float], ys: list[float]) -> float | None:
+    if len(xs) < 3:
+        return None
+    mean_x, mean_y = statistics.mean(xs), statistics.mean(ys)
+    covariance = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    variance_x = sum((x - mean_x) ** 2 for x in xs)
+    variance_y = sum((y - mean_y) ** 2 for y in ys)
+    denominator = math.sqrt(variance_x * variance_y)
+    if denominator == 0:
+        return None
+    return round(covariance / denominator, 6)
+
+
+@app.post("/api/v1/news/historical-study")
+def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
+    """Study historical news surprises against observed GOLD reactions, net of simple spread/slippage costs."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} is supported.")
+
+    ids = [item.event_id for item in request.observations]
+    if len(ids) != len(set(ids)):
+        raise HTTPException(status_code=422, detail="event_id values must be unique.")
+    normalized_times = []
+    for item in request.observations:
+        if item.released_at.tzinfo is None:
+            raise HTTPException(status_code=422, detail="Every released_at timestamp must include a timezone.")
+        normalized_times.append(item.released_at.astimezone(timezone.utc))
+        for horizon in ("gold_1m", "gold_5m", "gold_15m", "gold_60m"):
+            if getattr(item, horizon) <= 0:
+                raise HTTPException(status_code=422, detail=f"{horizon} must be positive.")
+
+    grouped: dict[str, list[dict]] = {}
+    for item in request.observations:
+        surprise_z = (item.actual - item.consensus) / item.surprise_scale
+        cost_percent = ((item.spread_points + 2 * item.slippage_points) * item.point / item.gold_before) * 100
+        row = {"surprise_z": surprise_z, "cost_percent": cost_percent}
+        for horizon in ("1m", "5m", "15m", "60m"):
+            price = getattr(item, f"gold_{horizon}")
+            row[horizon] = ((price / item.gold_before) - 1) * 100
+        grouped.setdefault(item.event_type.strip().upper(), []).append(row)
+
+    results = []
+    for event_type, rows in sorted(grouped.items()):
+        count = len(rows)
+        horizons = {}
+        for horizon in ("1m", "5m", "15m", "60m"):
+            values = [row[horizon] for row in rows]
+            net_values = [value - row["cost_percent"] for value, row in zip(values, rows)]
+            horizons[horizon] = {
+                "mean_gold_return_percent": round(statistics.mean(values), 5),
+                "median_gold_return_percent": round(statistics.median(values), 5),
+                "positive_move_rate_percent": round(sum(value > 0 for value in values) / count * 100, 2),
+                "mean_net_return_after_spread_slippage_percent": round(statistics.mean(net_values), 5),
+            }
+        correlation = _pearson_correlation(
+            [row["surprise_z"] for row in rows],
+            [row["5m"] for row in rows],
+        )
+        results.append({
+            "event_type": event_type,
+            "sample_count": count,
+            "sample_quality": "MINIMUM_RESEARCH_SAMPLE_MET" if count >= 30 else "EXPLORATORY_ONLY",
+            "surprise_vs_gold_5m_correlation": correlation,
+            "horizons": horizons,
+            "notes": [
+                "Correlation is descriptive and does not prove causation or predict the next release.",
+                "Net return subtracts supplied spread and twice the supplied slippage estimate; swaps, commissions, gaps and execution failures are not included.",
+            ],
+        })
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "observation_count": len(request.observations),
+        "event_type_count": len(results),
+        "results_by_event_type": results,
+        "data_policy": {
+            "requires_actual_and_consensus": True,
+            "requires_pre_release_and_post_release_gold_prices": True,
+            "no_future_data_used_to_create_pre_release_forecasts": True,
+            "execution_enabled": False,
+            "mode": "RESEARCH_ONLY",
+        },
+        "generated_at": datetime.now(timezone.utc),
+        "disclaimer": "Historical association is not a forecast. Results depend on timestamp quality, broker pricing and sample selection.",
+    }
