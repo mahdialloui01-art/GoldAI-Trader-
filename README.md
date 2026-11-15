@@ -21,6 +21,17 @@ Open the `android/` directory in Android Studio. The Arabic dashboard can test b
 ## Market data setup
 The primary `/api/v1/market/snapshot` serves only a fresh authenticated MT5 broker Bid/Ask quote. The Gold API is retained at `/api/v1/market/spot-reference` for comparison only and is never used as a silent fallback. Configure a long random `MT5_BRIDGE_TOKEN` in the backend environment and the same token in the MT5 EA inputs. Never commit the real token.
 
+## Free backend hosting (Render)
+
+A Render Blueprint is included at the repository root in `render.yaml`. To deploy it without keeping a personal computer on:
+
+1. Create a free account at https://render.com and connect the GitHub account that owns this repository.
+2. In the Render dashboard choose **New → Blueprint**, select this repository and the `main` branch, then apply the blueprint from `render.yaml`.
+3. In the created service's **Environment** settings, add a private `FRED_API_KEY`. Obtain a free key from https://fred.stlouisfed.org/docs/api/api_key.html. `XOOMAR_API_KEY` is optional; the calendar connector supports keyless access.
+4. Wait for the first deploy to finish, then test `https://YOUR-SERVICE.onrender.com/health`. Only after it returns JSON with `"status":"ok"`, set `GOLDAI_API_BASE_URL` to that HTTPS origin in the Android build configuration and build a new APK.
+
+The free Render web service is for development/research, not dependable live trading: it can spin down after 15 minutes without inbound traffic, and waking it can take about a minute. Free instances can restart and have an ephemeral filesystem. The FRED macro endpoint remains unavailable until a valid FRED key is entered in the Render dashboard. The XOOMAR news calendar can work without a key. The MT5 quote snapshot will remain unavailable until a desktop MT5 bridge sends a fresh authenticated quote; this hosted backend does not create a broker feed by itself. Live order execution stays disabled.
+
 ## Run the API
 Python 3.11+ is recommended.
 
