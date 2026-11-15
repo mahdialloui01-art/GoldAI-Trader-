@@ -651,7 +651,7 @@ def _news_engine_status() -> dict:
     }
 
 
-async def _refresh_news_engine(force: bool = False) -> dict:
+async def _refresh_news_engine(force: bool = False, days_ahead: int = 14) -> dict:
     """Refresh the calendar and official headlines, protected against overlapping workers."""
     global _NEWS_CALENDAR_CACHE, _NEWS_HEADLINES_CACHE
     global _NEWS_CALENDAR_LAST_ATTEMPT, _NEWS_CALENDAR_LAST_SUCCESS
@@ -670,7 +670,7 @@ async def _refresh_news_engine(force: bool = False) -> dict:
             calendar_error: str | None = None
             try:
                 events = await load_xoomar_high_impact_events(
-                    days_ahead=14,
+                    days_ahead=days_ahead,
                     api_key=settings.xoomar_api_key.strip(),
                 )
                 _NEWS_CALENDAR_CACHE = events
@@ -709,7 +709,7 @@ async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
     age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS)
     if age is None or age >= settings.news_refresh_interval_seconds - 30:
         try:
-            await _refresh_news_engine(force=False)
+            await _refresh_news_engine(force=False, days_ahead=days_ahead)
         except HTTPException:
             pass
     age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS)
