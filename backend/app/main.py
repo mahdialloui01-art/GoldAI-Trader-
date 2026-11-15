@@ -1795,3 +1795,121 @@ async def historical_news_calendar(start_date: date, end_date: date) -> dict:
         "next_step": "Align MT5 GOLD prices immediately before release and at +1m, +5m, +15m and +60m, then submit the joined rows to /api/v1/news/historical-study.",
         "execution_enabled": False,
     }
+
+
+@app.post("/api/v1/analysis/gold-decision")
+async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
+    """Combine broker multi-timeframe, structure, regime, macro and news gates into one paper-only decision."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} is supported.")
+
+    reasons: list[str] = []
+    components: dict = {}
+    blockers: list[str] = []
+
+    # Price/technical components are based exclusively on fresh broker candles and quotes.
+    try:
+        mtf = multi_timeframe_analysis(request)
+        components["multi_timeframe"] = mtf
+        direction = str(mtf["direction"].value if isinstance(mtf["direction"], Direction) else mtf["direction"])
+        if direction == "WAIT":
+            blockers.append("MULTI_TIMEFRAME_NOT_ALIGNED")
+            reasons.extend(mtf.get("reasons", []))
+    except HTTPException as exc:
+        direction = "WAIT"
+        blockers.append("BROKER_TECHNICAL_DATA_UNAVAILABLE")
+        reasons.append(f"تعذر التحقق من التحليل الفني لدى الوسيط (HTTP {exc.status_code}).")
+
+    try:
+        regime = market_regime_analysis(MarketRegimeRequest(
+            symbol=request.symbol, timeframe="H1", candles=request.h1
+        ))
+        components["h1_market_regime"] = regime
+        if regime["market_regime"] == "HIGH_VOLATILITY":
+            blockers.append("HIGH_VOLATILITY")
+            reasons.append("تقلب H1 مرتفع جداً؛ تم إيقاف ترشيح الدخول.")
+        elif direction == "BUY" and regime["market_regime"] == "TRENDING_DOWN":
+            blockers.append("H1_TREND_CONFLICT")
+            reasons.append("اتجاه H1 هابط ويتعارض مع شراء M5.")
+        elif direction == "SELL" and regime["market_regime"] == "TRENDING_UP":
+            blockers.append("H1_TREND_CONFLICT")
+            reasons.append("اتجاه H1 صاعد ويتعارض مع بيع M5.")
+    except HTTPException as exc:
+        blockers.append("H1_REGIME_UNAVAILABLE")
+        reasons.append(f"تعذر التحقق من نظام السوق H1 (HTTP {exc.status_code}).")
+
+    try:
+        structure = price_action_analysis(PriceActionRequest(
+            symbol=request.symbol, timeframe="M15", candles=request.m15
+        ))
+        components["m15_price_action"] = structure
+        market_structure = structure.get("market_structure")
+        events = structure.get("events", [])
+        if direction == "BUY" and market_structure == "DOWNTREND":
+            blockers.append("M15_STRUCTURE_CONFLICT")
+            reasons.append("بنية M15 هابطة وتتعارض مع إشارة الشراء.")
+        elif direction == "SELL" and market_structure == "UPTREND":
+            blockers.append("M15_STRUCTURE_CONFLICT")
+            reasons.append("بنية M15 صاعدة وتتعارض مع إشارة البيع.")
+        if direction == "BUY" and "BEARISH_BREAK_OF_STRUCTURE" in events:
+            blockers.append("M15_BEARISH_STRUCTURE_BREAK")
+            reasons.append("ظهر كسر هيكل هابط مؤكد على M15.")
+        if direction == "SELL" and "BULLISH_BREAK_OF_STRUCTURE" in events:
+            blockers.append("M15_BULLISH_STRUCTURE_BREAK")
+            reasons.append("ظهر كسر هيكل صاعد مؤكد على M15.")
+    except HTTPException as exc:
+        blockers.append("M15_PRICE_ACTION_UNAVAILABLE")
+        reasons.append(f"تعذر التحقق من بنية السعر M15 (HTTP {exc.status_code}).")
+
+    # Macro and calendar are fail-closed: missing/stale inputs can never become a green light.
+    try:
+        macro = await gold_macro_analysis()
+        components["macro"] = macro
+        macro_bias = macro.get("confidence_engine", {}).get("directional_bias", macro.get("bias"))
+        if direction == "BUY" and macro_bias == "GOLD_HEADWIND":
+            blockers.append("MACRO_OPPOSES_BUY")
+            reasons.append("الضغط الكلي الحالي معاكس للشراء؛ ننتظر توافقاً أفضل.")
+        elif direction == "SELL" and macro_bias == "GOLD_SUPPORTIVE":
+            blockers.append("MACRO_OPPOSES_SELL")
+            reasons.append("الضغط الكلي الحالي داعم للذهب ويتعارض مع البيع.")
+        elif macro_bias == "MIXED_OR_NEUTRAL":
+            reasons.append("السياق الكلي محايد أو متباين ولا يمنح أفضلية اتجاهية.")
+    except HTTPException as exc:
+        components["macro"] = {"status": "UNAVAILABLE", "http_status": exc.status_code}
+        blockers.append("MACRO_DATA_UNAVAILABLE")
+        reasons.append("بيانات FRED الكلية غير متاحة أو قديمة؛ القرار WAIT.")
+
+    try:
+        news = await economic_news_filter()
+        components["news_filter"] = news
+        if news.get("decision") != "CLEAR" or not news.get("trading_allowed", False):
+            blockers.append("HIGH_IMPACT_NEWS_BLACKOUT")
+            reasons.append("فلتر الأخبار يمنع التداول داخل نافذة خبر أمريكي عالي التأثير.")
+    except HTTPException as exc:
+        components["news_filter"] = {"status": "UNAVAILABLE", "http_status": exc.status_code}
+        blockers.append("ECONOMIC_CALENDAR_UNAVAILABLE")
+        reasons.append("التقويم الاقتصادي غير متاح أو غير صالح؛ القرار WAIT حفاظاً على السلامة.")
+
+    final_direction = direction if not blockers else "WAIT"
+    if final_direction == "WAIT" and not reasons:
+        reasons.append("لا توجد موافقات كافية لإصدار قرار.")
+    if final_direction != "WAIT":
+        reasons.append("اجتازت الإشارة فلاتر الأطر الزمنية والبنية والسياق الكلي والأخبار؛ تبقى مرشحاً ورقياً فقط.")
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "decision": final_direction,
+        "status": "PAPER_CANDIDATE" if final_direction != "WAIT" else "NO_TRADE",
+        "blockers": sorted(set(blockers)),
+        "reasons": reasons,
+        "components": components,
+        "policy": {
+            "mode": "PAPER_ONLY",
+            "live_trading_enabled": False,
+            "execution_enabled": False,
+            "heuristic_scores_are_probabilities": False,
+            "entry_is_not_guaranteed": True,
+        },
+        "generated_at": datetime.now(timezone.utc),
+        "disclaimer": "قرار تحليلي تجريبي فقط. لا يضمن الربح ولا يرسل أوامر. يجب التحقق من أسعار وبيانات الوسيط واختبار الأداء التاريخي قبل أي استخدام مالي.",
+    }
