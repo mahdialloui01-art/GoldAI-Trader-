@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import asyncio
 from enum import Enum
 from decimal import Decimal, ROUND_DOWN
 import math
 import statistics
 import logging
+import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
+from html import unescape
+import re
 from typing import Optional
 from urllib.parse import quote
 
 import httpx
+import jwt
 import secrets
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
@@ -38,6 +44,8 @@ class Settings(BaseSettings):
     economic_calendar_base_url: str = "https://api.tradingeconomics.com"
     news_blackout_before_minutes: int = Field(default=30, ge=0, le=240)
     news_blackout_after_minutes: int = Field(default=30, ge=0, le=240)
+    news_refresh_interval_seconds: int = Field(default=300, ge=60, le=3600)
+    news_cache_max_age_seconds: int = Field(default=1200, ge=300, le=7200)
 
 
 settings = Settings()
@@ -513,25 +521,318 @@ async def gold_macro_analysis() -> dict:
         raise HTTPException(status_code=503, detail="FRED macro data is unavailable, stale, or invalid; macro filter is paused.") from exc
 
 
+
+_NEWS_CALENDAR_CACHE: list[dict] = []
+_NEWS_HEADLINES_CACHE: list[dict] = []
+_NEWS_CALENDAR_LAST_ATTEMPT: datetime | None = None
+_NEWS_CALENDAR_LAST_SUCCESS: datetime | None = None
+_NEWS_CALENDAR_LAST_ERROR: str | None = None
+_NEWS_HEADLINES_LAST_SUCCESS: datetime | None = None
+_NEWS_HEADLINES_ERRORS: list[str] = []
+_NEWS_REFRESH_LOCK = asyncio.Lock()
+_NEWS_FEEDS = [
+    ("BLS Employment Situation", "https://www.bls.gov/feed/empsit.rss", "BLS", "LABOR"),
+    ("BLS Consumer Price Index", "https://www.bls.gov/feed/cpi.rss", "BLS", "INFLATION"),
+    ("BLS Producer Price Index", "https://www.bls.gov/feed/ppi.rss", "BLS", "INFLATION"),
+    ("BLS Job Openings and Labor Turnover", "https://www.bls.gov/feed/jolts.rss", "BLS", "LABOR"),
+    ("Federal Reserve Monetary Policy", "https://www.federalreserve.gov/feeds/press_monetary.xml", "Federal Reserve", "MONETARY_POLICY"),
+]
+
+
+def _parse_news_feed_xml(xml_text: str, feed_name: str, source: str, category: str) -> list[dict]:
+    """Parse RSS 2.0 or Atom headlines without executing embedded markup."""
+    root = ET.fromstring(xml_text)
+    entries = [node for node in root.iter() if node.tag.rsplit("}", 1)[-1].lower() in {"item", "entry"}]
+    parsed: list[dict] = []
+    for entry in entries[:40]:
+        fields: dict[str, str] = {}
+        for node in entry.iter():
+            key = node.tag.rsplit("}", 1)[-1].lower()
+            value = (node.text or "").strip()
+            if key == "link" and not value:
+                value = str(node.attrib.get("href") or "").strip()
+            if value and key not in fields:
+                fields[key] = value
+        title = fields.get("title")
+        link = fields.get("link") or fields.get("guid") or fields.get("id")
+        raw_date = fields.get("pubdate") or fields.get("published") or fields.get("updated") or fields.get("date")
+        if not title or not link or not raw_date:
+            continue
+        published = None
+        try:
+            published = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+        except ValueError:
+            try:
+                published = parsedate_to_datetime(raw_date)
+            except (TypeError, ValueError, OverflowError):
+                continue
+        if published is None or published.tzinfo is None:
+            continue
+        published = published.astimezone(timezone.utc)
+        if published > datetime.now(timezone.utc) + __import__("datetime").timedelta(minutes=10):
+            continue
+        summary = fields.get("description") or fields.get("summary") or fields.get("encoded") or ""
+        summary = re.sub(r"<[^>]*>", " ", unescape(summary))
+        summary = re.sub(r"\s+", " ", summary).strip()[:360]
+        parsed.append({
+            "id": link,
+            "title": title[:240],
+            "summary": summary,
+            "url": link,
+            "published_at": published,
+            "source": source,
+            "feed": feed_name,
+            "category": category,
+            "importance": "HIGH",
+            "directional_bias": "NOT_ASSESSED",
+            "directional_note": "عنوان رسمي؛ لا يتم استنتاج اتجاه الذهب من العنوان وحده.",
+        })
+    return parsed
+
+
+async def _load_official_economic_headlines(client: httpx.AsyncClient) -> tuple[list[dict], list[str]]:
+    async def fetch_one(feed: tuple[str, str, str, str]) -> tuple[list[dict], str | None]:
+        name, url, source, category = feed
+        try:
+            response = await client.get(url, headers={"Accept": "application/rss+xml, application/atom+xml, application/xml, text/xml"})
+            response.raise_for_status()
+            return _parse_news_feed_xml(response.text, name, source, category), None
+        except (httpx.HTTPError, ET.ParseError, ValueError):
+            logger.warning("Official economic news feed failed: %s", name)
+            return [], name
+
+    results = await asyncio.gather(*(fetch_one(feed) for feed in _NEWS_FEEDS))
+    all_items: dict[str, dict] = {}
+    errors: list[str] = []
+    for items, error in results:
+        if error:
+            errors.append(error)
+        for item in items:
+            all_items[item["id"]] = item
+    headlines = sorted(all_items.values(), key=lambda item: item["published_at"], reverse=True)[:100]
+    return headlines, errors
+
+
+def _news_cache_age_seconds(at: datetime | None, now: datetime | None = None) -> int | None:
+    if at is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    return max(0, int((current - at).total_seconds()))
+
+
+def _news_engine_status() -> dict:
+    now = datetime.now(timezone.utc)
+    calendar_age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS, now)
+    headlines_age = _news_cache_age_seconds(_NEWS_HEADLINES_LAST_SUCCESS, now)
+    calendar_stale = calendar_age is None or calendar_age > settings.news_cache_max_age_seconds
+    headline_stale = headlines_age is None or headlines_age > settings.news_cache_max_age_seconds
+    future_events = [event for event in _NEWS_CALENDAR_CACHE if event["date"] > now]
+    next_event = min(future_events, key=lambda event: event["date"]) if future_events else None
+    return {
+        "engine": "GoldAI Economic News Engine",
+        "scheduler": "GitHub Actions scheduled worker + in-process safety refresh",
+        "poll_interval_seconds": settings.news_refresh_interval_seconds,
+        "calendar_source": "XOOMAR (agency-published US release schedules)",
+        "calendar_last_attempt_at": _NEWS_CALENDAR_LAST_ATTEMPT,
+        "calendar_last_success_at": _NEWS_CALENDAR_LAST_SUCCESS,
+        "calendar_age_seconds": calendar_age,
+        "calendar_stale": calendar_stale,
+        "calendar_event_count": len(_NEWS_CALENDAR_CACHE),
+        "calendar_last_error": _NEWS_CALENDAR_LAST_ERROR,
+        "headlines_sources": ["BLS official RSS", "Federal Reserve monetary-policy RSS"],
+        "headlines_last_success_at": _NEWS_HEADLINES_LAST_SUCCESS,
+        "headlines_age_seconds": headlines_age,
+        "headlines_stale": headline_stale,
+        "headline_count": len(_NEWS_HEADLINES_CACHE),
+        "headline_feed_errors": _NEWS_HEADLINES_ERRORS,
+        "next_high_impact_event": next_event,
+        "healthy": not calendar_stale,
+        "execution_enabled": False,
+    }
+
+
+async def _refresh_news_engine(force: bool = False) -> dict:
+    """Refresh the calendar and official headlines, protected against overlapping workers."""
+    global _NEWS_CALENDAR_CACHE, _NEWS_HEADLINES_CACHE
+    global _NEWS_CALENDAR_LAST_ATTEMPT, _NEWS_CALENDAR_LAST_SUCCESS
+    global _NEWS_CALENDAR_LAST_ERROR, _NEWS_HEADLINES_LAST_SUCCESS, _NEWS_HEADLINES_ERRORS
+
+    async with _NEWS_REFRESH_LOCK:
+        now = datetime.now(timezone.utc)
+        calendar_age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS, now)
+        headlines_age = _news_cache_age_seconds(_NEWS_HEADLINES_LAST_SUCCESS, now)
+        interval = settings.news_refresh_interval_seconds
+        if not force and calendar_age is not None and calendar_age < interval - 30 and headlines_age is not None and headlines_age < interval - 30:
+            return _news_engine_status()
+
+        _NEWS_CALENDAR_LAST_ATTEMPT = now
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            calendar_error: str | None = None
+            try:
+                events = await load_xoomar_high_impact_events(
+                    days_ahead=14,
+                    api_key=settings.xoomar_api_key.strip(),
+                )
+                _NEWS_CALENDAR_CACHE = events
+                _NEWS_CALENDAR_LAST_SUCCESS = datetime.now(timezone.utc)
+                _NEWS_CALENDAR_LAST_ERROR = None
+            except ValueError as exc:
+                calendar_error = f"VALIDATION: {str(exc)[:180]}"
+            except httpx.HTTPStatusError as exc:
+                calendar_error = f"HTTP_STATUS: {exc.response.status_code}"
+            except httpx.HTTPError as exc:
+                calendar_error = f"NETWORK: {type(exc).__name__}"
+            except Exception as exc:
+                calendar_error = f"UNEXPECTED: {type(exc).__name__}"
+            if calendar_error:
+                _NEWS_CALENDAR_LAST_ERROR = calendar_error
+                logger.warning("Economic calendar refresh failed: %s", calendar_error)
+
+            headlines, feed_errors = await _load_official_economic_headlines(client)
+            if not feed_errors or headlines:
+                _NEWS_HEADLINES_CACHE = headlines
+                _NEWS_HEADLINES_LAST_SUCCESS = datetime.now(timezone.utc)
+            _NEWS_HEADLINES_ERRORS = feed_errors
+
+        if calendar_error:
+            raise HTTPException(
+                status_code=503,
+                detail="Economic calendar refresh failed; news-sensitive decisions remain blocked.",
+            )
+        return _news_engine_status()
+
+
 async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
-    """Fetch fresh high-impact US releases from XOOMAR; fail closed on bad data."""
+    """Return recently refreshed events; never treat a stale cache as a clear calendar."""
     if not 1 <= days_ahead <= 14:
         raise HTTPException(status_code=422, detail="days_ahead must be between 1 and 14.")
-    try:
-        return await load_xoomar_high_impact_events(
-            days_ahead=days_ahead,
-            api_key=settings.xoomar_api_key.strip(),
+    age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS)
+    if age is None or age >= settings.news_refresh_interval_seconds - 30:
+        try:
+            await _refresh_news_engine(force=False)
+        except HTTPException:
+            pass
+    age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS)
+    if age is None or age > settings.news_cache_max_age_seconds:
+        raise HTTPException(
+            status_code=503,
+            detail="Economic calendar is unavailable or stale; news-sensitive analysis is paused (fail-closed).",
         )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="XOOMAR calendar is stale or invalid; news-sensitive analysis is paused.",
-        ) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="XOOMAR calendar is unavailable; news-sensitive analysis is paused.",
-        ) from exc
+    now = datetime.now(timezone.utc)
+    return [
+        event for event in _NEWS_CALENDAR_CACHE
+        if now - __import__("datetime").timedelta(days=1) <= event["date"] <= now + __import__("datetime").timedelta(days=days_ahead)
+    ]
+
+
+async def _verify_github_news_refresh_token(token: str) -> dict:
+    """Verify GitHub Actions OIDC and pin the caller to this repository/workflow/main branch."""
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing GitHub Actions identity token.")
+    try:
+        header = jwt.get_unverified_header(token)
+        if header.get("alg") != "RS256" or not header.get("kid"):
+            raise ValueError("Unsupported token header.")
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get("https://token.actions.githubusercontent.com/.well-known/jwks")
+            response.raise_for_status()
+            keys = response.json().get("keys", [])
+        jwk = next((item for item in keys if item.get("kid") == header["kid"]), None)
+        if not jwk:
+            raise ValueError("Unknown signing key.")
+        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(__import__("json").dumps(jwk))
+        claims = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience="goldai-trader-news-refresh",
+            issuer="https://token.actions.githubusercontent.com",
+            leeway=60,
+            options={"require": ["exp", "iat", "iss", "aud"]},
+        )
+        if claims.get("repository") != "mahdialloui01-art/GoldAI-Trader-":
+            raise ValueError("Untrusted repository.")
+        if claims.get("ref") != "refs/heads/main":
+            raise ValueError("Untrusted branch.")
+        if claims.get("workflow_ref") != "mahdialloui01-art/GoldAI-Trader-/.github/workflows/ci.yml@refs/heads/main":
+            raise ValueError("Untrusted workflow.")
+        if claims.get("event_name") not in {"schedule", "workflow_dispatch"}:
+            raise ValueError("Untrusted workflow event.")
+        return claims
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("News refresh identity validation failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=401, detail="GitHub Actions identity token is invalid or not authorized.") from exc
+
+
+@app.on_event("startup")
+async def _start_news_background_refresh() -> None:
+    async def worker() -> None:
+        while True:
+            try:
+                await _refresh_news_engine(force=False)
+            except Exception as exc:
+                logger.warning("Background news refresh did not complete: %s", type(exc).__name__)
+            await asyncio.sleep(settings.news_refresh_interval_seconds)
+    asyncio.create_task(worker())
+
+
+@app.get("/api/v1/news/status")
+def economic_news_engine_status() -> dict:
+    """Public health/status endpoint; exposes no credentials."""
+    return _news_engine_status()
+
+
+@app.get("/api/v1/news/feed")
+async def economic_news_headlines() -> dict:
+    """Return automatically collected headlines from official US institutions."""
+    age = _news_cache_age_seconds(_NEWS_HEADLINES_LAST_SUCCESS)
+    if age is None or age > settings.news_cache_max_age_seconds:
+        try:
+            await _refresh_news_engine(force=False)
+        except HTTPException:
+            pass
+    age = _news_cache_age_seconds(_NEWS_HEADLINES_LAST_SUCCESS)
+    return {
+        "status": "OK" if age is not None and age <= settings.news_cache_max_age_seconds else "DEGRADED",
+        "headline_count": len(_NEWS_HEADLINES_CACHE),
+        "headlines": _NEWS_HEADLINES_CACHE[:50],
+        "last_success_at": _NEWS_HEADLINES_LAST_SUCCESS,
+        "age_seconds": age,
+        "feed_errors": _NEWS_HEADLINES_ERRORS,
+        "directional_bias": "NOT_ASSESSED",
+        "note": "Official releases and headlines are monitored automatically. Headline text alone does not determine BUY or SELL.",
+        "execution_enabled": False,
+    }
+
+
+@app.post("/api/v1/news/refresh")
+async def refresh_economic_news_engine(authorization: str | None = Header(default=None)) -> dict:
+    """Refresh endpoint restricted to this repository's GitHub Actions OIDC identity."""
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    await _verify_github_news_refresh_token(token)
+    status = await _refresh_news_engine(force=False)
+    return {"accepted": True, "refresh": status}
+
+
+@app.get("/api/v1/calendar/us-high-impact")
+async def us_high_impact_calendar(days_ahead: int = 7) -> dict:
+    events = await _load_us_high_impact_events(days_ahead)
+    return {
+        "country": "United States",
+        "importance": 3,
+        "timezone": "UTC",
+        "days_ahead": days_ahead,
+        "event_count": len(events),
+        "events": events,
+        "source": "XOOMAR (aggregated US agency schedules)",
+        "source_url": "https://xoomar.com/markets/api/calendar",
+        "attribution": "Data: XOOMAR. " + (events[0]["source_attribution"] if events else "Release schedules are aggregated from the issuing US agencies."),
+        "forecast_available": False,
+        "execution_enabled": False,
+        "note": "Forecast consensus is not provided. Verify release times with the issuing agency; this calendar is not an order signal.",
+    }
 
 
 @app.get("/api/v1/calendar/us-high-impact")
