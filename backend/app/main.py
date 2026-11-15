@@ -57,7 +57,7 @@ class BrokerQuote(BaseModel):
     spread_points: float = Field(ge=0)
     tick_size: float | None = Field(default=None, gt=0)
     tick_value_loss: float | None = Field(default=None, gt=0)
-    tick_value_profit: float | None = Field(default=None, gt=0)
+    tick_value_profit: float | None = Field(default=None, ge=0)
     volume_min: float | None = Field(default=None, gt=0)
     volume_max: float | None = Field(default=None, gt=0)
     volume_step: float | None = Field(default=None, gt=0)
