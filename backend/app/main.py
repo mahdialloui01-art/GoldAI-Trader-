@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     mt5_bridge_token: str = ""
     broker_gold_symbol: str = "GOLD"
     economic_calendar_api_key: str = ""
+    fred_api_key: str = ""
     economic_calendar_base_url: str = "https://api.tradingeconomics.com"
     news_blackout_before_minutes: int = Field(default=30, ge=0, le=240)
     news_blackout_after_minutes: int = Field(default=30, ge=0, le=240)
@@ -208,6 +209,111 @@ async def market_spot_reference() -> dict:
             detail="Gold spot provider is unavailable or returned invalid data.",
         ) from exc
 
+
+
+
+_FRED_GOLD_MACRO_SERIES = {
+    "nominal_10y_yield": "DGS10",
+    "real_10y_yield": "DFII10",
+    "broad_us_dollar_index": "DTWEXBGS",
+}
+
+
+async def _fred_latest_observations(client: httpx.AsyncClient, series_id: str) -> list[dict]:
+    api_key = settings.fred_api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="FRED is not configured; macro analysis is unavailable.")
+    start = (datetime.now(timezone.utc).date()).fromordinal(
+        datetime.now(timezone.utc).date().toordinal() - 14
+    ).isoformat()
+    response = await client.get(
+        "https://api.stlouisfed.org/fred/series/observations",
+        params={
+            "series_id": series_id,
+            "api_key": api_key,
+            "file_type": "json",
+            "observation_start": start,
+            "sort_order": "desc",
+            "limit": 10,
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    observations = payload.get("observations") if isinstance(payload, dict) else None
+    if not isinstance(observations, list):
+        raise ValueError(f"FRED returned an invalid observations payload for {series_id}.")
+    valid = []
+    for item in observations:
+        raw_value = item.get("value")
+        if raw_value in (None, "", "."):
+            continue
+        valid.append({"date": item["date"], "value": float(raw_value)})
+        if len(valid) == 2:
+            break
+    if len(valid) < 2:
+        raise ValueError(f"FRED has fewer than two valid observations for {series_id}.")
+    return valid
+
+
+@app.get("/api/v1/analysis/gold-macro")
+async def gold_macro_analysis() -> dict:
+    """Summarize USD and Treasury yield pressure using daily FRED observations."""
+    if not settings.fred_api_key.strip():
+        raise HTTPException(status_code=503, detail="FRED is not configured; macro analysis is unavailable.")
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            observations = {
+                name: await _fred_latest_observations(client, series_id)
+                for name, series_id in _FRED_GOLD_MACRO_SERIES.items()
+            }
+        now = datetime.now(timezone.utc)
+        for name, rows in observations.items():
+            latest_date = datetime.fromisoformat(rows[0]["date"]).date()
+            age_days = (now.date() - latest_date).days
+            if age_days < 0 or age_days > 7:
+                raise ValueError(f"FRED series {name} is stale.")
+            rows[0]["age_days"] = age_days
+
+        nominal = observations["nominal_10y_yield"]
+        real = observations["real_10y_yield"]
+        dollar = observations["broad_us_dollar_index"]
+        nominal_change_bp = (nominal[0]["value"] - nominal[1]["value"]) * 100
+        real_change_bp = (real[0]["value"] - real[1]["value"]) * 100
+        dollar_change_pct = (
+            (dollar[0]["value"] - dollar[1]["value"]) / dollar[1]["value"] * 100
+            if dollar[1]["value"] else 0.0
+        )
+        real_up = real_change_bp >= 1.0
+        real_down = real_change_bp <= -1.0
+        dollar_up = dollar_change_pct >= 0.05
+        dollar_down = dollar_change_pct <= -0.05
+        if real_up and dollar_up:
+            bias = "GOLD_HEADWIND"
+            explanation = "ارتفاع العائد الحقيقي والدولار يشكل ضغطاً تاريخياً محتملاً على الذهب."
+        elif real_down and dollar_down:
+            bias = "GOLD_SUPPORTIVE"
+            explanation = "انخفاض العائد الحقيقي والدولار قد يدعم الذهب."
+        else:
+            bias = "MIXED_OR_NEUTRAL"
+            explanation = "العوامل الكلية متباينة أو حركتها غير كافية لتحديد انحياز واضح."
+        return {
+            "bias": bias,
+            "explanation": explanation,
+            "observations": observations,
+            "changes": {
+                "nominal_10y_yield_basis_points": round(nominal_change_bp, 2),
+                "real_10y_yield_basis_points": round(real_change_bp, 2),
+                "broad_us_dollar_index_percent": round(dollar_change_pct, 4),
+            },
+            "source": "Federal Reserve Bank of St. Louis FRED",
+            "generated_at": now,
+            "execution_enabled": False,
+            "note": "Daily macro context only; not an intraday signal or a calibrated predictor of gold returns.",
+        }
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="FRED macro data is unavailable, stale, or invalid; macro filter is paused.") from exc
 
 
 async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
