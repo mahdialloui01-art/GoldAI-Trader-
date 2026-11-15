@@ -86,3 +86,10 @@ Configure a private FRED API key as `FRED_API_KEY` on the backend. The macro end
 - `DTWEXBGS`: nominal broad US dollar index.
 
 `GET /api/v1/analysis/gold-macro` compares the latest two valid observations and returns a transparent, rule-based macro context (gold headwind, supportive, or mixed/neutral). Data older than seven calendar days, missing credentials, and provider errors fail closed. This is daily context, not an intraday trading signal or a forecast of gold returns.
+
+
+## Broker-aware risk and lot sizing
+
+The MT5 quote bridge can now send the broker's tick size, loss tick value, contract size, minimum/maximum volume, volume step, account equity and account currency. These values are read from the active XM GOLD symbol and MT5 account; no generic contract assumptions are used.
+
+`POST /api/v1/risk/position-size` calculates a lot size from stop distance and the configured risk ceiling. It rounds volume down to the broker step and refuses the trade if even the minimum permitted lot would exceed the requested risk. It also locks sizing at the daily loss limit. Complete live MT5 contract metadata is required; otherwise the endpoint returns 503. This is a calculation only and does not place orders.
