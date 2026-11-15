@@ -131,3 +131,17 @@ The backend includes a strict parser at `backend/app/calendar_import.py` for a u
 - It preserves forecast, previous and actual values when supplied, and explicitly marks the feed as client-supplied and not independently verified.
 - It rejects timestamps without an explicit timezone offset and deduplicates identical event rows.
 - This parser is currently a tested import/research component only. It does not fetch Forex Factory automatically, persist uploaded calendars, or replace the production news filter. Do not use a partial or stale weekly file to infer that there is no upcoming risk. The production news filter remains fail-closed until a verified, sufficiently fresh calendar source is integrated.
+
+
+## Advanced expert technical dossier (paper-only)
+
+`POST /api/v1/analysis/expert` accepts the same four broker-candle streams as the existing GOLD decision endpoint (M5, M15, H1 and H4). It returns a single explainable technical dossier combining:
+
+- EMA/RSI/MACD direction and momentum evidence for each timeframe.
+- Wilder ADX/ATR market regime classification.
+- Confirmed swing structure, BOS candidates, liquidity-sweep candidates, equal highs/lows, FVGs and heuristic order-block candidates.
+- Weighted M5/M15/H1/H4 confluence, with the score explicitly marked as a heuristic and never a win probability.
+- Broker spread relative to M5 ATR, plus the existing macro and high-impact-news fail-closed gates.
+- Reference stop and 1R/2R/3R target levels only when every existing decision gate and the expert confluence layer pass.
+
+The endpoint never places orders. Missing/invalid broker candle analysis produces no dossier and no setup. Order blocks and liquidity features remain rule-based chart candidates, not proof of institutional order flow. The endpoint analyzes caller-supplied closed broker candles; it does not itself create or guarantee a continuous MT5 candle feed. Historical walk-forward validation and independent out-of-sample calibration are still required before any score can be described as predictive.
