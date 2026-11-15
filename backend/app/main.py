@@ -1726,14 +1726,23 @@ async def signal_fusion_analysis(request: MultiTimeframeAnalysisRequest) -> dict
 
     try:
         macro = await gold_macro_analysis()
-        macro_bias = macro.get("bias", "MIXED_OR_NEUTRAL")
-        gate_status["macro"] = macro_bias
+        macro_engine = macro.get("confidence_engine", {})
+        # Prefer the weighted, freshness-adjusted macro assessment; retain the
+        # broad bias only as a defensive fallback for older response formats.
+        macro_bias = macro_engine.get("directional_bias") or macro.get("bias", "MIXED_OR_NEUTRAL")
+        gate_status["macro"] = {
+            "directional_bias": macro_bias,
+            "pressure_score_0_to_100": macro_engine.get("pressure_score_0_to_100"),
+            "strength_score_0_to_100": macro_engine.get("strength_score_0_to_100"),
+            "freshness_factor_0_to_1": macro_engine.get("freshness_factor_0_to_1"),
+            "calibration_status": macro_engine.get("calibration_status", "UNKNOWN"),
+        }
         if macro_bias == "GOLD_HEADWIND" and final_direction == Direction.BUY:
             final_direction = Direction.WAIT
-            reasons.append("ضغط الدولار والعوائد يعاكس الإشارة الشرائية؛ يلزم تأكيد إضافي.")
+            reasons.append("درجة الضغط الاقتصادي المعدّلة بحداثة البيانات تعاكس الشراء؛ تم إيقاف الإشارة.")
         elif macro_bias == "GOLD_SUPPORTIVE" and final_direction == Direction.SELL:
             final_direction = Direction.WAIT
-            reasons.append("العوامل الاقتصادية تدعم الذهب وتعارض الإشارة البيعية.")
+            reasons.append("درجة الدعم الاقتصادي المعدّلة بحداثة البيانات تعاكس البيع؛ تم إيقاف الإشارة.")
     except HTTPException:
         gate_status["macro"] = "UNAVAILABLE"
         final_direction = Direction.WAIT
