@@ -1358,3 +1358,116 @@ def price_action_analysis(request: PriceActionRequest) -> dict:
         "signal_note": "Price-action features are diagnostic only; no entry is authorized by this endpoint.",
     })
     return analysis
+
+
+class PreReleaseNewsRequest(BaseModel):
+    """Inputs from a separately validated event-forecast model; no invented forecasts."""
+    symbol: str = "GOLD"
+    event_id: str = Field(min_length=2, max_length=80)
+    event_name: str = Field(min_length=3, max_length=160)
+    release_at: datetime
+    consensus: float
+    model_estimate: float
+    historical_error_std: float = Field(gt=0)
+    historical_samples: int = Field(ge=30, le=100000)
+    gold_direction_if_above: str = Field(pattern="^(BULLISH|BEARISH|MIXED)$")
+    gold_direction_if_inline: str = Field(default="MIXED", pattern="^(BULLISH|BEARISH|MIXED)$")
+    gold_direction_if_below: str = Field(pattern="^(BULLISH|BEARISH|MIXED)$")
+    max_spread_points: float = Field(default=35, gt=0, le=10000)
+
+
+@app.post("/api/v1/news/pre-release-analysis")
+def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
+    """Estimate pre-release scenario probabilities from a supplied, historically measured forecast model.
+
+    This endpoint does not create the model estimate. The caller must provide an estimate,
+    its historical error scale and sample count. Output is a paper-trading research candidate only.
+    """
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} is supported.")
+    now = datetime.now(timezone.utc)
+    release_at = request.release_at
+    if release_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="release_at must include a timezone.")
+    minutes_to_release = (release_at.astimezone(timezone.utc) - now).total_seconds() / 60
+    if minutes_to_release < 5 or minutes_to_release > 24 * 60:
+        raise HTTPException(status_code=422, detail="Release must be between 5 minutes and 24 hours ahead.")
+
+    quote = _fresh_mt5_quote()
+    spread_ok = quote["spread_points"] <= request.max_spread_points
+
+    # Model residuals are approximated as normal using the supplied out-of-sample error scale.
+    # The ±0.25σ band defines 'in line'; it is explicit and testable, not a market fact.
+    distribution = statistics.NormalDist(mu=request.model_estimate, sigma=request.historical_error_std)
+    inline_band = request.historical_error_std * 0.25
+    p_below = distribution.cdf(request.consensus - inline_band)
+    p_above = 1.0 - distribution.cdf(request.consensus + inline_band)
+    p_inline = max(0.0, 1.0 - p_above - p_below)
+    total = p_above + p_inline + p_below
+    probabilities = {
+        "above_consensus": round(p_above / total, 6),
+        "inline_with_consensus": round(p_inline / total, 6),
+        "below_consensus": round(p_below / total, 6),
+    }
+
+    directional = {"BULLISH": 0.0, "BEARISH": 0.0, "MIXED": 0.0}
+    directional[request.gold_direction_if_above] += probabilities["above_consensus"]
+    directional[request.gold_direction_if_inline] += probabilities["inline_with_consensus"]
+    directional[request.gold_direction_if_below] += probabilities["below_consensus"]
+    ranked = sorted(directional.items(), key=lambda item: item[1], reverse=True)
+    top_direction, top_probability = ranked[0]
+    edge = top_probability - ranked[1][1]
+    enough_edge = top_direction != "MIXED" and top_probability >= 0.65 and edge >= 0.15
+
+    decision = "NO_TRADE"
+    reasons = [
+        "الاحتمالات محسوبة من تقدير نموذج خارجي ومقياس خطئه التاريخي؛ ليست معرفة مسبقة بنتيجة الخبر.",
+        "الافتراض الإحصائي طبيعي، ويجب اختباره ومعايرته لكل نوع خبر قبل اعتباره صالحاً للتداول.",
+    ]
+    if request.historical_samples < 100:
+        reasons.append("عدد العينات أقل من 100؛ الثقة البحثية محدودة.")
+    if not spread_ok:
+        reasons.append("سبريد MT5 أعلى من الحد المسموح لهذا التحليل؛ لا يتم ترشيح صفقة.")
+    if enough_edge and spread_ok and request.historical_samples >= 100:
+        decision = "PRE_NEWS_SETUP_CANDIDATE"
+        reasons.append("تجاوزت الاحتمالات والميزة الحدين البحثيين؛ مرشح للمراجعة والتجربة الورقية فقط.")
+    else:
+        reasons.append("لا توجد أفضلية كافية أو بيانات/ظروف تنفيذ مناسبة؛ القرار NO TRADE.")
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "event_id": request.event_id,
+        "event_name": request.event_name,
+        "release_at": release_at,
+        "minutes_to_release": round(minutes_to_release, 1),
+        "forecast_inputs": {
+            "consensus": request.consensus,
+            "model_estimate": request.model_estimate,
+            "historical_error_std": request.historical_error_std,
+            "historical_samples": request.historical_samples,
+            "distribution_assumption": "normal_out_of_sample_residuals",
+            "inline_band_std": 0.25,
+        },
+        "scenario_probabilities": probabilities,
+        "gold_direction_probabilities": {key: round(value, 6) for key, value in directional.items()},
+        "most_likely_gold_direction": top_direction if enough_edge else "UNCONFIRMED",
+        "direction_probability": round(top_probability, 6),
+        "probability_edge": round(edge, 6),
+        "decision": decision,
+        "market_conditions": {
+            "quote_source": quote.get("source"),
+            "spread_points": quote["spread_points"],
+            "max_spread_points": request.max_spread_points,
+            "spread_acceptable": spread_ok,
+        },
+        "reasons": reasons,
+        "risk_policy": {
+            "mode": "PAPER_ONLY",
+            "suggested_max_risk_percent_for_future_testing": 0.25,
+            "live_execution_enabled": False,
+        },
+        "generated_at": now,
+        "disclaimer": "Probabilities are model-based estimates, not calibrated guarantees. This endpoint never places orders.",
+        "execution_enabled": False,
+    }
+}
