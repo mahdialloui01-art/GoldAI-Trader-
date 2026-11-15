@@ -448,7 +448,7 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     if final_direction != Direction.WAIT:
         confidence_score = min(
             85,
-            round(sum(result["confidence_score"] for result in analyses.values()) / 3),
+            round(sum(result["confidence_score"] for result in analyses.values()) / len(analyses)),
         )
 
     return {
