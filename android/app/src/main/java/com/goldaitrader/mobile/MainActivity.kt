@@ -224,36 +224,39 @@ class MainActivity : ComponentActivity() {
             return
         }
         quoteLoading = true
-        quoteStatus = "جارٍ جلب سعر الذهب..."
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) {
-                try {
-                    val c = URL("${BuildConfig.API_BASE_URL}/api/v1/market/snapshot")
-                        .openConnection() as HttpURLConnection
-                    c.requestMethod = "GET"
-                    c.connectTimeout = 8000
-                    c.readTimeout = 8000
+            try {
+                val result = withContext(Dispatchers.IO) {
                     try {
-                        if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
-                        val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
-                        val bid = j.getDouble("bid")
-                        val ask = j.getDouble("ask")
-                        val age = j.getInt("age_seconds")
-                        val mid = "$" + String.format(Locale.US, "%,.2f", j.getDouble("mid"))
-                        val details = "Bid ${String.format(Locale.US, "%.2f", bid)}  •  Ask ${String.format(Locale.US, "%.2f", ask)}  •  ${age}ث"
-                        Pair(mid, details)
-                    } finally { c.disconnect() }
-                } catch (_: Exception) { null }
-            }
-            quoteLoading = false
-            if (result == null) {
-                goldPrice = "غير متاح"
-                quoteReceived = false
-                quoteStatus = "تعذر جلب سعر حديث من خادم MT5"
-            } else {
-                goldPrice = result.first
-                quoteReceived = true
-                quoteStatus = result.second
+                        val c = URL("${BuildConfig.API_BASE_URL}/api/v1/market/snapshot")
+                            .openConnection() as HttpURLConnection
+                        c.requestMethod = "GET"
+                        c.connectTimeout = 8000
+                        c.readTimeout = 8000
+                        try {
+                            if (c.responseCode != 200) throw IllegalStateException("HTTP ${c.responseCode}")
+                            val j = JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+                            val bid = j.getDouble("bid")
+                            val ask = j.getDouble("ask")
+                            val age = j.optInt("age_seconds", -1)
+                            val spread = j.optDouble("spread_points", 0.0) * j.optDouble("point", 0.0)
+                            val mid = "$" + String.format(Locale.US, "%,.2f", j.getDouble("mid"))
+                            val details = "Bid ${String.format(Locale.US, "%.2f", bid)}  •  Ask ${String.format(Locale.US, "%.2f", ask)}  •  Spread ${String.format(Locale.US, "%.2f", spread)}  •  عمر السعر ${if (age >= 0) "${age}ث" else "؟"}"
+                            Pair(mid, details)
+                        } finally { c.disconnect() }
+                    } catch (_: Exception) { null }
+                }
+                if (result == null) {
+                    goldPrice = "غير متاح"
+                    quoteReceived = false
+                    quoteStatus = "تعذر جلب سعر حديث من MT5 — تحقق من اتصال المنصة"
+                } else {
+                    goldPrice = result.first
+                    quoteReceived = true
+                    quoteStatus = result.second
+                }
+            } finally {
+                quoteLoading = false
             }
         }
     }
@@ -280,9 +283,17 @@ private fun GoldAiApp(
         onCheckBackend()
         onRefreshGold()
         onRefreshContext()
-        while (true) {
-            delay(2_000)
-            onRefreshGold()
+        launch {
+            while (true) {
+                delay(1_000)
+                onRefreshGold()
+            }
+        }
+        launch {
+            while (true) {
+                delay(60_000)
+                onRefreshContext()
+            }
         }
     }
     Surface(Modifier.fillMaxSize(), color = Night) {
