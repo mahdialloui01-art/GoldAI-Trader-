@@ -1661,6 +1661,8 @@ async def historical_news_calendar(start_date: date, end_date: date) -> dict:
     """Import point-in-time US consensus/actual calendar history for subsequent GOLD price alignment."""
     if end_date < start_date:
         raise HTTPException(status_code=422, detail="end_date must be on or after start_date.")
+    if end_date > datetime.now(timezone.utc).date():
+        raise HTTPException(status_code=422, detail="Historical calendar end_date cannot be in the future.")
     if (end_date - start_date).days > 5 * 366:
         raise HTTPException(status_code=422, detail="Historical import is limited to five years per request.")
     api_key = settings.economic_calendar_api_key.strip()
