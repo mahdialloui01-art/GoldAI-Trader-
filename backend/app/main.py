@@ -536,6 +536,22 @@ class Candle(BaseModel):
     tick_volume: int = Field(default=0, ge=0)
 
 
+class BacktestRequest(BaseModel):
+    symbol: str = "GOLD"
+    timeframe: str = "M15"
+    candles: list[Candle] = Field(min_length=100, max_length=5000)
+    initial_balance: float = Field(default=10_000, gt=0)
+    lots: float = Field(default=0.1, gt=0)
+    contract_size: float = Field(default=100, gt=0)
+    spread_points: float = Field(default=20, ge=0)
+    point: float = Field(default=0.01, gt=0)
+    slippage_points: float = Field(default=2, ge=0)
+    commission_per_lot_round_turn: float = Field(default=0, ge=0)
+    atr_stop_multiple: float = Field(default=1.5, ge=0.5, le=5)
+    reward_risk_ratio: float = Field(default=2.0, ge=1, le=5)
+    max_holding_bars: int = Field(default=100, ge=1, le=500)
+
+
 class TechnicalAnalysisRequest(BaseModel):
     symbol: str = "GOLD"
     timeframe: str
@@ -605,6 +621,41 @@ def _atr_wilder(candles: list[Candle], period: int = 14) -> float:
     return value
 
 
+def _rsi_wilder_series(values: list[float], period: int = 14) -> list[float | None]:
+    result: list[float | None] = [None] * len(values)
+    changes = [values[i] - values[i - 1] for i in range(1, len(values))]
+    if len(changes) < period:
+        return result
+    gains = [max(change, 0.0) for change in changes]
+    losses = [max(-change, 0.0) for change in changes]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    def value() -> float:
+        if avg_loss == 0:
+            return 100.0 if avg_gain > 0 else 50.0
+        rs = avg_gain / avg_loss
+        return 100 - 100 / (1 + rs)
+    result[period] = value()
+    for index in range(period, len(changes)):
+        avg_gain = ((period - 1) * avg_gain + gains[index]) / period
+        avg_loss = ((period - 1) * avg_loss + losses[index]) / period
+        result[index + 1] = value()
+    return result
+
+
+def _atr_wilder_series(candles: list[Candle], period: int = 14) -> list[float | None]:
+    result: list[float | None] = [None] * len(candles)
+    ranges = _true_ranges(candles)
+    if len(ranges) < period:
+        return result
+    current = sum(ranges[:period]) / period
+    result[period] = current
+    for index in range(period, len(ranges)):
+        current = ((period - 1) * current + ranges[index]) / period
+        result[index + 1] = current
+    return result
+
+
 def _macd(closes: list[float]) -> tuple[float, float, float]:
     fast = _ema_series(closes, 12)
     slow = _ema_series(closes, 26)
@@ -615,6 +666,180 @@ def _macd(closes: list[float]) -> tuple[float, float, float]:
     line = macd_line[-1]
     signal = signal_line[-1]
     return line, signal, line - signal
+
+
+
+@app.post("/api/v1/backtest")
+def run_backtest(request: BacktestRequest) -> dict:
+    """Run a conservative, next-bar-entry EMA/RSI trend backtest without look-ahead."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+    timeframe = request.timeframe.upper()
+    if timeframe not in _TIMEFRAME_SECONDS:
+        raise HTTPException(status_code=422, detail="Unsupported timeframe.")
+    candles = request.candles
+    normalized_times = []
+    for candle in candles:
+        if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
+            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+        stamp = candle.time if candle.time.tzinfo else candle.time.replace(tzinfo=timezone.utc)
+        normalized_times.append(stamp.astimezone(timezone.utc))
+    if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
+        raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
+
+    closes = [candle.close for candle in candles]
+    ema20 = _ema_series(closes, 20)
+    ema50 = _ema_series(closes, 50)
+    rsi = _rsi_wilder_series(closes)
+    atr = _atr_wilder_series(candles)
+    spread_price = request.spread_points * request.point
+    slippage_price = request.slippage_points * request.point
+    equity = request.initial_balance
+    peak_equity = equity
+    max_drawdown = 0.0
+    trades: list[dict] = []
+    position = None
+    pending = None
+    equity_curve = [{"time": normalized_times[0], "equity": round(equity, 2)}]
+
+    def close_position(exit_price: float, exit_index: int, reason: str) -> None:
+        nonlocal equity, peak_equity, max_drawdown, position
+        if position["direction"] == "BUY":
+            gross = (exit_price - position["entry_price"]) * request.contract_size * request.lots
+        else:
+            gross = (position["entry_price"] - exit_price) * request.contract_size * request.lots
+        commission = request.commission_per_lot_round_turn * request.lots
+        net = gross - commission
+        equity += net
+        peak_equity = max(peak_equity, equity)
+        drawdown = (peak_equity - equity) / peak_equity * 100 if peak_equity > 0 else 0
+        max_drawdown = max(max_drawdown, drawdown)
+        trades.append({
+            "direction": position["direction"],
+            "entry_time": normalized_times[position["entry_index"]],
+            "exit_time": normalized_times[exit_index],
+            "entry_price": round(position["entry_price"], 5),
+            "exit_price": round(exit_price, 5),
+            "lots": request.lots,
+            "gross_pnl": round(gross, 2),
+            "commission": round(commission, 2),
+            "net_pnl": round(net, 2),
+            "r_multiple": round(net / position["risk_amount"], 3) if position["risk_amount"] else 0,
+            "exit_reason": reason,
+            "bars_held": exit_index - position["entry_index"] + 1,
+        })
+        position = None
+        equity_curve.append({"time": normalized_times[exit_index], "equity": round(equity, 2)})
+
+    for index in range(50, len(candles)):
+        candle = candles[index]
+        if position is None and pending is not None:
+            direction = pending["direction"]
+            risk_distance = pending["atr"] * request.atr_stop_multiple
+            if direction == "BUY":
+                entry = candle.open + spread_price + slippage_price
+                position = {
+                    "direction": direction, "entry_index": index, "entry_price": entry,
+                    "stop": entry - risk_distance,
+                    "target": entry + risk_distance * request.reward_risk_ratio,
+                    "risk_amount": risk_distance * request.contract_size * request.lots,
+                }
+            else:
+                entry = candle.open - slippage_price
+                position = {
+                    "direction": direction, "entry_index": index, "entry_price": entry,
+                    "stop": entry + risk_distance,
+                    "target": entry - risk_distance * request.reward_risk_ratio,
+                    "risk_amount": risk_distance * request.contract_size * request.lots,
+                }
+            pending = None
+
+        if position is not None:
+            held = index - position["entry_index"] + 1
+            if position["direction"] == "BUY":
+                if candle.open <= position["stop"]:
+                    close_position(candle.open - slippage_price, index, "STOP_GAP")
+                elif candle.low <= position["stop"]:
+                    close_position(position["stop"] - slippage_price, index, "STOP")
+                elif candle.open >= position["target"]:
+                    close_position(candle.open - slippage_price, index, "TARGET_GAP")
+                elif candle.high >= position["target"]:
+                    close_position(position["target"] - slippage_price, index, "TARGET")
+                elif held >= request.max_holding_bars:
+                    close_position(candle.close - slippage_price, index, "TIME_EXIT")
+            else:
+                ask_open = candle.open + spread_price
+                ask_high = candle.high + spread_price
+                ask_low = candle.low + spread_price
+                if ask_open >= position["stop"]:
+                    close_position(ask_open + slippage_price, index, "STOP_GAP")
+                elif ask_high >= position["stop"]:
+                    close_position(position["stop"] + slippage_price, index, "STOP")
+                elif ask_open <= position["target"]:
+                    close_position(ask_open + slippage_price, index, "TARGET_GAP")
+                elif ask_low <= position["target"]:
+                    close_position(position["target"] + slippage_price, index, "TARGET")
+                elif held >= request.max_holding_bars:
+                    close_position(candle.close + spread_price + slippage_price, index, "TIME_EXIT")
+
+        if position is None and index < len(candles) - 1 and atr[index] and rsi[index] is not None:
+            ema_fast_value = ema20[index - 19]
+            ema_slow_value = ema50[index - 49]
+            if ema_fast_value > ema_slow_value and 52 <= rsi[index] <= 68:
+                pending = {"direction": "BUY", "atr": atr[index]}
+            elif ema_fast_value < ema_slow_value and 32 <= rsi[index] <= 48:
+                pending = {"direction": "SELL", "atr": atr[index]}
+            else:
+                pending = None
+
+    if position is not None:
+        last_index = len(candles) - 1
+        last = candles[-1]
+        exit_price = (
+            last.close - slippage_price if position["direction"] == "BUY"
+            else last.close + spread_price + slippage_price
+        )
+        close_position(exit_price, last_index, "END_OF_DATA")
+
+    wins = [trade["net_pnl"] for trade in trades if trade["net_pnl"] > 0]
+    losses = [trade["net_pnl"] for trade in trades if trade["net_pnl"] < 0]
+    gross_profit = sum(wins)
+    gross_loss = abs(sum(losses))
+    net_profit = sum(trade["net_pnl"] for trade in trades)
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "timeframe": timeframe,
+        "strategy": "EMA20/EMA50 trend with Wilder RSI confirmation; ATR stop and fixed reward/risk target",
+        "trade_count": len(trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate_percent": round(len(wins) / len(trades) * 100, 2) if trades else 0.0,
+        "profit_factor": round(gross_profit / gross_loss, 3) if gross_loss else (None if gross_profit == 0 else "infinite"),
+        "net_profit": round(net_profit, 2),
+        "ending_balance": round(equity, 2),
+        "return_percent": round(net_profit / request.initial_balance * 100, 3),
+        "expectancy_per_trade": round(net_profit / len(trades), 2) if trades else 0.0,
+        "average_win": round(gross_profit / len(wins), 2) if wins else 0.0,
+        "average_loss": round(-gross_loss / len(losses), 2) if losses else 0.0,
+        "max_drawdown_percent": round(max_drawdown, 3),
+        "cost_model": {
+            "spread_points": request.spread_points,
+            "slippage_points_per_side": request.slippage_points,
+            "commission_per_lot_round_turn": request.commission_per_lot_round_turn,
+            "lots": request.lots,
+            "contract_size": request.contract_size,
+        },
+        "equity_curve": equity_curve,
+        "trades": trades,
+        "lookahead_bias_controls": [
+            "Signals are calculated only after a candle closes.",
+            "Entries occur at the following candle open.",
+            "If stop and target are both touched in one candle, the stop is assumed first.",
+            "Spread, slippage and round-turn commission are included.",
+        ],
+        "execution_enabled": False,
+        "disclaimer": "Historical simulation only. It does not guarantee future performance and does not model every broker fill, swap, financing charge, liquidity event or account-currency conversion.",
+    }
 
 
 @app.post("/api/v1/analysis/technical")
