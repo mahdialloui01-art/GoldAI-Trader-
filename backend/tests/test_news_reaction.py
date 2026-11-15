@@ -45,7 +45,7 @@ def test_post_release_analysis_reports_observed_direction_without_trade():
 
 def test_post_release_analysis_does_not_confirm_non_monotonic_move():
     payload = _payload()
-    payload["candles"][-1]["close"] = 4001.5
+    payload["candles"][-1]["close"] = 4002.95
     response = client.post("/api/v1/news/post-release-analysis", json=payload)
     assert response.status_code == 200
     assert response.json()["decision"] == "WAIT_FOR_MORE_DATA_OR_CONFIRMATION"
