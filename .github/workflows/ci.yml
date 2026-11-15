@@ -5,9 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
 
 jobs:
   backend-tests:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -23,6 +27,7 @@ jobs:
       - run: PYTHONPATH=. pytest -q
 
   android-debug-build:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -41,3 +46,31 @@ jobs:
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 14
+
+  automatic-economic-news-refresh:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: goldai-news-refresh
+      cancel-in-progress: true
+    steps:
+      - name: Refresh GoldAI economic news engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]]; then
+            echo "GitHub OIDC is not available for this workflow run." >&2
+            exit 1
+          fi
+          oidc_response="$(curl --fail --silent --show-error --retry 2 --retry-delay 2 \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=goldai-trader-news-refresh")"
+          oidc_token="$(printf '%s' "$oidc_response" | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          curl --fail --silent --show-error --retry 2 --retry-delay 5 --retry-all-errors --max-time 90 \
+            -X POST \
+            -H "Authorization: Bearer ${oidc_token}" \
+            "https://goldai-trader-api.onrender.com/api/v1/news/refresh"
