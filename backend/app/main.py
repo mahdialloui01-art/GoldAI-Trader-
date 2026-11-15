@@ -44,6 +44,10 @@ app = FastAPI(
     version="0.3.0",
 )
 
+from .news_reaction import router as news_reaction_router
+
+app.include_router(news_reaction_router)
+
 
 class Direction(str, Enum):
     BUY = "BUY"
