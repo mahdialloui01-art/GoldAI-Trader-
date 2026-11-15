@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 from decimal import Decimal, ROUND_DOWN
 import math
 import statistics
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 import secrets
@@ -1577,4 +1578,95 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
         },
         "generated_at": datetime.now(timezone.utc),
         "disclaimer": "Historical association is not a forecast. Results depend on timestamp quality, broker pricing and sample selection.",
+    }
+
+
+_HISTORICAL_US_GOLD_EVENTS = [
+    "Non Farm Payrolls",
+    "Inflation Rate YoY",
+    "Core Inflation Rate YoY",
+    "Retail Sales MoM",
+    "GDP Growth Rate QoQ",
+    "Interest Rate Decision",
+    "Core PCE Price Index YoY",
+    "Unemployment Rate",
+    "Initial Jobless Claims",
+]
+
+
+@app.get("/api/v1/news/historical-calendar")
+async def historical_news_calendar(start_date: date, end_date: date) -> dict:
+    """Import point-in-time US consensus/actual calendar history for subsequent GOLD price alignment."""
+    if end_date < start_date:
+        raise HTTPException(status_code=422, detail="end_date must be on or after start_date.")
+    if (end_date - start_date).days > 5 * 366:
+        raise HTTPException(status_code=422, detail="Historical import is limited to five years per request.")
+    api_key = settings.economic_calendar_api_key.strip()
+    if not api_key:
+        raise HTTPException(status_code=503, detail="Trading Economics API key is not configured.")
+    base_url = settings.economic_calendar_base_url.rstrip("/")
+    imported: dict[str, dict] = {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            for indicator in _HISTORICAL_US_GOLD_EVENTS:
+                url = (
+                    f"{base_url}/calendar/country/united%20states/indicator/"
+                    f"{quote(indicator, safe='')}/{start_date.isoformat()}/{end_date.isoformat()}"
+                )
+                response = await client.get(
+                    url,
+                    params={"f": "json"},
+                    headers={"Authorization": api_key},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, list):
+                    raise ValueError("Historical calendar response must be a JSON array.")
+                for item in payload:
+                    if not isinstance(item, dict):
+                        raise ValueError("Historical calendar event has an invalid shape.")
+                    if int(item.get("Importance", 0) or 0) < 2:
+                        continue
+                    calendar_id = str(item.get("CalendarId", "")).strip()
+                    event_date = str(item.get("Date", "")).strip()
+                    if not calendar_id or not event_date:
+                        continue
+                    imported[calendar_id] = {
+                        "event_id": calendar_id,
+                        "event": str(item.get("Event", indicator)),
+                        "category": str(item.get("Category", indicator)),
+                        "provider_time_raw": event_date,
+                        "actual": str(item.get("Actual", "")),
+                        "forecast": str(item.get("Forecast", "")),
+                        "te_forecast": str(item.get("TEForecast", "")),
+                        "previous": str(item.get("Previous", "")),
+                        "revised_previous": str(item.get("Revised", "")),
+                        "importance": int(item.get("Importance", 0) or 0),
+                        "unit": str(item.get("Unit", "")),
+                        "source": str(item.get("Source", "")),
+                        "source_url": str(item.get("SourceURL", "")),
+                        "last_update_raw": str(item.get("LastUpdate", "")),
+                        "ticker": str(item.get("Ticker", "")),
+                    }
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Point-in-time economic history provider failed; no partial dataset is returned.",
+        ) from exc
+
+    events = sorted(imported.values(), key=lambda item: (item["provider_time_raw"], item["event_id"]))
+    return {
+        "country": "United States",
+        "start_date": start_date,
+        "end_date": end_date,
+        "event_count": len(events),
+        "events": events,
+        "source": "Trading Economics point-in-time calendar",
+        "point_in_time": True,
+        "price_alignment_required": True,
+        "price_alignment_note": "Join each release to XM MT5 GOLD M1 candles using the broker server timezone and measured release timestamp. Do not assume provider timestamps are UTC.",
+        "next_step": "Align MT5 GOLD prices immediately before release and at +1m, +5m, +15m and +60m, then submit the joined rows to /api/v1/news/historical-study.",
+        "execution_enabled": False,
     }
