@@ -93,3 +93,10 @@ Configure a private FRED API key as `FRED_API_KEY` on the backend. The macro end
 The MT5 quote bridge can now send the broker's tick size, loss tick value, contract size, minimum/maximum volume, volume step, account equity and account currency. These values are read from the active XM GOLD symbol and MT5 account; no generic contract assumptions are used.
 
 `POST /api/v1/risk/position-size` calculates a lot size from stop distance and the configured risk ceiling. It rounds volume down to the broker step and refuses the trade if even the minimum permitted lot would exceed the requested risk. It also locks sizing at the daily loss limit. Complete live MT5 contract metadata is required; otherwise the endpoint returns 503. This is a calculation only and does not place orders.
+
+
+## Historical backtesting
+
+`POST /api/v1/backtest` runs a transparent EMA20/EMA50 trend strategy with Wilder RSI confirmation, ATR-based stops and a configurable reward/risk target. It accepts historical broker candles plus initial balance, fixed lots, contract size, spread, slippage and round-turn commission.
+
+The simulator calculates signals only after candle close and enters at the next candle open. If a candle touches both stop and target, it assumes the stop was hit first. It reports net P/L, win rate, profit factor, expectancy, average win/loss, max drawdown, an equity curve and individual trades. This is a simplified historical model: it does not fully model swaps, financing, liquidity, all broker fill rules or account-currency conversion, and it is not proof of future profitability.
