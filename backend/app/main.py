@@ -393,9 +393,17 @@ async def gold_macro_analysis() -> dict:
         for name, rows in observations.items():
             latest_date = datetime.fromisoformat(rows[0]["date"]).date()
             age_days = (now.date() - latest_date).days
-            if age_days < 0 or age_days > 7:
-                raise ValueError(f"FRED series {name} is stale.")
+            # The broad trade-weighted dollar index is released on a weekly
+            # schedule (often Friday data with the next FRED update on Monday).
+            # Allow a narrow 10-calendar-day window for this series only;
+            # keep the stricter 7-day limit for daily Treasury yield series.
+            max_age_days = 10 if name == "broad_us_dollar_index" else 7
+            if age_days < 0 or age_days > max_age_days:
+                raise ValueError(
+                    f"FRED series {name} is stale (age_days={age_days}, max_age_days={max_age_days})."
+                )
             rows[0]["age_days"] = age_days
+            rows[0]["max_age_days"] = max_age_days
 
         nominal = observations["nominal_10y_yield"]
         real = observations["real_10y_yield"]
