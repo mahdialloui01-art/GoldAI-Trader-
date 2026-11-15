@@ -1548,7 +1548,17 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
             raise HTTPException(status_code=422, detail="Every released_at timestamp must include a timezone.")
         if not item.event_type.strip():
             raise HTTPException(status_code=422, detail="event_type must not be empty.")
-        normalized_times.append(item.released_at.astimezone(timezone.utc))
+        event_time = item.released_at.astimezone(timezone.utc)
+        if event_time > datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="Historical study cannot include future release timestamps.")
+        normalized_times.append(event_time)
+        numeric_values = (
+            item.consensus, item.actual, item.surprise_scale, item.gold_before,
+            item.gold_1m, item.gold_5m, item.gold_15m, item.gold_60m,
+            item.spread_points, item.point, item.slippage_points,
+        )
+        if not all(math.isfinite(value) for value in numeric_values):
+            raise HTTPException(status_code=422, detail="Historical observations must contain finite numeric values.")
         for horizon in ("gold_1m", "gold_5m", "gold_15m", "gold_60m"):
             if getattr(item, horizon) <= 0:
                 raise HTTPException(status_code=422, detail=f"{horizon} must be positive.")
@@ -1622,7 +1632,9 @@ def historical_news_study(request: HistoricalNewsStudyRequest) -> dict:
                 if overlap_pairs else None
             ),
             "net_cost_model": "spread plus twice supplied slippage; commissions, swaps, gaps and execution failures excluded",
-            "no_future_data_used_to_create_pre_release_forecasts": True,
+            "forecast_leakage_verified": False,
+            "data_provenance": "CLIENT_SUPPLIED_OBSERVATIONS_NOT_INDEPENDENTLY_VERIFIED",
+            "price_timestamp_integrity_verified": False,
             "execution_enabled": False,
             "mode": "RESEARCH_ONLY",
         },
