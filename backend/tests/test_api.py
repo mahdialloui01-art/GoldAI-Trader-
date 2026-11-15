@@ -983,10 +983,27 @@ def test_historical_news_study_groups_events_and_deducts_spread_slippage():
     assert result["horizons"]["5m"]["mean_gold_return_percent"] < 0
     assert result["horizons"]["5m"]["mean_net_return_after_spread_slippage_percent"] < result["horizons"]["5m"]["mean_gold_return_percent"]
     assert body["data_policy"]["execution_enabled"] is False
+    assert body["data_policy"]["forecast_leakage_verified"] is False
+    assert body["data_policy"]["data_provenance"] == "CLIENT_SUPPLIED_OBSERVATIONS_NOT_INDEPENDENTLY_VERIFIED"
+    assert body["data_policy"]["price_timestamp_integrity_verified"] is False
     horizon = result["horizons"]["5m"]
     assert "net_positive_rate_percent" in horizon
     assert "max_drawdown_on_chronological_compounded_net_returns_percent" in horizon
     assert body["data_policy"]["observations_sorted_by_release_time_for_risk_metrics"] is True
+
+
+def test_historical_news_study_rejects_future_release_timestamp():
+    observation = {
+        "event_id": "FUTURE_CPI", "event_type": "US_CPI",
+        "released_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+        "consensus": 3, "actual": 3.1, "surprise_scale": 0.1,
+        "gold_before": 2600, "gold_1m": 2601, "gold_5m": 2602,
+        "gold_15m": 2603, "gold_60m": 2604,
+        "spread_points": 20, "point": 0.01, "slippage_points": 3,
+    }
+    response = client.post("/api/v1/news/historical-study", json={"observations": [observation]})
+    assert response.status_code == 422
+    assert "future release timestamps" in response.text
 
 
 def test_historical_news_study_marks_small_samples_exploratory():
