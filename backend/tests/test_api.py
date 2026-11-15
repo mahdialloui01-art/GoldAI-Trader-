@@ -255,7 +255,7 @@ def _set_fresh_quote():
 
 
 
-def test_multi_timeframe_requires_all_three_frames_to_align():
+def test_multi_timeframe_requires_all_four_frames_to_align():
     _set_fresh_quote()
     main._latest_mt5_quote["spread_points"] = 1
     def strong_bullish_candles(timeframe):
@@ -413,3 +413,46 @@ def test_price_action_rejects_unsupported_symbol():
     payload["symbol"] = "XAUUSD"
     response = client.post("/api/v1/analysis/price-action", json=payload)
     assert response.status_code == 400
+
+
+
+def test_price_action_detects_bullish_and_bearish_fair_value_gaps():
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=60)
+    candles = []
+    for index in range(60):
+        candles.append(main.Candle(
+            time=base_time + timedelta(minutes=index),
+            open=100.0, high=100.5, low=99.5, close=100.1,
+        ))
+
+    # Three-candle gap: candle 3 low is above candle 1 high.
+    candles[28] = main.Candle(time=candles[28].time, open=100.0, high=100.5, low=99.5, close=100.1)
+    candles[30] = main.Candle(time=candles[30].time, open=101.6, high=102.0, low=101.5, close=101.8)
+
+    # Three-candle bearish gap: candle 3 high is below candle 1 low.
+    candles[38] = main.Candle(time=candles[38].time, open=100.0, high=100.5, low=99.5, close=100.1)
+    candles[40] = main.Candle(time=candles[40].time, open=98.0, high=98.5, low=97.8, close=98.2)
+
+    result = main._price_action_analysis(candles, left=3, right=3, equal_tolerance=0.12)
+    bullish = result["fair_value_gaps"]["bullish"]
+    bearish = result["fair_value_gaps"]["bearish"]
+    assert any(item["from_index"] == 28 and item["to_index"] == 30 for item in bullish)
+    assert any(item["from_index"] == 38 and item["to_index"] == 40 for item in bearish)
+    assert all(item["upper"] > item["lower"] for item in bullish + bearish)
+
+
+def test_price_action_uses_only_confirmed_pivots_for_break_levels():
+    candles = []
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=100)
+    for index in range(100):
+        # A controlled oscillating range creates confirmed local highs and lows.
+        close = 100 + (index % 8 if index % 8 < 4 else 8 - index % 8) * 0.2
+        candles.append(main.Candle(
+            time=base_time + timedelta(minutes=index),
+            open=close - 0.05, high=close + 0.1, low=close - 0.1, close=close,
+        ))
+    highs, lows = main._confirmed_swings(candles, left=3, right=3)
+    assert highs and lows
+    assert max(point["index"] for point in highs + lows) <= len(candles) - 4
+    # No pivot at the currently forming/right-edge candles may become a break level.
+    assert all(point["index"] < len(candles) - 3 for point in highs + lows)
