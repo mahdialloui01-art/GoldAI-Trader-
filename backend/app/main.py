@@ -2922,8 +2922,9 @@ async def mt5_demo_signal(
         "daily_loss_percent": daily_loss_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "blockers": [],
+        "candidate_ready": True,
         "execution_enabled": False,
-        "note": "Candidate only. The MT5 EA must independently verify DEMO account mode and all local risk guards before any order.",
+        "note": "Signal candidate only. No server-side order execution. MT5 must independently verify DEMO account mode and all local risk guards.",
     }
 
 
