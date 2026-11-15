@@ -165,6 +165,24 @@ def test_risk_check_blocks_position_over_risk_limit():
     assert body["estimated_risk_percent"] == 1.0
 
 
+def test_risk_check_distinguishes_risk_approval_from_execution_authorization():
+    response = client.post(
+        "/api/v1/risk/check",
+        json={
+            "account_equity": 10000,
+            "stop_distance_points": 10,
+            "point_value_per_lot": 1,
+            "proposed_lots": 0.1,
+            "daily_loss_percent": 0,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["approved"] is True
+    assert body["execution_authorized"] is False
+    assert any("Execution is disabled" in reason for reason in body["reasons"])
+
+
 def test_risk_check_blocks_when_daily_loss_limit_is_reached():
     response = client.post(
         "/api/v1/risk/check",
