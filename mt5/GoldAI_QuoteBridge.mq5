@@ -42,6 +42,8 @@ void OnTimer()
    if(tickValueLoss <= 0)
       tickValueLoss = SymbolInfoDouble(RequiredSymbol, SYMBOL_TRADE_TICK_VALUE);
    double tickValueProfit = SymbolInfoDouble(RequiredSymbol, SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   if(tickValueProfit <= 0)
+      tickValueProfit = tickValueLoss;
    double volumeMin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
    double volumeMax = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MAX);
    double volumeStep = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
