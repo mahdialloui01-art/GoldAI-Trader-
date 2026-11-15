@@ -105,3 +105,14 @@ The simulator calculates signals only after candle close and enters at the next 
 ## Market regime detection
 
 `POST /api/v1/analysis/market-regime` classifies GOLD conditions as trending up, trending down, ranging, transition or high volatility using Wilder ADX/DI and ATR relative to its recent median. High volatility and transition conditions return a WAIT-style recommended action. The endpoint requires a fresh authenticated MT5 quote and valid candles, and never authorizes execution.
+
+
+## Forex Factory weekly JSON research importer
+
+The backend includes a strict parser at `backend/app/calendar_import.py` for a user-supplied Forex Factory weekly JSON export.
+
+- It extracts USD events marked `High` impact and normalizes their offset-aware timestamps to UTC.
+- It tags event names into broad gold-macro groups (inflation, labor, monetary policy, growth, Treasury and central-bank speech) for research triage only.
+- It preserves forecast, previous and actual values when supplied, and explicitly marks the feed as client-supplied and not independently verified.
+- It rejects timestamps without an explicit timezone offset and deduplicates identical event rows.
+- This parser is currently a tested import/research component only. It does not fetch Forex Factory automatically, persist uploaded calendars, or replace the production news filter. Do not use a partial or stale weekly file to infer that there is no upcoming risk. The production news filter remains fail-closed until a verified, sufficiently fresh calendar source is integrated.
