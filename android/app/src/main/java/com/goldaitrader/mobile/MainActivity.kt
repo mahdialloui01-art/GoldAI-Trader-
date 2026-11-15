@@ -46,6 +46,8 @@ class MainActivity : ComponentActivity() {
     private var goldPrice by mutableStateOf("—")
     private var quoteStatus by mutableStateOf("في انتظار بيانات الوسيط")
     private var quoteReceived by mutableStateOf(false)
+    private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
+    private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var selectedTab by mutableStateOf(AppTab.HOME)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,8 +64,11 @@ class MainActivity : ComponentActivity() {
                     goldPrice = goldPrice,
                     quoteStatus = quoteStatus,
                     quoteReceived = quoteReceived,
+                    macroSummary = macroSummary,
+                    calendarSummary = calendarSummary,
                     onCheckBackend = ::checkBackend,
-                    onRefreshGold = ::refreshGold
+                    onRefreshGold = ::refreshGold,
+                    onRefreshContext = ::refreshEconomicContext
                 )
             }
         }
@@ -84,6 +89,51 @@ class MainActivity : ComponentActivity() {
                     } finally { c.disconnect() }
                 } catch (_: Exception) { "تعذر الاتصال — تحقق من الخادم والشبكة" }
             }
+        }
+    }
+
+    private fun refreshEconomicContext() {
+        macroSummary = "جارٍ جلب مؤشرات الدولار والعوائد..."
+        calendarSummary = "جارٍ فحص الأخبار الأمريكية عالية التأثير..."
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                fun request(path: String): JSONObject {
+                    val c = URL("${BuildConfig.API_BASE_URL}$path").openConnection() as HttpURLConnection
+                    c.requestMethod = "GET"
+                    c.connectTimeout = 8000
+                    c.readTimeout = 10000
+                    try {
+                        val code = c.responseCode
+                        val stream = if (code in 200..299) c.inputStream else c.errorStream
+                        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                        if (code !in 200..299) {
+                            val detail = try { JSONObject(body).optString("detail", "HTTP $code") } catch (_: Exception) { "HTTP $code" }
+                            throw IllegalStateException(detail)
+                        }
+                        JSONObject(body)
+                    } finally { c.disconnect() }
+                }
+                val macro = try {
+                    val j = request("/api/v1/analysis/gold-macro")
+                    val bias = j.optString("bias", "غير محدد")
+                    val explanation = j.optString("explanation", "لا يوجد تفسير")
+                    "الانحياز: $bias — $explanation"
+                } catch (e: Exception) {
+                    "غير متاح: ${e.message ?: "تعذر الاتصال بمصدر FRED"}"
+                }
+                val news = try {
+                    val j = request("/api/v1/analysis/news-filter")
+                    val decision = j.optString("decision", "غير محدد")
+                    val reason = j.optString("reason", "لا يوجد تفسير")
+                    val count = j.optJSONArray("active_events")?.length() ?: 0
+                    "القرار: $decision — أحداث نشطة: $count — $reason"
+                } catch (e: Exception) {
+                    "غير متاح: ${e.message ?: "التقويم الاقتصادي غير متصل"}"
+                }
+                Pair(macro, news)
+            }
+            macroSummary = result.first
+            calendarSummary = result.second
         }
     }
 
@@ -130,9 +180,17 @@ private fun GoldAiApp(
     goldPrice: String,
     quoteStatus: String,
     quoteReceived: Boolean,
+    macroSummary: String,
+    calendarSummary: String,
     onCheckBackend: () -> Unit,
-    onRefreshGold: () -> Unit
+    onRefreshGold: () -> Unit,
+    onRefreshContext: () -> Unit
 ) {
+    LaunchedEffect(Unit) {
+        onCheckBackend()
+        onRefreshGold()
+        onRefreshContext()
+    }
     Surface(Modifier.fillMaxSize(), color = Night) {
         Column(Modifier.fillMaxSize()) {
             Column(
@@ -143,7 +201,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived)
+                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, onRefreshContext)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -248,15 +306,22 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
 }
 
 @Composable
-private fun AnalysisPage(quoteReceived: Boolean) {
+private fun AnalysisPage(
+    quoteReceived: Boolean,
+    macroSummary: String,
+    calendarSummary: String,
+    onRefreshContext: () -> Unit
+) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (quoteReceived) "تم استلام سعر الوسيط" else "التحليل متوقف: لا توجد بيانات MT5 حديثة", if (quoteReceived) Green else Gold)
-    AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", "بانتظار شموع GOLD")
+    AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", "بانتظار شموع GOLD من جسر MT5")
     AnalysisCard("02", "Liquidity & Imbalance", "Equal Highs/Lows • Sweep • Fair Value Gap", "بانتظار بيانات الشموع")
-    AnalysisCard("03", "Multi-Timeframe", "توافق M5 و M15 مع سياق H1 و H4", "4 أطر زمنية مطلوبة")
-    AnalysisCard("04", "Market Regime", "Trend • Range • Transition • Volatility", "لم يتم تصنيف الحالة بعد")
-    AnalysisCard("05", "Macro & Economic Calendar", "الأخبار عالية التأثير والعوامل المؤثرة على الذهب", "لا تعرض أحداثاً غير موثقة")
-    Text("ملاحظة: هذه الصفحة تعرض وحدات التحليل وحالتها؛ لا يتم اختلاق نتائج أو مستويات سعرية عند غياب البيانات.", color = Muted, fontSize = 11.sp)
+    AnalysisCard("03", "Multi-Timeframe", "توافق M5 و M15 مع سياق H1 و H4", "بانتظار تغذية الشموع للأطر الأربعة")
+    AnalysisCard("04", "Market Regime", "Trend • Range • Transition • Volatility", "بانتظار شموع حديثة لتصنيف السوق")
+    AnalysisCard("05", "Gold Macro — FRED", "العوائد الأمريكية والدولار الأمريكي", macroSummary)
+    AnalysisCard("06", "Economic News Filter", "الأحداث الأمريكية عالية التأثير ونافذة الحظر", calendarSummary)
+    GoldButton("تحديث التحليل الاقتصادي والأخبار", onRefreshContext)
+    Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
 
 @Composable
