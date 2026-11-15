@@ -105,6 +105,13 @@ def test_market_snapshot_handles_provider_failure(monkeypatch):
 
 
 def test_signal_waits_when_filters_are_not_aligned():
+    main._latest_mt5_quote = {
+        "symbol": "GOLD", "bid": 2350.0, "ask": 2350.2, "last": 0,
+        "mid": 2350.1, "spread_points": 20, "digits": 2, "point": 0.01,
+        "source": "MetaTrader 5 broker feed",
+        "source_updated_at": datetime.now(timezone.utc),
+        "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
+    }
     response = client.post(
         "/api/v1/signals/evaluate",
         json={
@@ -121,6 +128,16 @@ def test_signal_waits_when_filters_are_not_aligned():
     assert body["direction"] == "WAIT"
     assert body["confidence"] == 0
     assert body["disclaimer"]
+
+
+def test_signal_endpoint_fails_closed_without_fresh_mt5_quote():
+    main._latest_mt5_quote = None
+    response = client.post(
+        "/api/v1/signals/evaluate",
+        json={"symbol": "GOLD", "timeframe": "M5", "current_price": 2350.0},
+    )
+    assert response.status_code == 503
+    assert "MetaTrader 5" in response.json()["detail"]
 
 
 def test_signal_rejects_unsupported_symbol():
