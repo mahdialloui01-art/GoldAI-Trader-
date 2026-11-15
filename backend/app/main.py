@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from decimal import Decimal, ROUND_DOWN
 import math
+import statistics
 from typing import Optional
 
 import httpx
@@ -558,6 +559,12 @@ class TechnicalAnalysisRequest(BaseModel):
     candles: list[Candle] = Field(min_length=60, max_length=500)
 
 
+class MarketRegimeRequest(BaseModel):
+    symbol: str = "GOLD"
+    timeframe: str
+    candles: list[Candle] = Field(min_length=60, max_length=500)
+
+
 class MultiTimeframeAnalysisRequest(BaseModel):
     symbol: str = "GOLD"
     m5: list[Candle] = Field(min_length=60, max_length=500)
@@ -654,6 +661,82 @@ def _atr_wilder_series(candles: list[Candle], period: int = 14) -> list[float | 
         current = ((period - 1) * current + ranges[index]) / period
         result[index + 1] = current
     return result
+
+
+def _adx_wilder(candles: list[Candle], period: int = 14) -> tuple[float, float, float]:
+    if len(candles) < period + 2:
+        raise ValueError("Not enough candles for ADX.")
+    true_ranges = _true_ranges(candles)
+    plus_dm = []
+    minus_dm = []
+    for index in range(1, len(candles)):
+        up_move = candles[index].high - candles[index - 1].high
+        down_move = candles[index - 1].low - candles[index].low
+        plus_dm.append(up_move if up_move > down_move and up_move > 0 else 0.0)
+        minus_dm.append(down_move if down_move > up_move and down_move > 0 else 0.0)
+
+    tr_smooth = sum(true_ranges[:period])
+    plus_smooth = sum(plus_dm[:period])
+    minus_smooth = sum(minus_dm[:period])
+    dx_values = []
+    plus_di = minus_di = 0.0
+    for index in range(period - 1, len(true_ranges)):
+        if index >= period:
+            tr_smooth = tr_smooth - tr_smooth / period + true_ranges[index]
+            plus_smooth = plus_smooth - plus_smooth / period + plus_dm[index]
+            minus_smooth = minus_smooth - minus_smooth / period + minus_dm[index]
+        plus_di = 100 * plus_smooth / tr_smooth if tr_smooth else 0.0
+        minus_di = 100 * minus_smooth / tr_smooth if tr_smooth else 0.0
+        denominator = plus_di + minus_di
+        dx_values.append(100 * abs(plus_di - minus_di) / denominator if denominator else 0.0)
+    if len(dx_values) < period:
+        raise ValueError("Not enough directional movement values for ADX.")
+    adx = sum(dx_values[:period]) / period
+    for dx in dx_values[period:]:
+        adx = ((period - 1) * adx + dx) / period
+    return adx, plus_di, minus_di
+
+
+def _market_regime_analysis(candles: list[Candle]) -> dict:
+    closes = [item.close for item in candles]
+    atr = _atr_wilder(candles)
+    atr_series = [value for value in _atr_wilder_series(candles) if value is not None]
+    baseline = statistics.median(atr_series[-50:]) if atr_series else atr
+    volatility_ratio = atr / baseline if baseline > 0 else 1.0
+    adx, plus_di, minus_di = _adx_wilder(candles)
+    if volatility_ratio >= 1.5:
+        regime = "HIGH_VOLATILITY"
+        action = "WAIT"
+    elif adx >= 25 and plus_di > minus_di:
+        regime = "TRENDING_UP"
+        action = "TREND_FOLLOWING_SETUP_ONLY"
+    elif adx >= 25 and minus_di > plus_di:
+        regime = "TRENDING_DOWN"
+        action = "TREND_FOLLOWING_SETUP_ONLY"
+    elif adx < 20:
+        regime = "RANGING"
+        action = "RANGE_SETUP_ONLY"
+    else:
+        regime = "TRANSITION"
+        action = "WAIT_FOR_CONFIRMATION"
+    return {
+        "market_regime": regime,
+        "recommended_action": action,
+        "indicators": {
+            "adx14_wilder": round(adx, 2),
+            "plus_di14": round(plus_di, 2),
+            "minus_di14": round(minus_di, 2),
+            "atr14_wilder": round(atr, 5),
+            "atr_vs_recent_median": round(volatility_ratio, 3),
+            "close": closes[-1],
+        },
+        "thresholds": {
+            "strong_trend_adx": 25,
+            "range_adx_below": 20,
+            "high_volatility_atr_ratio": 1.5,
+        },
+        "note": "Regime labels are rule-based context, not a predictive model or trade authorization.",
+    }
 
 
 def _macd(closes: list[float]) -> tuple[float, float, float]:
@@ -840,6 +923,38 @@ def run_backtest(request: BacktestRequest) -> dict:
         ],
         "execution_enabled": False,
         "disclaimer": "Historical simulation only. It does not guarantee future performance and does not model every broker fill, swap, financing charge, liquidity event or account-currency conversion.",
+    }
+
+
+
+@app.post("/api/v1/analysis/market-regime")
+def market_regime_analysis(request: MarketRegimeRequest) -> dict:
+    """Classify trend/range/volatility using Wilder ADX and ATR from broker candles."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+    timeframe = request.timeframe.upper()
+    if timeframe not in _TIMEFRAME_SECONDS:
+        raise HTTPException(status_code=422, detail="Unsupported timeframe.")
+    quote = _fresh_mt5_quote()
+    normalized_times = []
+    for candle in request.candles:
+        if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
+            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+        stamp = candle.time if candle.time.tzinfo else candle.time.replace(tzinfo=timezone.utc)
+        normalized_times.append(stamp.astimezone(timezone.utc))
+    if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
+        raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
+    age = (datetime.now(timezone.utc) - normalized_times[-1]).total_seconds()
+    if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
+        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future.")
+    analysis = _market_regime_analysis(request.candles)
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "timeframe": timeframe,
+        **analysis,
+        "broker_spread_points": quote["spread_points"],
+        "generated_at": datetime.now(timezone.utc),
+        "execution_enabled": False,
     }
 
 
