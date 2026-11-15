@@ -1,7 +1,6 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-import httpx
 import pytest
 
 from app import xoomar_calendar
@@ -40,6 +39,7 @@ def envelope(rows, updated=None):
     return {
         "updatedAt": (updated or datetime.now(timezone.utc)).isoformat(),
         "data": rows,
+        "meta": {"sourceAttribution": "Agency source attribution for tests."},
     }
 
 
@@ -70,6 +70,7 @@ def test_loads_high_impact_events_without_key_and_never_invents_forecast(monkeyp
     assert result[0]["forecast"] == ""
     assert result[0]["forecast_available"] is False
     assert result[0]["data_provider"] == "XOOMAR"
+    assert result[0]["source_attribution"] == "Agency source attribution for tests."
     assert FakeClient.request[2] == {}
 
 
