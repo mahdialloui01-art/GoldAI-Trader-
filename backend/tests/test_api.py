@@ -888,7 +888,7 @@ def test_pre_release_news_analysis_returns_probabilities_and_paper_candidate():
     assert abs(sum(probs.values()) - 1.0) < 0.00001
     # Client-supplied validation claims must never unlock a trade candidate.
     assert body["decision"] == "NO_TRADE"
-    assert body["most_likely_gold_direction"] == "UNCONFIRMED"
+    assert body["most_likely_gold_direction"] == "BEARISH"  # descriptive scenario, not an authorized trade
     assert body["forecast_inputs"]["client_validation_claim_ignored"] is True
     assert body["forecast_inputs"]["server_side_model_registry_verified"] is False
     assert body["execution_enabled"] is False
