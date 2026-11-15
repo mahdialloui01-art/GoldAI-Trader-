@@ -5,9 +5,9 @@ CTrade trade;
 #property version   "2.1"
 #property description "Streams XM GOLD Bid/Ask and closed M5/M15/H1/H4 candles to GoldAI Trader."
 
-input string BackendUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/quote";
-input string CandleDataUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/candles";
-input string DemoSignalUrl = "https://YOUR_BACKEND_HOST/api/v1/mt5/demo/signal";
+input string BackendUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/quote";
+input string CandleDataUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/candles";
+input string DemoSignalUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/demo/signal";
 input string BridgeToken = "CHANGE_ME";
 input int MinQuoteIntervalMilliseconds = 250;
 input int CandleRefreshSeconds = 60;
