@@ -220,93 +220,180 @@ class TechnicalAnalysisRequest(BaseModel):
     candles: list[Candle] = Field(min_length=60, max_length=500)
 
 
-def _ema(values: list[float], period: int) -> float:
+_TIMEFRAME_SECONDS = {
+    "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+    "H1": 3600, "H4": 14400, "D1": 86400,
+}
+
+
+def _ema_series(values: list[float], period: int) -> list[float]:
+    if len(values) < period:
+        raise ValueError("Not enough values for EMA.")
+    seed = sum(values[:period]) / period
+    result = [seed]
     alpha = 2 / (period + 1)
-    result = values[0]
-    for value in values[1:]:
-        result = alpha * value + (1 - alpha) * result
+    for value in values[period:]:
+        result.append(alpha * value + (1 - alpha) * result[-1])
     return result
 
 
-def _rsi(values: list[float], period: int = 14) -> float:
+def _rsi_wilder(values: list[float], period: int = 14) -> float:
     changes = [values[i] - values[i - 1] for i in range(1, len(values))]
-    gains = [max(change, 0) for change in changes[-period:]]
-    losses = [max(-change, 0) for change in changes[-period:]]
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
+    if len(changes) < period:
+        raise ValueError("Not enough values for RSI.")
+    gains = [max(change, 0.0) for change in changes]
+    losses = [max(-change, 0.0) for change in changes]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    for gain, loss in zip(gains[period:], losses[period:]):
+        avg_gain = ((period - 1) * avg_gain + gain) / period
+        avg_loss = ((period - 1) * avg_loss + loss) / period
     if avg_loss == 0:
         return 100.0 if avg_gain > 0 else 50.0
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
 
-def _atr(candles: list[Candle], period: int = 14) -> float:
-    ranges = []
-    for i in range(1, len(candles)):
-        current, previous = candles[i], candles[i - 1]
-        ranges.append(max(
-            current.high - current.low,
-            abs(current.high - previous.close),
-            abs(current.low - previous.close),
-        ))
-    return sum(ranges[-period:]) / period
+def _true_ranges(candles: list[Candle]) -> list[float]:
+    return [
+        max(
+            candle.high - candle.low,
+            abs(candle.high - candles[index - 1].close),
+            abs(candle.low - candles[index - 1].close),
+        )
+        for index, candle in enumerate(candles) if index > 0
+    ]
+
+
+def _atr_wilder(candles: list[Candle], period: int = 14) -> float:
+    ranges = _true_ranges(candles)
+    if len(ranges) < period:
+        raise ValueError("Not enough candles for ATR.")
+    value = sum(ranges[:period]) / period
+    for current in ranges[period:]:
+        value = ((period - 1) * value + current) / period
+    return value
+
+
+def _macd(closes: list[float]) -> tuple[float, float, float]:
+    fast = _ema_series(closes, 12)
+    slow = _ema_series(closes, 26)
+    # Align both EMA streams to the same trailing candle.
+    offset = 26 - 12
+    macd_line = [fast[index + offset] - slow[index] for index in range(len(slow))]
+    signal_line = _ema_series(macd_line, 9)
+    line = macd_line[-1]
+    signal = signal_line[-1]
+    return line, signal, line - signal
 
 
 @app.post("/api/v1/analysis/technical")
 def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
-    """Deterministic technical analysis from broker OHLC candles; no fabricated signals."""
+    """Broker-candle analysis. It deliberately returns WAIT when inputs are unsafe."""
+    timeframe = request.timeframe.upper()
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+    if timeframe not in _TIMEFRAME_SECONDS:
+        raise HTTPException(status_code=422, detail="Unsupported timeframe. Use M1, M5, M15, M30, H1, H4 or D1.")
     quote = _fresh_mt5_quote()
     candles = request.candles
+
+    normalized_times = []
     for candle in candles:
-        if candle.high < max(candle.open, candle.close, candle.low):
+        if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
-        if candle.low > min(candle.open, candle.close, candle.high):
-            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+        timestamp = candle.time
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        normalized_times.append(timestamp.astimezone(timezone.utc))
+    if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
+        raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
+
+    now = datetime.now(timezone.utc)
+    latest_age = (now - normalized_times[-1]).total_seconds()
+    freshness_limit = _TIMEFRAME_SECONDS[timeframe] * 2 + 60
+    if latest_age < -30 or latest_age > freshness_limit:
+        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future; refresh MT5 candle data.")
+
     closes = [item.close for item in candles]
-    ema20, ema50 = _ema(closes[-50:], 20), _ema(closes[-50:], 50)
-    rsi14, atr14 = _rsi(closes), _atr(candles)
+    ema20 = _ema_series(closes, 20)[-1]
+    ema50 = _ema_series(closes, 50)[-1]
+    rsi14 = _rsi_wilder(closes)
+    atr14 = _atr_wilder(candles)
+    macd_line, macd_signal, macd_histogram = _macd(closes)
+    bb_window = closes[-20:]
+    bb_mid = sum(bb_window) / 20
+    bb_std = (sum((value - bb_mid) ** 2 for value in bb_window) / 20) ** 0.5
+    bb_upper, bb_lower = bb_mid + 2 * bb_std, bb_mid - 2 * bb_std
     last = candles[-1]
+
     score = 0
-    reasons = []
+    reasons: list[str] = []
     if ema20 > ema50 and last.close > ema20:
         score += 2
-        reasons.append("الاتجاه صاعد: EMA20 أعلى EMA50 والسعر فوق EMA20.")
+        reasons.append("الاتجاه العام صاعد: EMA20 فوق EMA50 والسعر فوق EMA20.")
     elif ema20 < ema50 and last.close < ema20:
         score -= 2
-        reasons.append("الاتجاه هابط: EMA20 أسفل EMA50 والسعر تحت EMA20.")
+        reasons.append("الاتجاه العام هابط: EMA20 تحت EMA50 والسعر تحت EMA20.")
     else:
-        reasons.append("الاتجاه غير حاسم؛ المتوسطات والسعر غير متوافقة.")
+        reasons.append("الاتجاه غير مؤكد؛ المتوسطات لا تعطي توافقاً واضحاً.")
+
     if 52 <= rsi14 <= 68:
         score += 1
-        reasons.append("زخم شرائي إيجابي دون تشبع واضح.")
+        reasons.append("RSI يدعم الزخم الشرائي دون تشبع.")
     elif 32 <= rsi14 <= 48:
         score -= 1
-        reasons.append("زخم بيعي سلبي دون تشبع واضح.")
-    elif rsi14 > 70 or rsi14 < 30:
-        reasons.append("RSI في منطقة تشبع؛ تجنب مطاردة الحركة.")
-    if last.close > last.open:
+        reasons.append("RSI يدعم الزخم البيعي دون تشبع.")
+    elif rsi14 >= 70 or rsi14 <= 30:
+        reasons.append("RSI في منطقة تشبع؛ لا تطارد الحركة.")
+
+    if macd_histogram > 0:
         score += 1
-    elif last.close < last.open:
+        reasons.append("MACD histogram موجب ويدعم الزخم الصاعد.")
+    elif macd_histogram < 0:
         score -= 1
-    direction = Direction.BUY if score >= 3 else Direction.SELL if score <= -3 else Direction.WAIT
-    confidence = min(85, 50 + abs(score) * 8) if direction != Direction.WAIT else 0
+        reasons.append("MACD histogram سالب ويدعم الزخم الهابط.")
+
+    candle_range = max(last.high - last.low, 1e-12)
+    body_ratio = abs(last.close - last.open) / candle_range
+    if last.close > last.open and body_ratio >= 0.6:
+        score += 1
+        reasons.append("آخر شمعة صاعدة بجسم قوي نسبياً.")
+    elif last.close < last.open and body_ratio >= 0.6:
+        score -= 1
+        reasons.append("آخر شمعة هابطة بجسم قوي نسبياً.")
+
+    spread_price = quote["spread_points"] * quote["point"]
+    spread_atr_ratio = spread_price / atr14 if atr14 > 0 else float("inf")
+    if spread_atr_ratio > 0.15:
+        reasons.append("السبريد مرتفع مقارنة بالتذبذب؛ تم منع إصدار اتجاه تداول.")
+        direction = Direction.WAIT
+    else:
+        direction = Direction.BUY if score >= 4 else Direction.SELL if score <= -4 else Direction.WAIT
+    if direction == Direction.WAIT:
+        reasons.append("لا توجد موافقات كافية؛ القرار الآمن هو الانتظار.")
+
+    confidence_score = min(85, 50 + abs(score) * 6) if direction != Direction.WAIT else 0
     return {
         "symbol": settings.broker_gold_symbol.upper(),
-        "timeframe": request.timeframe.upper(),
+        "timeframe": timeframe,
         "direction": direction,
-        "confidence": confidence,
+        "confidence_score": confidence_score,
+        "confidence_note": "مؤشر توافق داخلي غير معاير، وليس احتمال نجاح الصفقة.",
         "indicators": {
-            "ema20": round(ema20, 3), "ema50": round(ema50, 3),
-            "rsi14": round(rsi14, 2), "atr14": round(atr14, 3),
-            "last_close": last.close,
+            "ema20": round(ema20, 5), "ema50": round(ema50, 5),
+            "rsi14_wilder": round(rsi14, 2), "atr14_wilder": round(atr14, 5),
+            "macd": round(macd_line, 5), "macd_signal": round(macd_signal, 5),
+            "macd_histogram": round(macd_histogram, 5),
+            "bollinger_upper": round(bb_upper, 5), "bollinger_middle": round(bb_mid, 5),
+            "bollinger_lower": round(bb_lower, 5),
         },
         "broker_quote": {"bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"]},
+        "spread_atr_ratio": round(spread_atr_ratio, 4),
         "candle_count": len(candles),
         "reasons": reasons,
-        "risk_note": "ATR is a volatility measure, not a guaranteed stop distance. Confirm higher timeframes and event risk before any trade.",
-        "generated_at": datetime.now(timezone.utc),
+        "risk_note": "ATR مقياس للتذبذب وليس وقف خسارة مضموناً. يلزم توافق الأطر الأعلى واختبار المخاطر والأخبار قبل أي صفقة.",
+        "generated_at": now,
         "execution_enabled": False,
     }
 
