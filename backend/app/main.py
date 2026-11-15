@@ -2429,3 +2429,97 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         },
         "generated_at": datetime.now(timezone.utc),
     }
+
+
+# Authenticated MT5 candle cache. It is intentionally in-memory: after a server
+# restart the API waits for a fresh complete batch instead of reusing stale bars.
+_latest_mt5_candles: dict | None = None
+
+
+class MT5CandleBatch(MultiTimeframeAnalysisRequest):
+    """Closed broker candles streamed by the MT5 EA; same GOLD-only timeframe contract."""
+
+
+def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> dict:
+    now = datetime.now(timezone.utc)
+    series = {"M5": batch.m5, "M15": batch.m15, "H1": batch.h1, "H4": batch.h4}
+    normalized: dict[str, list[Candle]] = {}
+    for timeframe, candles in series.items():
+        stamps: list[datetime] = []
+        copied: list[Candle] = []
+        for candle in candles:
+            if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
+                raise HTTPException(status_code=422, detail=f"Invalid OHLC values in {timeframe}.")
+            stamp = candle.time
+            if stamp.tzinfo is None:
+                raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamps must include a timezone.")
+            stamp = stamp.astimezone(timezone.utc)
+            stamps.append(stamp)
+            copied.append(Candle(
+                time=stamp, open=candle.open, high=candle.high, low=candle.low,
+                close=candle.close, tick_volume=candle.tick_volume,
+            ))
+        if any(current <= previous for previous, current in zip(stamps, stamps[1:])):
+            raise HTTPException(status_code=422, detail=f"{timeframe} candle timestamps must be strictly increasing.")
+        age = (now - stamps[-1]).total_seconds()
+        if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
+            raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale or from the future.")
+        normalized[timeframe] = copied
+    return normalized
+
+
+@app.post("/api/v1/mt5/candles")
+def receive_mt5_candles(
+    batch: MT5CandleBatch,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Receive authenticated closed GOLD candles for M5/M15/H1/H4 from the MT5 EA."""
+    global _latest_mt5_candles
+    expected = settings.mt5_bridge_token
+    if not expected or not authorization or not secrets.compare_digest(
+        authorization.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
+    if batch.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} candles are accepted.")
+    normalized = _validate_mt5_candle_batch(batch)
+    _latest_mt5_candles = {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "timeframes": normalized,
+        "received_at": datetime.now(timezone.utc),
+        "source": "Authenticated MetaTrader 5 broker candle feed",
+    }
+    return {
+        "accepted": True,
+        "symbol": settings.broker_gold_symbol.upper(),
+        "source": _latest_mt5_candles["source"],
+        "candle_counts": {frame: len(rows) for frame, rows in normalized.items()},
+        "latest_candle_times": {frame: rows[-1].time for frame, rows in normalized.items()},
+        "execution_enabled": False,
+    }
+
+
+@app.get("/api/v1/analysis/expert/live")
+async def live_expert_technical_analysis() -> dict:
+    """Analyze the latest complete, fresh, authenticated MT5 candle batch."""
+    if _latest_mt5_candles is None:
+        raise HTTPException(status_code=503, detail="Waiting for the first complete authenticated MT5 candle batch.")
+    series = _latest_mt5_candles["timeframes"]
+    now = datetime.now(timezone.utc)
+    for timeframe, candles in series.items():
+        age = (now - candles[-1].time.astimezone(timezone.utc)).total_seconds()
+        if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
+            raise HTTPException(status_code=503, detail=f"Cached {timeframe} candles are stale; expert analysis is paused.")
+    request = MultiTimeframeAnalysisRequest(
+        symbol=_latest_mt5_candles["symbol"],
+        m5=series["M5"], m15=series["M15"], h1=series["H1"], h4=series["H4"],
+    )
+    result = await expert_technical_analysis(request)
+    result["market_data"] = {
+        "source": _latest_mt5_candles["source"],
+        "received_at": _latest_mt5_candles["received_at"],
+        "candle_counts": {frame: len(rows) for frame, rows in series.items()},
+        "feed_age_seconds": max(0, int((now - _latest_mt5_candles["received_at"]).total_seconds())),
+        "closed_candles_only": True,
+    }
+    return result
