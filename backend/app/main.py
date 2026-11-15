@@ -108,6 +108,7 @@ class PositionSizeRequest(BaseModel):
 
 class RiskCheckResponse(BaseModel):
     approved: bool
+    execution_authorized: bool = False
     estimated_risk_percent: float
     max_allowed_risk_percent: float
     reasons: list[str]
