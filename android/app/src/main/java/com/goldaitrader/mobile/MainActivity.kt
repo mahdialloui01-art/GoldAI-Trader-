@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
+    private var newsHeadlinesSummary by mutableStateOf("في انتظار العناوين الرسمية")
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -70,6 +71,7 @@ class MainActivity : ComponentActivity() {
                     macroSummary = macroSummary,
                     calendarSummary = calendarSummary,
                     newsEngineSummary = newsEngineSummary,
+                    newsHeadlinesSummary = newsHeadlinesSummary,
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -161,11 +163,26 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     "حالة المحرك غير متاحة حالياً: ${e.message ?: "تعذر الاتصال"}"
                 }
-            Triple(macro, news, engine)
+                val headlines = try {
+                    val j = request("/api/v1/news/feed")
+                    val items = j.optJSONArray("headlines")
+                    if (items == null || items.length() == 0) {
+                        "لا توجد عناوين جديدة متاحة حالياً — الحالة: \${j.optString("status", "غير محدد")}"
+                    } else {
+                        (0 until minOf(3, items.length())).joinToString("\n") { index ->
+                            val item = items.optJSONObject(index)
+                            "• \${item?.optString("title", "عنوان غير متاح") ?: "عنوان غير متاح"} — \${item?.optString("source", "") ?: ""}"
+                        }
+                    }
+                } catch (e: Exception) {
+                    "العناوين الرسمية غير متاحة: \${e.message ?: "تعذر الاتصال"}"
+                }
+                listOf(macro, news, engine, headlines)
             }
             macroSummary = result.first
             calendarSummary = result.second
-            newsEngineSummary = result.third
+            newsEngineSummary = result[2]
+            newsHeadlinesSummary = result[3]
         }
     }
 
@@ -221,6 +238,7 @@ private fun GoldAiApp(
     macroSummary: String,
     calendarSummary: String,
     newsEngineSummary: String,
+    newsHeadlinesSummary: String,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -244,7 +262,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary)
+                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -353,7 +371,8 @@ private fun AnalysisPage(
     quoteReceived: Boolean,
     macroSummary: String,
     calendarSummary: String,
-    newsEngineSummary: String
+    newsEngineSummary: String,
+    newsHeadlinesSummary: String
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (quoteReceived) "تم استلام سعر الوسيط" else "التحليل متوقف: لا توجد بيانات MT5 حديثة", if (quoteReceived) Green else Gold)
@@ -364,6 +383,7 @@ private fun AnalysisPage(
     AnalysisCard("05", "Gold Macro — FRED", "العوائد الأمريكية والدولار الأمريكي", macroSummary)
     AnalysisCard("06", "Economic News Filter", "الأحداث الأمريكية عالية التأثير ونافذة الحظر", calendarSummary)
     AnalysisCard("07", "Auto News Monitor", "تحديث تلقائي للخادم كل 5 دقائق ولعرض التطبيق كل دقيقة", newsEngineSummary)
+    AnalysisCard("08", "Official Economic Headlines", "آخر العناوين من BLS والاحتياطي الفيدرالي", newsHeadlinesSummary)
     Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
 
