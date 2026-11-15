@@ -224,3 +224,83 @@ def test_mt5_quote_rejects_wrong_symbol(monkeypatch):
         headers={"Authorization": "Bearer test-secret"},
     )
     assert response.status_code == 400
+
+
+def _technical_payload(timeframe="M5", count=100, start_offset_seconds=0):
+    now = datetime.now(timezone.utc) - timedelta(seconds=start_offset_seconds)
+    seconds = main._TIMEFRAME_SECONDS[timeframe]
+    candles = []
+    for index in range(count):
+        close = 2300.0 + index * 0.2
+        open_price = close - 0.1
+        candles.append({
+            "time": (now - timedelta(seconds=(count - index - 1) * seconds)).isoformat(),
+            "open": open_price,
+            "high": close + 0.4,
+            "low": open_price - 0.4,
+            "close": close,
+            "tick_volume": 100,
+        })
+    return {"symbol": "GOLD", "timeframe": timeframe, "candles": candles}
+
+
+def _set_fresh_quote():
+    main._latest_mt5_quote = {
+        "symbol": "GOLD", "bid": 2300.0, "ask": 2300.2, "last": 0,
+        "mid": 2300.1, "spread_points": 20, "digits": 2, "point": 0.01,
+        "source": "MetaTrader 5 broker feed",
+        "source_updated_at": datetime.now(timezone.utc),
+        "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
+    }
+
+
+def test_technical_analysis_returns_real_indicator_fields():
+    _set_fresh_quote()
+    response = client.post("/api/v1/analysis/technical", json=_technical_payload())
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["symbol"] == "GOLD"
+    assert body["execution_enabled"] is False
+    assert "rsi14_wilder" in body["indicators"]
+    assert "macd_histogram" in body["indicators"]
+    assert "bollinger_upper" in body["indicators"]
+    assert "confidence_note" in body
+
+
+def test_technical_analysis_rejects_invalid_ohlc():
+    _set_fresh_quote()
+    payload = _technical_payload()
+    payload["candles"][-1]["high"] = payload["candles"][-1]["open"] - 1
+    response = client.post("/api/v1/analysis/technical", json=payload)
+    assert response.status_code == 422
+
+
+def test_technical_analysis_rejects_non_increasing_timestamps():
+    _set_fresh_quote()
+    payload = _technical_payload()
+    payload["candles"][-1]["time"] = payload["candles"][-2]["time"]
+    response = client.post("/api/v1/analysis/technical", json=payload)
+    assert response.status_code == 422
+    assert "strictly increasing" in response.json()["detail"]
+
+
+def test_technical_analysis_rejects_unsupported_timeframe():
+    _set_fresh_quote()
+    payload = _technical_payload()
+    payload["timeframe"] = "W1"
+    response = client.post("/api/v1/analysis/technical", json=payload)
+    assert response.status_code == 422
+
+
+def test_technical_analysis_rejects_stale_candles():
+    _set_fresh_quote()
+    payload = _technical_payload(start_offset_seconds=3600)
+    response = client.post("/api/v1/analysis/technical", json=payload)
+    assert response.status_code == 422
+    assert "stale" in response.json()["detail"]
+
+
+def test_technical_analysis_fails_closed_without_mt5_quote():
+    main._latest_mt5_quote = None
+    response = client.post("/api/v1/analysis/technical", json=_technical_payload())
+    assert response.status_code == 503
