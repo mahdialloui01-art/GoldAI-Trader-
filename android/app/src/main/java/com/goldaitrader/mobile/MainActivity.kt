@@ -169,7 +169,7 @@ private fun DashboardScreen(
                 shape = RoundedCornerShape(22.dp)
             ) {
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
-                    Text("XAUUSD · الذهب مقابل الدولار", color = Muted, fontSize = 13.sp)
+                    Text("GOLD · ذهب XM مقابل الدولار", color = Muted, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text(goldPrice, color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
