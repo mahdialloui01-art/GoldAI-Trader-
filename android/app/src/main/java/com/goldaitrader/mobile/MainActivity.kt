@@ -167,20 +167,20 @@ class MainActivity : ComponentActivity() {
                     val j = request("/api/v1/news/feed")
                     val items = j.optJSONArray("headlines")
                     if (items == null || items.length() == 0) {
-                        "لا توجد عناوين جديدة متاحة حالياً — الحالة: \${j.optString("status", "غير محدد")}"
+                        "لا توجد عناوين جديدة متاحة حالياً — الحالة: ${j.optString("status", "غير محدد")}"
                     } else {
                         (0 until minOf(3, items.length())).joinToString("\n") { index ->
                             val item = items.optJSONObject(index)
-                            "• \${item?.optString("title", "عنوان غير متاح") ?: "عنوان غير متاح"} — \${item?.optString("source", "") ?: ""}"
+                            "• ${item?.optString("title", "عنوان غير متاح") ?: "عنوان غير متاح"} — ${item?.optString("source", "") ?: ""}"
                         }
                     }
                 } catch (e: Exception) {
-                    "العناوين الرسمية غير متاحة: \${e.message ?: "تعذر الاتصال"}"
+                    "العناوين الرسمية غير متاحة: ${e.message ?: "تعذر الاتصال"}"
                 }
                 listOf(macro, news, engine, headlines)
             }
-            macroSummary = result.first
-            calendarSummary = result.second
+            macroSummary = result[0]
+            calendarSummary = result[1]
             newsEngineSummary = result[2]
             newsHeadlinesSummary = result[3]
         }
