@@ -25,6 +25,9 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
+    assert body["analysis_engine_version"] == "0.5.0"
+    assert "closed_candle_microstructure" in body["analysis_layers"]
+    assert "optional_tick_volume_participation" in body["analysis_layers"]
     assert "password" not in body
     assert "api_key" not in body
 
