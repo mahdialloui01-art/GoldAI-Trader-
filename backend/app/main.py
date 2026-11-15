@@ -6,7 +6,7 @@ from typing import Optional
 
 import httpx
 import secrets
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -110,7 +110,7 @@ def get_config() -> dict:
 
 
 @app.post("/api/v1/mt5/quote")
-def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = None) -> dict:
+def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(default=None)) -> dict:
     """Receive the broker's live XAUUSD quote from the authenticated MT5 EA."""
     global _latest_mt5_quote
     expected = settings.mt5_bridge_token
