@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -48,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var quoteReceived by mutableStateOf(false)
     private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
+    private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -67,6 +69,7 @@ class MainActivity : ComponentActivity() {
                     quoteReceived = quoteReceived,
                     macroSummary = macroSummary,
                     calendarSummary = calendarSummary,
+                    newsEngineSummary = newsEngineSummary,
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -148,10 +151,21 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     "غير متاح: ${e.message ?: "التقويم الاقتصادي غير متصل"}"
                 }
-                Pair(macro, news)
+                val engine = try {
+                    val j = request("/api/v1/news/status")
+                    val state = j.optString("overall_status", "UNKNOWN")
+                    val interval = (j.optInt("poll_interval_seconds", 300) / 60).coerceAtLeast(1)
+                    val age = j.optInt("calendar_age_seconds", -1)
+                    val last = j.optString("calendar_last_success_at", "لم يصل بعد")
+                    "الحالة: $state — التحديث الآلي كل $interval دقائق — عمر التقويم: \${if (age >= 0) "$age ثانية" else "غير متاح"} — آخر نجاح: $last"
+                } catch (e: Exception) {
+                    "حالة المحرك غير متاحة حالياً: \${e.message ?: "تعذر الاتصال"}"
+                }
+            Triple(macro, news, engine)
             }
             macroSummary = result.first
             calendarSummary = result.second
+            newsEngineSummary = result.third
         }
     }
 
@@ -206,6 +220,7 @@ private fun GoldAiApp(
     quoteReceived: Boolean,
     macroSummary: String,
     calendarSummary: String,
+    newsEngineSummary: String,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -214,6 +229,10 @@ private fun GoldAiApp(
         onCheckBackend()
         onRefreshGold()
         onRefreshContext()
+        while (true) {
+            delay(60_000)
+            onRefreshContext()
+        }
     }
     Surface(Modifier.fillMaxSize(), color = Night) {
         Column(Modifier.fillMaxSize()) {
@@ -225,7 +244,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, onRefreshContext)
+                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -334,7 +353,7 @@ private fun AnalysisPage(
     quoteReceived: Boolean,
     macroSummary: String,
     calendarSummary: String,
-    onRefreshContext: () -> Unit
+    newsEngineSummary: String
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (quoteReceived) "تم استلام سعر الوسيط" else "التحليل متوقف: لا توجد بيانات MT5 حديثة", if (quoteReceived) Green else Gold)
@@ -344,7 +363,7 @@ private fun AnalysisPage(
     AnalysisCard("04", "Market Regime", "Trend • Range • Transition • Volatility", "بانتظار شموع حديثة لتصنيف السوق")
     AnalysisCard("05", "Gold Macro — FRED", "العوائد الأمريكية والدولار الأمريكي", macroSummary)
     AnalysisCard("06", "Economic News Filter", "الأحداث الأمريكية عالية التأثير ونافذة الحظر", calendarSummary)
-    GoldButton("تحديث التحليل الاقتصادي والأخبار", onRefreshContext)
+    AnalysisCard("07", "Auto News Monitor", "تحديث تلقائي للخادم كل 5 دقائق ولعرض التطبيق كل دقيقة", newsEngineSummary)
     Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
 
