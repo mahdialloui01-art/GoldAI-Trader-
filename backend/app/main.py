@@ -1640,6 +1640,134 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     }
 
 
+@app.post("/api/v1/analysis/signal-fusion")
+async def signal_fusion_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
+    """Explainable multi-layer GOLD confluence score; never authorizes order execution."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+
+    # Reuse the existing validated technical engine and closed-candle price-action layer.
+    mtf = multi_timeframe_analysis(request)
+    analyses = mtf["timeframes"]
+    candle_sets = {"M5": request.m5, "M15": request.m15, "H1": request.h1, "H4": request.h4}
+    weights = {"M5": 0.15, "M15": 0.20, "H1": 0.30, "H4": 0.35}
+    signed_components: dict[str, float] = {}
+    price_action: dict[str, dict] = {}
+    microstructure: dict[str, dict] = {}
+    reasons: list[str] = []
+
+    for frame, candles in candle_sets.items():
+        result = analyses[frame]
+        direction = result["direction"]
+        sign = 1.0 if direction == Direction.BUY else -1.0 if direction == Direction.SELL else 0.0
+        technical_strength = float(result.get("confidence_score", 0)) / 100.0
+        signed_components[frame] = sign * technical_strength * weights[frame]
+
+        pa = _price_action_analysis(candles, 3, 3, 0.12)
+        micro = _candle_microstructure_analysis(candles)
+        price_action[frame] = {
+            "market_structure": pa["market_structure"],
+            "events": pa["events"],
+            "order_block_candidate": pa["order_block_candidate"],
+            "latest_fvg": {
+                "bullish": pa["fair_value_gaps"]["bullish"][-1:] ,
+                "bearish": pa["fair_value_gaps"]["bearish"][-1:] ,
+            },
+        }
+        microstructure[frame] = micro
+
+        structure_sign = 1.0 if pa["market_structure"] == "UPTREND" else -1.0 if pa["market_structure"] == "DOWNTREND" else 0.0
+        signed_components[frame] += structure_sign * weights[frame] * 0.12
+
+        pattern = micro["closed_candle_pattern"]
+        if pattern in ("BULLISH_ENGULFING", "BULLISH_REJECTION") or micro["impulse_direction"] == "BULLISH":
+            signed_components[frame] += weights[frame] * 0.06
+        elif pattern in ("BEARISH_ENGULFING", "BEARISH_REJECTION") or micro["impulse_direction"] == "BEARISH":
+            signed_components[frame] -= weights[frame] * 0.06
+
+        volume_bias = micro["tick_volume"]["directional_confirmation"]
+        if volume_bias == "BULLISH":
+            signed_components[frame] += weights[frame] * 0.04
+        elif volume_bias == "BEARISH":
+            signed_components[frame] -= weights[frame] * 0.04
+
+    raw_score = max(-1.0, min(1.0, sum(signed_components.values())))
+    score_0_100 = round(50.0 + 50.0 * raw_score, 1)
+    directions = {frame: analyses[frame]["direction"].value for frame in ("M5", "M15", "H1", "H4")}
+
+    # Higher-timeframe conflict is a hard veto; lower timeframes cannot overrule H4/H1.
+    higher_aligned = directions["H4"] in ("BUY", "SELL") and directions["H1"] == directions["H4"]
+    entry_aligned = directions["M15"] == directions["H4"] and directions["M5"] in (directions["H4"], "WAIT")
+    final_direction = Direction.WAIT
+    if not higher_aligned:
+        reasons.append("H4 وH1 غير متوافقين؛ تم إيقاف الإشارة.")
+    elif not entry_aligned:
+        reasons.append("M15 لا يؤكد اتجاه الإطار الأعلى أو M5 يعاكسه.")
+    elif raw_score >= 0.25 and directions["H4"] == "BUY":
+        final_direction = Direction.BUY
+    elif raw_score <= -0.25 and directions["H4"] == "SELL":
+        final_direction = Direction.SELL
+    else:
+        reasons.append("قوة توافق الطبقات أقل من الحد المطلوب؛ الانتظار أفضل.")
+
+    # News and macro gates are mandatory. Missing/stale data blocks directional output.
+    gate_status: dict[str, object] = {}
+    try:
+        news = await economic_news_filter()
+        gate_status["news"] = news["decision"]
+        if news["decision"] != "CLEAR":
+            final_direction = Direction.WAIT
+            reasons.append("فلتر الأخبار عالي التأثير يمنع إصدار إشارة تداول.")
+    except HTTPException:
+        gate_status["news"] = "UNAVAILABLE"
+        final_direction = Direction.WAIT
+        reasons.append("تقويم الأخبار غير متاح أو قديم؛ تم إيقاف الإشارة احتياطياً.")
+
+    try:
+        macro = await gold_macro_analysis()
+        macro_bias = macro.get("bias", "MIXED_OR_NEUTRAL")
+        gate_status["macro"] = macro_bias
+        if macro_bias == "GOLD_HEADWIND" and final_direction == Direction.BUY:
+            final_direction = Direction.WAIT
+            reasons.append("ضغط الدولار والعوائد يعاكس الإشارة الشرائية؛ يلزم تأكيد إضافي.")
+        elif macro_bias == "GOLD_SUPPORTIVE" and final_direction == Direction.SELL:
+            final_direction = Direction.WAIT
+            reasons.append("العوامل الاقتصادية تدعم الذهب وتعارض الإشارة البيعية.")
+    except HTTPException:
+        gate_status["macro"] = "UNAVAILABLE"
+        final_direction = Direction.WAIT
+        reasons.append("بيانات FRED الاقتصادية غير متاحة أو قديمة؛ تم إيقاف الإشارة احتياطياً.")
+
+    quote = _fresh_mt5_quote()
+    spread_block = any(float(item["spread_atr_ratio"]) > 0.15 for item in analyses.values())
+    if spread_block:
+        final_direction = Direction.WAIT
+        reasons.append("السبريد مرتفع مقارنة بـ ATR في إطار واحد على الأقل.")
+
+    if final_direction != Direction.WAIT:
+        reasons.insert(0, "توافق الاتجاه والأطر الزمنية والبنية والشموع اجتاز الفلاتر.")
+    else:
+        reasons.append("WAIT لا يعني انعكاساً؛ يعني عدم توفر شروط كافية لإشارة موثوقة.")
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "direction": final_direction,
+        "confluence_score_0_to_100": score_0_100,
+        "score_note": "درجة توافق قواعد داخلية وليست احتمال ربح أو نسبة نجاح.",
+        "timeframe_weights": weights,
+        "timeframe_directions": directions,
+        "technical_components": {key: round(value, 4) for key, value in signed_components.items()},
+        "price_action": price_action,
+        "closed_candle_microstructure": microstructure,
+        "safety_gates": gate_status,
+        "broker_spread_points": quote["spread_points"],
+        "reasons": reasons,
+        "execution_enabled": False,
+        "generated_at": datetime.now(timezone.utc),
+        "disclaimer": "بحث وتحليل تجريبي فقط؛ لا يرسل أوامر ولا يضمن النتائج.",
+    }
+
+
 @app.post("/api/v1/signals/evaluate", response_model=SignalResponse)
 def evaluate_signal(request: SignalRequest) -> SignalResponse:
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
