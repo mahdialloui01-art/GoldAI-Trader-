@@ -126,7 +126,14 @@ class MainActivity : ComponentActivity() {
                     val decision = j.optString("decision", "غير محدد")
                     val reason = j.optString("reason", "لا يوجد تفسير")
                     val count = j.optJSONArray("active_events")?.length() ?: 0
-                    "القرار: $decision — أحداث نشطة: $count — $reason"
+                    val upcoming = j.optJSONArray("upcoming_events")
+                    val nextEvent = if (upcoming != null && upcoming.length() > 0) {
+                        val item = upcoming.optJSONObject(0)
+                        if (item != null) " — القادم: ${item.optString("event")} (${item.optString("date")})" else ""
+                    } else {
+                        " — لا توجد أحداث عالية التأثير مجدولة في الأيام القادمة"
+                    }
+                    "القرار: $decision — أحداث نشطة: $count — $reason$nextEvent"
                 } catch (e: Exception) {
                     "غير متاح: ${e.message ?: "التقويم الاقتصادي غير متصل"}"
                 }
