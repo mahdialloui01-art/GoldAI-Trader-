@@ -1128,3 +1128,44 @@ def test_historical_news_calendar_rejects_future_end_date():
     )
     assert response.status_code == 422
     assert "cannot be in the future" in response.text
+
+
+def _microstructure_test_candles(volume=100):
+    start = datetime.now(timezone.utc) - timedelta(minutes=60 * 5)
+    candles = []
+    for index in range(60):
+        close = 100.0 + index * 0.02
+        open_price = close - 0.01
+        candles.append(main.Candle(
+            time=start + timedelta(minutes=index * 5),
+            open=open_price,
+            high=close + 0.05,
+            low=open_price - 0.05,
+            close=close,
+            tick_volume=volume,
+        ))
+    candles[-2] = main.Candle(
+        time=candles[-2].time, open=101.0, high=101.1,
+        low=100.4, close=100.5, tick_volume=volume,
+    )
+    candles[-1] = main.Candle(
+        time=candles[-1].time, open=100.4, high=101.3,
+        low=100.3, close=101.2, tick_volume=250 if volume else 0,
+    )
+    return candles
+
+
+def test_microstructure_detects_closed_bullish_engulfing_and_volume_confirmation():
+    result = main._candle_microstructure_analysis(_microstructure_test_candles())
+    assert result["closed_candle_pattern"] == "BULLISH_ENGULFING"
+    assert result["impulse_direction"] == "BULLISH"
+    assert result["tick_volume"]["state"] == "EXPANSION"
+    assert result["tick_volume"]["directional_confirmation"] == "BULLISH"
+    assert result["tick_volume"]["ratio_to_median"] == 2.5
+
+
+def test_microstructure_does_not_invent_volume_confirmation_when_tick_volume_is_missing():
+    result = main._candle_microstructure_analysis(_microstructure_test_candles(volume=0))
+    assert result["tick_volume"]["state"] == "UNAVAILABLE"
+    assert result["tick_volume"]["ratio_to_median"] is None
+    assert result["tick_volume"]["directional_confirmation"] == "NONE"
