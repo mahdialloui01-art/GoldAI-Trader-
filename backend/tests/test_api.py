@@ -1090,3 +1090,12 @@ def test_historical_news_calendar_requires_configured_provider(monkeypatch):
 def test_historical_news_calendar_rejects_invalid_range():
     response = client.get("/api/v1/news/historical-calendar?start_date=2025-02-01&end_date=2025-01-01")
     assert response.status_code == 422
+
+
+def test_historical_news_calendar_rejects_future_end_date():
+    future = (datetime.now(timezone.utc).date() + timedelta(days=1)).isoformat()
+    response = client.get(
+        f"/api/v1/news/historical-calendar?start_date={future}&end_date={future}"
+    )
+    assert response.status_code == 422
+    assert "cannot be in the future" in response.text
