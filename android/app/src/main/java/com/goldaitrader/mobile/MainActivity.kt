@@ -395,8 +395,8 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
 
     SectionHeading("مؤشرات سريعة", "إعدادات الحماية الحالية")
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        MiniMetric("المخاطرة / صفقة", "0.5%", "حد افتراضي", Modifier.weight(1f))
-        MiniMetric("الخسارة اليومية", "2.0%", "حد إيقاف", Modifier.weight(1f))
+        MiniMetric("المخاطرة / صفقة", "0.25%", "حد الديمو", Modifier.weight(1f))
+        MiniMetric("الخسارة اليومية", "10%", "حد إيقاف", Modifier.weight(1f))
     }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         MiniMetric("وضع الحساب", "PAPER", "بدون أموال حقيقية", Modifier.weight(1f))
@@ -437,8 +437,8 @@ private fun AnalysisPage(
 private fun RiskPage() {
     SectionHeading("مركز إدارة المخاطر", "الحماية تسبق البحث عن الربح")
     StatusBanner("التداول الحقيقي معطّل — Paper mode فقط", Green)
-    RiskRow("المخاطرة القصوى لكل صفقة", "0.5%")
-    RiskRow("حد الخسارة اليومية", "2.0%")
+    RiskRow("المخاطرة القصوى لكل صفقة", "0.25% — ديمو")
+    RiskRow("حد الخسارة اليومية", "10% — ديمو")
     RiskRow("حساب حجم العقد", "حسب مواصفات XM من MT5")
     RiskRow("تقريب حجم العقد", "للأسفل حسب Volume Step")
     RiskRow("الحد الأدنى للعقد", "رفض الصفقة إذا تجاوز المخاطرة")
