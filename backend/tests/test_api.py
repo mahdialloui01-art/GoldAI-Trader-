@@ -927,3 +927,67 @@ def test_pre_release_news_analysis_blocks_small_sample_and_wide_spread():
     assert response.status_code == 200
     assert response.json()["decision"] == "NO_TRADE"
     assert response.json()["execution_enabled"] is False
+
+
+
+def test_historical_news_study_groups_events_and_deducts_spread_slippage():
+    base = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    observations = []
+    for index in range(30):
+        before = 2600.0
+        observations.append({
+            "event_id": f"CPI_{index}",
+            "event_type": "US_CPI",
+            "released_at": (base + timedelta(days=index * 30)).isoformat(),
+            "consensus": 3.0,
+            "actual": 3.1 if index % 2 == 0 else 2.9,
+            "surprise_scale": 0.1,
+            "gold_before": before,
+            "gold_1m": before - 1,
+            "gold_5m": before - 2,
+            "gold_15m": before - 3,
+            "gold_60m": before - 4,
+            "spread_points": 20,
+            "point": 0.01,
+            "slippage_points": 5,
+        })
+    response = client.post("/api/v1/news/historical-study", json={
+        "symbol": "GOLD", "observations": observations,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["observation_count"] == 30
+    result = body["results_by_event_type"][0]
+    assert result["sample_quality"] == "MINIMUM_RESEARCH_SAMPLE_MET"
+    assert result["horizons"]["5m"]["mean_gold_return_percent"] < 0
+    assert result["horizons"]["5m"]["mean_net_return_after_spread_slippage_percent"] < result["horizons"]["5m"]["mean_gold_return_percent"]
+    assert body["data_policy"]["execution_enabled"] is False
+
+
+def test_historical_news_study_marks_small_samples_exploratory():
+    observation = {
+        "event_id": "NFP_1", "event_type": "US_NFP",
+        "released_at": datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat(),
+        "consensus": 150000, "actual": 175000, "surprise_scale": 30000,
+        "gold_before": 2600, "gold_1m": 2601, "gold_5m": 2602,
+        "gold_15m": 2603, "gold_60m": 2604,
+        "spread_points": 20, "point": 0.01, "slippage_points": 3,
+    }
+    response = client.post("/api/v1/news/historical-study", json={"observations": [observation]})
+    assert response.status_code == 200, response.text
+    assert response.json()["results_by_event_type"][0]["sample_quality"] == "EXPLORATORY_ONLY"
+
+
+def test_historical_news_study_rejects_duplicate_event_ids():
+    observation = {
+        "event_id": "CPI_DUP", "event_type": "US_CPI",
+        "released_at": datetime(2025, 1, 10, tzinfo=timezone.utc).isoformat(),
+        "consensus": 3, "actual": 3.1, "surprise_scale": 0.1,
+        "gold_before": 2600, "gold_1m": 2601, "gold_5m": 2602,
+        "gold_15m": 2603, "gold_60m": 2604,
+        "spread_points": 20, "point": 0.01,
+    }
+    response = client.post("/api/v1/news/historical-study", json={
+        "observations": [observation, observation],
+    })
+    assert response.status_code == 422
