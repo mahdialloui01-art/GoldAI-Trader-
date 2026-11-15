@@ -787,3 +787,66 @@ def test_backtest_flat_market_returns_zero_trades_without_fake_win_rate():
     assert body["net_profit"] == 0
     assert body["ending_balance"] == 10000
     assert body["execution_enabled"] is False
+
+
+
+def _regime_candles(kind="uptrend", count=100):
+    start = datetime.now(timezone.utc) - timedelta(minutes=count * 5)
+    candles = []
+    for index in range(count):
+        if kind == "uptrend":
+            close = 100 + index * 0.1
+            open_price = close - 0.02
+            high, low = close + 0.2, open_price - 0.2
+        elif kind == "range":
+            close = 100.0 + (0.2 if index % 2 else 0.0)
+            open_price = close + (0.02 if index % 2 else -0.02)
+            high, low = max(open_price, close) + 0.1, min(open_price, close) - 0.1
+        else:
+            close = 100.0
+            open_price = 100.0
+            high, low = (105.0, 95.0) if index >= count - 10 else (100.2, 99.8)
+        candles.append(main.Candle(
+            time=start + timedelta(minutes=index * 5),
+            open=open_price, high=high, low=low, close=close,
+        ))
+    return candles
+
+
+def test_market_regime_detects_strong_uptrend():
+    result = main._market_regime_analysis(_regime_candles("uptrend"))
+    assert result["market_regime"] == "TRENDING_UP"
+    assert result["indicators"]["adx14_wilder"] >= 25
+    assert result["indicators"]["plus_di14"] > result["indicators"]["minus_di14"]
+
+
+def test_market_regime_detects_range():
+    result = main._market_regime_analysis(_regime_candles("range"))
+    assert result["market_regime"] == "RANGING"
+    assert result["recommended_action"] == "RANGE_SETUP_ONLY"
+
+
+def test_market_regime_prioritizes_high_volatility():
+    result = main._market_regime_analysis(_regime_candles("high_volatility"))
+    assert result["market_regime"] == "HIGH_VOLATILITY"
+    assert result["recommended_action"] == "WAIT"
+    assert result["indicators"]["atr_vs_recent_median"] >= 1.5
+
+
+def test_market_regime_endpoint_requires_fresh_broker_quote():
+    main._latest_mt5_quote = None
+    payload = _technical_payload("M5", start_offset_seconds=300)
+    response = client.post("/api/v1/analysis/market-regime", json=payload)
+    assert response.status_code == 503
+
+
+def test_market_regime_endpoint_returns_analysis_only():
+    _set_fresh_quote()
+    payload = _technical_payload("M5", start_offset_seconds=300)
+    response = client.post("/api/v1/analysis/market-regime", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["symbol"] == "GOLD"
+    assert body["execution_enabled"] is False
+    assert "adx14_wilder" in body["indicators"]
+    assert "atr_vs_recent_median" in body["indicators"]
