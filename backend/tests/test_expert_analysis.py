@@ -151,3 +151,71 @@ def test_expert_endpoint_builds_reference_plan_only_after_all_gates_pass(monkeyp
     assert body["setup_plan"]["stop_loss_reference"] < body["setup_plan"]["entry_reference"]
     assert body["setup_plan"]["targets"]["target_2R"] > body["setup_plan"]["entry_reference"]
     assert body["policy"]["execution_enabled"] is False
+
+
+def test_mt5_candle_feed_requires_bridge_authentication(monkeypatch):
+    monkeypatch.setattr(main.settings, "mt5_bridge_token", "a-long-test-bridge-token-123")
+    payload = {
+        "symbol": "GOLD",
+        "m5": _candles(60, 300),
+        "m15": _candles(60, 900),
+        "h1": _candles(60, 3600),
+        "h4": _candles(60, 14400),
+    }
+    response = client.post("/api/v1/mt5/candles", json=payload)
+    assert response.status_code == 401
+
+
+def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
+    main._latest_mt5_candles = None
+    monkeypatch.setattr(main.settings, "mt5_bridge_token", "a-long-test-bridge-token-123")
+    main._latest_mt5_quote = {
+        "symbol": "GOLD", "bid": 2306.10, "ask": 2306.11, "last": 0,
+        "mid": 2306.105, "spread_points": 1, "digits": 2, "point": 0.01,
+        "source": "MetaTrader 5 broker feed",
+        "source_updated_at": datetime.now(timezone.utc),
+        "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
+    }
+
+    async def fake_gold_decision(request):
+        timeframes = {
+            frame: {
+                "direction": "BUY",
+                "indicators": {"rsi14_wilder": 62.0, "macd_histogram": 0.12},
+            }
+            for frame in ("M5", "M15", "H1", "H4")
+        }
+        return {
+            "decision": "WAIT",
+            "status": "NO_TRADE",
+            "blockers": ["NEWS_BLACKOUT"],
+            "reasons": ["News filter blocked the candidate."],
+            "components": {"multi_timeframe": {"timeframes": timeframes}},
+            "policy": {"mode": "PAPER_ONLY", "live_trading_enabled": False, "execution_enabled": False},
+        }
+
+    monkeypatch.setattr(main, "gold_decision_analysis", fake_gold_decision)
+    payload = {
+        "symbol": "GOLD",
+        "m5": _candles(80, 300),
+        "m15": _candles(80, 900),
+        "h1": _candles(80, 3600),
+        "h4": _candles(80, 14400),
+    }
+    accepted = client.post(
+        "/api/v1/mt5/candles",
+        json=payload,
+        headers={"Authorization": "Bearer a-long-test-bridge-token-123"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["accepted"] is True
+    assert accepted.json()["candle_counts"] == {"M5": 80, "M15": 80, "H1": 80, "H4": 80}
+
+    live = client.get("/api/v1/analysis/expert/live")
+    assert live.status_code == 200, live.text
+    body = live.json()
+    assert body["decision"] == "WAIT"
+    assert body["market_data"]["closed_candles_only"] is True
+    assert body["market_data"]["source"].startswith("Authenticated MetaTrader 5")
+    assert body["setup_plan"] is None
+    assert body["policy"]["execution_enabled"] is False
