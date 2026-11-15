@@ -590,7 +590,7 @@ def _parse_news_feed_xml(xml_text: str, feed_name: str, source: str, category: s
     return parsed
 
 
-async def _load_official_economic_headlines(client: httpx.AsyncClient) -> tuple[list[dict], list[str]]:
+async def _load_official_economic_headlines(client: httpx.AsyncClient) -> tuple[list[dict], list[str], int]:
     async def fetch_one(feed: tuple[str, str, str, str]) -> tuple[list[dict], str | None]:
         name, url, source, category = feed
         try:
@@ -604,13 +604,16 @@ async def _load_official_economic_headlines(client: httpx.AsyncClient) -> tuple[
     results = await asyncio.gather(*(fetch_one(feed) for feed in _NEWS_FEEDS))
     all_items: dict[str, dict] = {}
     errors: list[str] = []
+    successful_feeds = 0
     for items, error in results:
         if error:
             errors.append(error)
+        else:
+            successful_feeds += 1
         for item in items:
             all_items[item["id"]] = item
     headlines = sorted(all_items.values(), key=lambda item: item["published_at"], reverse=True)[:100]
-    return headlines, errors
+    return headlines, errors, successful_feeds
 
 
 def _news_cache_age_seconds(at: datetime | None, now: datetime | None = None) -> int | None:
@@ -646,7 +649,10 @@ def _news_engine_status() -> dict:
         "headline_count": len(_NEWS_HEADLINES_CACHE),
         "headline_feed_errors": _NEWS_HEADLINES_ERRORS,
         "next_high_impact_event": next_event,
-        "healthy": not calendar_stale,
+        "calendar_healthy": not calendar_stale,
+        "headlines_degraded": headline_stale or bool(_NEWS_HEADLINES_ERRORS),
+        "overall_status": "STALE" if calendar_stale else "DEGRADED" if headline_stale or _NEWS_HEADLINES_ERRORS else "HEALTHY",
+        "healthy": not calendar_stale and not headline_stale,
         "execution_enabled": False,
     }
 
@@ -659,10 +665,9 @@ async def _refresh_news_engine(force: bool = False, days_ahead: int = 14) -> dic
 
     async with _NEWS_REFRESH_LOCK:
         now = datetime.now(timezone.utc)
-        calendar_age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_SUCCESS, now)
-        headlines_age = _news_cache_age_seconds(_NEWS_HEADLINES_LAST_SUCCESS, now)
+        attempt_age = _news_cache_age_seconds(_NEWS_CALENDAR_LAST_ATTEMPT, now)
         interval = settings.news_refresh_interval_seconds
-        if not force and calendar_age is not None and calendar_age < interval - 30 and headlines_age is not None and headlines_age < interval - 30:
+        if not force and attempt_age is not None and attempt_age < interval - 30:
             return _news_engine_status()
 
         _NEWS_CALENDAR_LAST_ATTEMPT = now
@@ -688,8 +693,8 @@ async def _refresh_news_engine(force: bool = False, days_ahead: int = 14) -> dic
                 _NEWS_CALENDAR_LAST_ERROR = calendar_error
                 logger.warning("Economic calendar refresh failed: %s", calendar_error)
 
-            headlines, feed_errors = await _load_official_economic_headlines(client)
-            if not feed_errors or headlines:
+            headlines, feed_errors, successful_feeds = await _load_official_economic_headlines(client)
+            if successful_feeds > 0:
                 _NEWS_HEADLINES_CACHE = headlines
                 _NEWS_HEADLINES_LAST_SUCCESS = datetime.now(timezone.utc)
             _NEWS_HEADLINES_ERRORS = feed_errors
