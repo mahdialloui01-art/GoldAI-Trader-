@@ -1120,6 +1120,142 @@ def _macd(closes: list[float]) -> tuple[float, float, float]:
 
 
 
+def _candle_microstructure_analysis(candles: list[Candle]) -> dict:
+    """Describe closed-candle impulse, EMA geometry and tick-volume participation.
+
+    Tick volume is optional: missing/zero broker volume is reported as unavailable,
+    never interpreted as low participation. All features are descriptive heuristics.
+    """
+    if len(candles) < 26:
+        raise ValueError("At least 26 candles are required for microstructure context.")
+
+    last = candles[-1]
+    previous = candles[-2]
+    candle_range = max(last.high - last.low, 1e-12)
+    body = abs(last.close - last.open)
+    body_ratio = body / candle_range
+    upper_wick = max(0.0, last.high - max(last.open, last.close))
+    lower_wick = max(0.0, min(last.open, last.close) - last.low)
+    close_location = (last.close - last.low) / candle_range
+    candle_direction = (
+        "BULLISH" if last.close > last.open
+        else "BEARISH" if last.close < last.open
+        else "NEUTRAL"
+    )
+
+    bullish_engulfing = (
+        previous.close < previous.open
+        and last.close > last.open
+        and last.open <= previous.close
+        and last.close >= previous.open
+    )
+    bearish_engulfing = (
+        previous.close > previous.open
+        and last.close < last.open
+        and last.open >= previous.close
+        and last.close <= previous.open
+    )
+    bullish_pin_bar = (
+        lower_wick / candle_range >= 0.55
+        and body_ratio <= 0.35
+        and close_location >= 0.65
+    )
+    bearish_pin_bar = (
+        upper_wick / candle_range >= 0.55
+        and body_ratio <= 0.35
+        and close_location <= 0.35
+    )
+
+    if bullish_engulfing:
+        pattern = "BULLISH_ENGULFING"
+    elif bearish_engulfing:
+        pattern = "BEARISH_ENGULFING"
+    elif bullish_pin_bar:
+        pattern = "BULLISH_REJECTION"
+    elif bearish_pin_bar:
+        pattern = "BEARISH_REJECTION"
+    else:
+        pattern = "NONE"
+
+    impulse_direction = "NONE"
+    if candle_direction == "BULLISH" and body_ratio >= 0.65 and close_location >= 0.80:
+        impulse_direction = "BULLISH"
+    elif candle_direction == "BEARISH" and body_ratio >= 0.65 and close_location <= 0.20:
+        impulse_direction = "BEARISH"
+
+    volumes = [max(0, int(item.tick_volume)) for item in candles[-21:-1]]
+    positive_volumes = [value for value in volumes if value > 0]
+    current_volume = max(0, int(last.tick_volume))
+    if positive_volumes and current_volume > 0:
+        median_volume = float(statistics.median(positive_volumes))
+        volume_ratio = current_volume / median_volume if median_volume > 0 else None
+        if volume_ratio is None:
+            volume_state = "UNAVAILABLE"
+        elif volume_ratio >= 1.5:
+            volume_state = "EXPANSION"
+        elif volume_ratio >= 1.1:
+            volume_state = "ABOVE_AVERAGE"
+        elif volume_ratio <= 0.75:
+            volume_state = "BELOW_AVERAGE"
+        else:
+            volume_state = "NORMAL"
+    else:
+        median_volume = None
+        volume_ratio = None
+        volume_state = "UNAVAILABLE"
+
+    volume_confirmation = "NONE"
+    if volume_ratio is not None and volume_ratio >= 1.25:
+        if candle_direction == "BULLISH":
+            volume_confirmation = "BULLISH"
+        elif candle_direction == "BEARISH":
+            volume_confirmation = "BEARISH"
+
+    closes = [item.close for item in candles]
+    ema20_series = _ema_series(closes, 20)
+    ema50_series = _ema_series(closes, 50) if len(closes) >= 50 else None
+    atr = _atr_wilder(candles)
+    ema20_slope_atr = (
+        (ema20_series[-1] - ema20_series[-6]) / atr
+        if atr > 0 and len(ema20_series) >= 6 else 0.0
+    )
+    ema_separation_atr = (
+        abs(ema20_series[-1] - ema50_series[-1]) / atr
+        if atr > 0 and ema50_series else None
+    )
+    if abs(ema20_slope_atr) >= 0.25 and ema_separation_atr is not None and ema_separation_atr >= 0.15:
+        trend_quality = "STRONG"
+    elif abs(ema20_slope_atr) >= 0.10 or (
+        ema_separation_atr is not None and ema_separation_atr >= 0.10
+    ):
+        trend_quality = "MODERATE"
+    else:
+        trend_quality = "WEAK"
+
+    return {
+        "candle_direction": candle_direction,
+        "body_to_range_ratio": round(body_ratio, 3),
+        "close_location_0_to_1": round(close_location, 3),
+        "upper_wick_to_range_ratio": round(upper_wick / candle_range, 3),
+        "lower_wick_to_range_ratio": round(lower_wick / candle_range, 3),
+        "closed_candle_pattern": pattern,
+        "impulse_direction": impulse_direction,
+        "tick_volume": {
+            "current": current_volume,
+            "median_previous_20": round(median_volume, 2) if median_volume is not None else None,
+            "ratio_to_median": round(volume_ratio, 3) if volume_ratio is not None else None,
+            "state": volume_state,
+            "directional_confirmation": volume_confirmation,
+        },
+        "ema20_slope_atr_5_bars": round(ema20_slope_atr, 4),
+        "ema20_ema50_separation_atr": (
+            round(ema_separation_atr, 4) if ema_separation_atr is not None else None
+        ),
+        "trend_quality": trend_quality,
+        "note": "Closed-candle and broker tick-volume heuristics; volume may be unavailable and none of these fields is a probability.",
+    }
+
+
 @app.post("/api/v1/backtest")
 def run_backtest(request: BacktestRequest) -> dict:
     """Run a conservative, next-bar-entry EMA/RSI trend backtest without look-ahead."""
@@ -2266,6 +2402,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         direction = direction_value.value if isinstance(direction_value, Direction) else str(direction_value)
         regime = _market_regime_analysis(candles)
         structure = _price_action_analysis(candles, 3, 3, 0.12)
+        microstructure = _candle_microstructure_analysis(candles)
         indicators = technical.get("indicators", {})
         rsi = float(indicators.get("rsi14_wilder", 50.0))
         histogram = float(indicators.get("macd_histogram", 0.0))
@@ -2303,6 +2440,26 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         elif 45 < rsi < 55:
             evidence.append("الزخم محايد نسبياً")
 
+        if microstructure["impulse_direction"] == "BULLISH":
+            frame_score += 0.25
+            evidence.append("شمعة صاعدة اندفاعية أغلقت قرب القمة")
+        elif microstructure["impulse_direction"] == "BEARISH":
+            frame_score -= 0.25
+            evidence.append("شمعة هابطة اندفاعية أغلقت قرب القاع")
+
+        volume_confirmation = microstructure["tick_volume"]["directional_confirmation"]
+        if volume_confirmation == "BULLISH":
+            frame_score += 0.25
+            evidence.append("حجم التداول النسبي يؤكد ضغط الشراء")
+        elif volume_confirmation == "BEARISH":
+            frame_score -= 0.25
+            evidence.append("حجم التداول النسبي يؤكد ضغط البيع")
+
+        if microstructure["trend_quality"] == "WEAK":
+            evidence.append("فصل EMA والزخم النسبي ضعيفان؛ الاتجاه يحتاج حذراً")
+        if microstructure["tick_volume"]["state"] == "UNAVAILABLE":
+            evidence.append("حجم Tick غير متوفر؛ لم يُستخدم كعامل تأكيد")
+
         if regime["market_regime"] == "HIGH_VOLATILITY":
             evidence.append("تحذير: تقلب مرتفع في هذا الإطار")
         if "BUY_SIDE_LIQUIDITY_SWEEP" in structure["events"]:
@@ -2329,10 +2486,12 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "liquidity_pools": structure["liquidity_pools"],
             "recent_fair_value_gaps": structure["fair_value_gaps"],
             "order_block_candidate": structure["order_block_candidate"],
+            "microstructure": microstructure,
             "evidence": evidence,
         }
 
-    max_score = 4.75 * total_weight
+    # Maximum per-frame score includes the two optional microstructure confirmations.
+    max_score = 5.25 * total_weight
     confluence = round(min(100.0, abs(weighted_score) / max_score * 100), 1)
     expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
     decision = str(base.get("decision", "WAIT"))
@@ -2410,6 +2569,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
                 "Wilder ADX and ATR market regime",
                 "confirmed swing structure, BOS and liquidity sweep candidates",
                 "equal highs/lows, FVG and heuristic order-block candidates",
+                "closed-candle impulse, EMA slope/separation and optional tick-volume confirmation",
                 "weighted M5/M15/H1/H4 confluence",
                 "broker spread and existing macro/news fail-closed gates",
             ],
