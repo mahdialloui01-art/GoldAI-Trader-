@@ -1371,6 +1371,8 @@ class PreReleaseNewsRequest(BaseModel):
     model_estimate: float
     historical_error_std: float = Field(gt=0)
     historical_samples: int = Field(ge=30, le=100000)
+    walk_forward_validation_passed: bool = False
+    walk_forward_test_samples: int = Field(default=0, ge=0, le=100000)
     gold_direction_if_above: str = Field(pattern="^(BULLISH|BEARISH|MIXED)$")
     gold_direction_if_inline: str = Field(default="MIXED", pattern="^(BULLISH|BEARISH|MIXED)$")
     gold_direction_if_below: str = Field(pattern="^(BULLISH|BEARISH|MIXED)$")
@@ -1427,9 +1429,12 @@ def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
     ]
     if request.historical_samples < 100:
         reasons.append("عدد العينات أقل من 100؛ الثقة البحثية محدودة.")
+    validation_ok = request.walk_forward_validation_passed and request.walk_forward_test_samples >= 100
+    if not validation_ok:
+        reasons.append("لم يتم تقديم نتيجة اختبار walk-forward خارج العينة تضم 100 حدث على الأقل؛ يمنع ترشيح دخول قبل الخبر.")
     if not spread_ok:
         reasons.append("سبريد MT5 أعلى من الحد المسموح لهذا التحليل؛ لا يتم ترشيح صفقة.")
-    if enough_edge and spread_ok and request.historical_samples >= 100:
+    if enough_edge and spread_ok and request.historical_samples >= 100 and validation_ok:
         decision = "PRE_NEWS_SETUP_CANDIDATE"
         reasons.append("تجاوزت الاحتمالات والميزة الحدين البحثيين؛ مرشح للمراجعة والتجربة الورقية فقط.")
     else:
@@ -1446,6 +1451,8 @@ def pre_release_news_analysis(request: PreReleaseNewsRequest) -> dict:
             "model_estimate": request.model_estimate,
             "historical_error_std": request.historical_error_std,
             "historical_samples": request.historical_samples,
+            "walk_forward_validation_passed": request.walk_forward_validation_passed,
+            "walk_forward_test_samples": request.walk_forward_test_samples,
             "distribution_assumption": "normal_out_of_sample_residuals",
             "inline_band_std": 0.25,
         },
