@@ -100,3 +100,8 @@ The MT5 quote bridge can now send the broker's tick size, loss tick value, contr
 `POST /api/v1/backtest` runs a transparent EMA20/EMA50 trend strategy with Wilder RSI confirmation, ATR-based stops and a configurable reward/risk target. It accepts historical broker candles plus initial balance, fixed lots, contract size, spread, slippage and round-turn commission.
 
 The simulator calculates signals only after candle close and enters at the next candle open. If a candle touches both stop and target, it assumes the stop was hit first. It reports net P/L, win rate, profit factor, expectancy, average win/loss, max drawdown, an equity curve and individual trades. This is a simplified historical model: it does not fully model swaps, financing, liquidity, all broker fill rules or account-currency conversion, and it is not proof of future profitability.
+
+
+## Market regime detection
+
+`POST /api/v1/analysis/market-regime` classifies GOLD conditions as trending up, trending down, ranging, transition or high volatility using Wilder ADX/DI and ATR relative to its recent median. High volatility and transition conditions return a WAIT-style recommended action. The endpoint requires a fresh authenticated MT5 quote and valid candles, and never authorizes execution.
