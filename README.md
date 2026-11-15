@@ -45,7 +45,7 @@ pytest -q
 GitHub Actions is configured to run the backend tests and an Android debug build on pushes and pull requests.
 
 ## Current limitations
-The Android-to-backend display path is implemented, but live broker connectivity still requires MT5 desktop/VPS, a deployed HTTPS backend, a private bridge token, and end-to-end testing. The economic calendar/news filter requires a valid Trading Economics API key configured only on the server. No order execution is connected. Keep the app in paper/demo mode until broker connectivity, risk controls, historical backtests, and forward demo tests have been completed.
+The Android-to-backend display path is implemented, but live broker connectivity still requires MT5 desktop/VPS, a deployed HTTPS backend, a private bridge token, and end-to-end testing. Upcoming high-impact US calendar access uses XOOMAR without a required key; historical point-in-time consensus imports still require a separate Trading Economics API key configured only on the server. No order execution is connected. Keep the app in paper/demo mode until broker connectivity, risk controls, historical backtests, and forward demo tests have been completed.
 
 
 ## MetaTrader 5 broker quote bridge
@@ -75,6 +75,7 @@ XOOMAR is the primary no-key calendar provider for upcoming high-impact US relea
 - XOOMAR does not provide consensus forecasts; forecast is deliberately left empty. The calendar can protect around scheduled releases, but cannot estimate a pre-release surprise or generate a pre-news BUY/SELL prediction.
 - `ECONOMIC_CALENDAR_API_KEY` remains necessary only for the separate Trading Economics historical-calendar import endpoint; it is not required for the upcoming-news filter.
 - `GET /api/v1/analysis/news-filter` returns WAIT when a high-impact event falls inside the configured pre/post-event blackout window.
+- `POST /api/v1/news/post-release-analysis` compares the reported actual with the previous value only when both are numeric and share a unit, then measures observed XM GOLD movement from a pre-release reference using post-release candle close timestamps. It reports +1m/+5m/+15m/+60m horizons when available and only labels a move `REACTION_CONFIRMED_FOR_RESEARCH` after at least five minutes, three monotonic closes and an acceptable spread. This is descriptive research, not consensus surprise, not a forecast, and never a trade instruction. Caller-supplied candles are not independently verified; use broker-time-aligned MT5 M1 data.
 - The default blackout is 30 minutes before and after each event. Set `NEWS_BLACKOUT_BEFORE_MINUTES` and `NEWS_BLACKOUT_AFTER_MINUTES` to adjust it.
 - Missing credentials, provider errors, or malformed calendar data fail closed with HTTP 503; no news-free assumption is made.
 - Estimated-time events are treated conservatively for their full UTC date.
