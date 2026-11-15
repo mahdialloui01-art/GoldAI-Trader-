@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
     private var newsHeadlinesSummary by mutableStateOf("في انتظار العناوين الرسمية")
+    private var expertSummary by mutableStateOf("في انتظار تغذية شموع MT5 للأطر الأربعة")
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -72,6 +73,7 @@ class MainActivity : ComponentActivity() {
                     calendarSummary = calendarSummary,
                     newsEngineSummary = newsEngineSummary,
                     newsHeadlinesSummary = newsHeadlinesSummary,
+                    expertSummary = expertSummary,
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -106,10 +108,12 @@ class MainActivity : ComponentActivity() {
         if (!backendConfigured) {
             macroSummary = "متوقف: لم يُضبط عنوان خادم HTTPS بعد"
             calendarSummary = "متوقف: لم يُضبط عنوان خادم HTTPS بعد"
+            expertSummary = "متوقف: لم يُضبط عنوان خادم HTTPS بعد"
             return
         }
         macroSummary = "جارٍ جلب مؤشرات الدولار والعوائد..."
         calendarSummary = "جارٍ فحص الأخبار الأمريكية عالية التأثير..."
+        expertSummary = "جارٍ جلب التحليل الفني متعدد الأطر..."
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 fun request(path: String): JSONObject {
@@ -177,12 +181,36 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     "العناوين الرسمية غير متاحة: ${e.message ?: "تعذر الاتصال"}"
                 }
-                listOf(macro, news, engine, headlines)
+                val expert = try {
+                    val j = request("/api/v1/analysis/expert/live")
+                    val decision = j.optString("decision", "WAIT")
+                    val dossier = j.optJSONObject("technical_dossier")
+                    if (dossier == null) {
+                        "القرار: WAIT — لا توجد بيانات شموع كافية لإنتاج ملف التحليل"
+                    } else {
+                        val score = dossier.optDouble("confluence_score", 0.0)
+                        val grade = dossier.optString("confluence_grade", "غير محدد")
+                        val dominant = dossier.optString("dominant_technical_direction", "WAIT")
+                        val blockers = j.optJSONArray("blockers")
+                        val blockText = if (blockers != null && blockers.length() > 0) {
+                            (0 until minOf(3, blockers.length())).joinToString("، ") { blockers.optString(it) }
+                        } else "لا توجد موانع مسجلة"
+                        val plan = j.optJSONObject("setup_plan")
+                        val levels = if (plan != null) {
+                            " — دخول مرجعي: \${plan.optString("entry_reference")} — وقف: \${plan.optString("stop_loss_reference")}"
+                        } else ""
+                        "القرار: $decision — توافق: \${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText$levels"
+                    }
+                } catch (e: Exception) {
+                    "متوقف أو ينتظر شموع MT5: \${e.message ?: "لا توجد تغذية حديثة للأطر الأربعة"}"
+                }
+                listOf(macro, news, engine, headlines, expert)
             }
             macroSummary = result[0]
             calendarSummary = result[1]
             newsEngineSummary = result[2]
             newsHeadlinesSummary = result[3]
+            expertSummary = result[4]
         }
     }
 
@@ -239,6 +267,7 @@ private fun GoldAiApp(
     calendarSummary: String,
     newsEngineSummary: String,
     newsHeadlinesSummary: String,
+    expertSummary: String,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -262,7 +291,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary)
+                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -372,7 +401,8 @@ private fun AnalysisPage(
     macroSummary: String,
     calendarSummary: String,
     newsEngineSummary: String,
-    newsHeadlinesSummary: String
+    newsHeadlinesSummary: String,
+    expertSummary: String
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (quoteReceived) "تم استلام سعر الوسيط" else "التحليل متوقف: لا توجد بيانات MT5 حديثة", if (quoteReceived) Green else Gold)
@@ -384,6 +414,7 @@ private fun AnalysisPage(
     AnalysisCard("06", "Economic News Filter", "الأحداث الأمريكية عالية التأثير ونافذة الحظر", calendarSummary)
     AnalysisCard("07", "Auto News Monitor", "تحديث تلقائي للخادم كل 5 دقائق ولعرض التطبيق كل دقيقة", newsEngineSummary)
     AnalysisCard("08", "Official Economic Headlines", "آخر العناوين من BLS والاحتياطي الفيدرالي", newsHeadlinesSummary)
+    AnalysisCard("09", "Expert GOLD Technical Engine", "توافق M5/M15/H1/H4 • السيولة • BOS • FVG • خطة المخاطر", expertSummary)
     Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
 
