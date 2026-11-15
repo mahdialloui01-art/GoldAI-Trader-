@@ -75,3 +75,14 @@ Configure `ECONOMIC_CALENDAR_API_KEY` on the backend using a private Trading Eco
 - The default blackout is 30 minutes before and after each event. Set `NEWS_BLACKOUT_BEFORE_MINUTES` and `NEWS_BLACKOUT_AFTER_MINUTES` to adjust it.
 - Missing credentials, provider errors, or malformed calendar data fail closed with HTTP 503; no news-free assumption is made.
 - Estimated-time events are treated conservatively for their full UTC date.
+
+
+## Gold macro context
+
+Configure a private FRED API key as `FRED_API_KEY` on the backend. The macro endpoint reads three daily US series from FRED:
+
+- `DGS10`: 10-year nominal Treasury yield.
+- `DFII10`: 10-year inflation-indexed (real) Treasury yield.
+- `DTWEXBGS`: nominal broad US dollar index.
+
+`GET /api/v1/analysis/gold-macro` compares the latest two valid observations and returns a transparent, rule-based macro context (gold headwind, supportive, or mixed/neutral). Data older than seven calendar days, missing credentials, and provider errors fail closed. This is daily context, not an intraday trading signal or a forecast of gold returns.
