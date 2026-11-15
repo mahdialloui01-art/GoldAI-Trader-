@@ -28,6 +28,9 @@ int OnInit()
    if(StringLen(BridgeToken) < 24 ||
       StringFind(BackendUrl, "https://") != 0 ||
       StringFind(CandleDataUrl, "https://") != 0 ||
+      StringFind(DemoSignalUrl, "https://") != 0 ||
+      DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 10.0 ||
+      DemoMaxDeviationPoints < 0 || DemoMaxSpreadPoints <= 0 ||
       CandleBarsPerTimeframe < 60 || CandleBarsPerTimeframe > 500 ||
       MinQuoteIntervalMilliseconds < 50 || MinQuoteIntervalMilliseconds > 5000)
    {
@@ -36,6 +39,10 @@ int OnInit()
    }
    if(_Symbol != RequiredSymbol)
       Print("Attach this EA to ", RequiredSymbol, ". Current chart: ", _Symbol);
+   if(EnableDemoExecution && !IsDemoAccount())
+      Print("SAFETY LOCK: execution enabled locally but account is not DEMO. No orders will be sent.");
+   if(EnableDemoExecution && IsDemoAccount())
+      Print("GoldAI DEMO execution armed locally; server-side demo gate must also be enabled.");
    EventSetTimer(1);
    return INIT_SUCCEEDED;
 }
@@ -216,8 +223,7 @@ int CountOurOpenPositions()
    {
       ulong ticket = PositionGetTicket(i);
       if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
-      if(PositionGetString(POSITION_SYMBOL) == RequiredSymbol &&
-         (ulong)PositionGetInteger(POSITION_MAGIC) == DemoMagicNumber) count++;
+      if(PositionGetString(POSITION_SYMBOL) == RequiredSymbol) count++;
    }
    return count;
 }
@@ -308,15 +314,19 @@ void TryDemoTrade()
    lots = NormalizeDouble(MathFloor((lots + 1e-10) / step) * step, 8);
    if(lots < vmin || lots > vmax) return;
    int digits = (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS);
+   long stopsLevel = SymbolInfoInteger(RequiredSymbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minimumStopDistance = (double)stopsLevel * SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
    stop = NormalizeDouble(stop, digits);
    target = NormalizeDouble(target, digits);
    trade.SetExpertMagicNumber(DemoMagicNumber);
    trade.SetDeviationInPoints(DemoMaxDeviationPoints);
    trade.SetTypeFillingBySymbol(RequiredSymbol);
    bool sent = false;
-   if(direction == "BUY" && stop < tick.bid && target > tick.ask)
+   if(direction == "BUY" && stop < tick.bid && target > tick.ask &&
+      tick.bid - stop >= minimumStopDistance && target - tick.ask >= minimumStopDistance)
       sent = trade.Buy(lots, RequiredSymbol, 0.0, stop, target, "GoldAI DEMO BUY");
-   else if(direction == "SELL" && stop > tick.ask && target < tick.bid)
+   else if(direction == "SELL" && stop > tick.ask && target < tick.bid &&
+      stop - tick.ask >= minimumStopDistance && tick.bid - target >= minimumStopDistance)
       sent = trade.Sell(lots, RequiredSymbol, 0.0, stop, target, "GoldAI DEMO SELL");
    else return;
    if(sent && (trade.ResultRetcode() == TRADE_RETCODE_DONE ||
