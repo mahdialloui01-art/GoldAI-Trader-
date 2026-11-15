@@ -49,6 +49,7 @@ class MainActivity : ComponentActivity() {
     private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var selectedTab by mutableStateOf(AppTab.HOME)
+    private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +76,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkBackend() {
+        if (!backendConfigured) {
+            backendStatus = "عنوان الخادم غير مضبوط — يلزم نشر Backend وربط عنوان HTTPS"
+            return
+        }
         backendStatus = "جارٍ فحص الخادم..."
         lifecycleScope.launch {
             backendStatus = withContext(Dispatchers.IO) {
@@ -93,6 +98,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshEconomicContext() {
+        if (!backendConfigured) {
+            macroSummary = "متوقف: لم يُضبط عنوان خادم HTTPS بعد"
+            calendarSummary = "متوقف: لم يُضبط عنوان خادم HTTPS بعد"
+            return
+        }
         macroSummary = "جارٍ جلب مؤشرات الدولار والعوائد..."
         calendarSummary = "جارٍ فحص الأخبار الأمريكية عالية التأثير..."
         lifecycleScope.launch {
@@ -146,6 +156,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshGold() {
+        if (!backendConfigured) {
+            goldPrice = "غير متاح"
+            quoteReceived = false
+            quoteStatus = "يلزم خادم HTTPS متاح؛ لا يوجد اتصال محلي من الهاتف"
+            return
+        }
         quoteStatus = "جارٍ جلب سعر الذهب..."
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
