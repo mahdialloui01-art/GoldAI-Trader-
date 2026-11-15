@@ -254,6 +254,52 @@ def _set_fresh_quote():
     }
 
 
+
+def test_multi_timeframe_requires_all_three_frames_to_align():
+    _set_fresh_quote()
+    main._latest_mt5_quote["spread_points"] = 1
+    payload = {
+        "symbol": "GOLD",
+        "m5": _technical_payload("M5")["candles"],
+        "m15": _technical_payload("M15")["candles"],
+        "h1": _technical_payload("H1")["candles"],
+    }
+    response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["execution_enabled"] is False
+    assert set(body["timeframes"]) == {"M5", "M15", "H1"}
+    assert body["alignment"]["M5"] == "BUY"
+    assert body["alignment"]["M15"] == "BUY"
+    assert body["alignment"]["H1"] == "BUY"
+    assert body["direction"] == "BUY"
+
+
+def test_multi_timeframe_fails_closed_when_one_frame_is_stale():
+    _set_fresh_quote()
+    payload = {
+        "symbol": "GOLD",
+        "m5": _technical_payload("M5")["candles"],
+        "m15": _technical_payload("M15")["candles"],
+        "h1": _technical_payload("H1", start_offset_seconds=24 * 3600)["candles"],
+    }
+    response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
+    assert response.status_code == 422
+    assert "stale" in response.json()["detail"]
+
+
+def test_multi_timeframe_fails_closed_without_mt5_quote():
+    main._latest_mt5_quote = None
+    payload = {
+        "symbol": "GOLD",
+        "m5": _technical_payload("M5")["candles"],
+        "m15": _technical_payload("M15")["candles"],
+        "h1": _technical_payload("H1")["candles"],
+    }
+    response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
+    assert response.status_code == 503
+
+
 def test_technical_analysis_returns_real_indicator_fields():
     _set_fresh_quote()
     response = client.post("/api/v1/analysis/technical", json=_technical_payload())
