@@ -487,6 +487,11 @@ async def economic_news_filter() -> dict:
         if same_estimated_day or -after <= delta_minutes <= before:
             active.append({**event, "minutes_until_event": round(delta_minutes, 1)})
     blocked = bool(active)
+    upcoming = [
+        {**event, "minutes_until_event": round((event["date"] - now).total_seconds() / 60, 1)}
+        for event in events
+        if (event["date"] - now).total_seconds() > 0
+    ][:5]
     return {
         "decision": "WAIT" if blocked else "CLEAR",
         "trading_allowed": not blocked,
@@ -494,6 +499,9 @@ async def economic_news_filter() -> dict:
         "blackout_before_minutes": before,
         "blackout_after_minutes": after,
         "active_events": active,
+        "upcoming_events": upcoming,
+        "calendar_source": "XOOMAR",
+        "calendar_source_url": "https://xoomar.com/markets/api/calendar",
         "checked_at": now,
         "execution_enabled": False,
         "fail_closed": True,
