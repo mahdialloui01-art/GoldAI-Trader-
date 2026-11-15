@@ -502,6 +502,7 @@ async def economic_news_filter() -> dict:
         "upcoming_events": upcoming,
         "calendar_source": "XOOMAR",
         "calendar_source_url": "https://xoomar.com/markets/api/calendar",
+        "calendar_attribution": "Data: XOOMAR. " + (events[0]["source_attribution"] if events else "Release schedules are aggregated from the issuing US agencies."),
         "checked_at": now,
         "execution_enabled": False,
         "fail_closed": True,
