@@ -225,6 +225,7 @@ class MultiTimeframeAnalysisRequest(BaseModel):
     m5: list[Candle] = Field(min_length=60, max_length=500)
     m15: list[Candle] = Field(min_length=60, max_length=500)
     h1: list[Candle] = Field(min_length=60, max_length=500)
+    h4: list[Candle] = Field(min_length=60, max_length=500)
 
 
 _TIMEFRAME_SECONDS = {
@@ -407,7 +408,7 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
 
 @app.post("/api/v1/analysis/multi-timeframe")
 def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
-    """Require aligned M5 entry, M15 confirmation and H1 directional bias."""
+    """Require aligned M5 entry, M15 confirmation, H1 trend and H4 macro bias."""
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
 
@@ -421,6 +422,9 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
         "H1": technical_analysis(TechnicalAnalysisRequest(
             symbol=request.symbol, timeframe="H1", candles=request.h1
         )),
+        "H4": technical_analysis(TechnicalAnalysisRequest(
+            symbol=request.symbol, timeframe="H4", candles=request.h4
+        )),
     }
     directions = {frame: result["direction"] for frame, result in analyses.items()}
     entry = directions["M5"]
@@ -429,12 +433,12 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     if entry == Direction.WAIT:
         final_direction = Direction.WAIT
         reasons.append("إطار M5 لا يقدم نقطة دخول مؤكدة.")
-    elif directions["M15"] != entry or directions["H1"] != entry:
+    elif any(direction != entry for direction in directions.values()):
         final_direction = Direction.WAIT
-        reasons.append("تعارض بين M5 وM15 وH1؛ تم إلغاء الإشارة حتى تتوافق الأطر.")
+        reasons.append("تعارض بين M5 وM15 وH1 وH4؛ تم إلغاء الإشارة حتى تتوافق جميع الأطر.")
     else:
         final_direction = entry
-        reasons.append("توافق M5 للدخول مع M15 للتأكيد وH1 للاتجاه العام.")
+        reasons.append("توافق M5 للدخول وM15 للتأكيد وH1 للاتجاه وH4 للسياق العام.")
 
     if any(result["spread_atr_ratio"] > 0.15 for result in analyses.values()):
         final_direction = Direction.WAIT
