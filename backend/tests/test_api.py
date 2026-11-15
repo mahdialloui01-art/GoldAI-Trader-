@@ -1,3 +1,5 @@
+import httpx
+
 from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
