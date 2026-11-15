@@ -108,7 +108,7 @@ def test_signal_waits_when_filters_are_not_aligned():
     response = client.post(
         "/api/v1/signals/evaluate",
         json={
-            "symbol": "XAUUSD",
+            "symbol": "GOLD",
             "timeframe": "M15",
             "current_price": 2350.0,
             "ema_fast": 2351.0,
@@ -167,7 +167,7 @@ def test_mt5_quote_requires_token_and_becomes_primary_market_snapshot(monkeypatc
     main._latest_mt5_quote = None
     monkeypatch.setattr(main.settings, "mt5_bridge_token", "test-secret")
     payload = {
-        "symbol": "XAUUSD", "bid": 4010.10, "ask": 4010.35, "last": 0,
+        "symbol": "GOLD", "bid": 4010.10, "ask": 4010.35, "last": 0,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "digits": 2, "point": 0.01, "spread_points": 25,
     }
@@ -182,6 +182,7 @@ def test_mt5_quote_requires_token_and_becomes_primary_market_snapshot(monkeypatc
     assert snapshot.status_code == 200
     body = snapshot.json()
     assert body["source"] == "MetaTrader 5 broker feed"
+    assert body["symbol"] == "GOLD"
     assert body["bid"] == 4010.10
     assert body["ask"] == 4010.35
     assert body["tradable_quote"] is True
