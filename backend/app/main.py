@@ -14,6 +14,8 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .xoomar_calendar import load_xoomar_high_impact_events
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -27,7 +29,8 @@ class Settings(BaseSettings):
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
     broker_gold_symbol: str = "GOLD"
-    economic_calendar_api_key: str = ""
+    economic_calendar_api_key: str = ""  # Legacy key for point-in-time historical imports only.
+    xoomar_api_key: str = ""  # Optional; keyless calendar access is supported.
     fred_api_key: str = ""
     economic_calendar_base_url: str = "https://api.tradingeconomics.com"
     news_blackout_before_minutes: int = Field(default=30, ge=0, le=240)
@@ -430,60 +433,24 @@ async def gold_macro_analysis() -> dict:
 
 
 async def _load_us_high_impact_events(days_ahead: int = 7) -> list[dict]:
-    """Fetch high-impact US calendar events; never substitute guessed or cached data."""
+    """Fetch fresh high-impact US releases from XOOMAR; fail closed on bad data."""
     if not 1 <= days_ahead <= 14:
         raise HTTPException(status_code=422, detail="days_ahead must be between 1 and 14.")
-    api_key = settings.economic_calendar_api_key.strip()
-    if not api_key:
-        raise HTTPException(status_code=503, detail="Economic calendar is not configured; news-sensitive analysis is paused.")
-
-    now = datetime.now(timezone.utc)
-    start_date = now.date().isoformat()
-    end_date = (now.date()).fromordinal(now.date().toordinal() + days_ahead).isoformat()
-    base_url = settings.economic_calendar_base_url.rstrip("/")
-    url = f"{base_url}/calendar/country/united%20states/{start_date}/{end_date}"
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(
-                url,
-                params={"importance": "3", "f": "json"},
-                headers={"Authorization": api_key},
-            )
-            response.raise_for_status()
-            payload = response.json()
-        if not isinstance(payload, list):
-            raise ValueError("Calendar response must be a JSON array.")
-        events = []
-        for item in payload:
-            if not isinstance(item, dict):
-                raise ValueError("Calendar event has an invalid shape.")
-            if int(item.get("Importance", 0) or 0) != 3:
-                continue
-            raw_date = item.get("Date")
-            name = item.get("Event")
-            if not raw_date or not name:
-                raise ValueError("High-impact calendar event is missing its date or name.")
-            event_time = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
-            if event_time.tzinfo is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-            events.append({
-                "event_id": str(item.get("CalendarId", "")),
-                "event": str(name),
-                "category": str(item.get("Category", "")),
-                "date": event_time.astimezone(timezone.utc),
-                "importance": 3,
-                "date_span": str(item.get("DateSpan", "0")),
-                "actual": str(item.get("Actual", "")),
-                "forecast": str(item.get("Forecast", "")),
-                "previous": str(item.get("Previous", "")),
-                "source": str(item.get("Source", "")),
-                "source_url": str(item.get("SourceURL", "")),
-            })
-        return sorted(events, key=lambda event: event["date"])
-    except HTTPException:
-        raise
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
-        raise HTTPException(status_code=503, detail="Economic calendar provider failed or returned invalid data; news filter is paused.") from exc
+        return await load_xoomar_high_impact_events(
+            days_ahead=days_ahead,
+            api_key=settings.xoomar_api_key.strip(),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="XOOMAR calendar is stale or invalid; news-sensitive analysis is paused.",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="XOOMAR calendar is unavailable; news-sensitive analysis is paused.",
+        ) from exc
 
 
 @app.get("/api/v1/calendar/us-high-impact")
@@ -496,9 +463,12 @@ async def us_high_impact_calendar(days_ahead: int = 7) -> dict:
         "days_ahead": days_ahead,
         "event_count": len(events),
         "events": events,
-        "source": "Trading Economics",
+        "source": "XOOMAR (aggregated US agency schedules)",
+        "source_url": "https://xoomar.com/markets/api/calendar",
+        "attribution": "Data: XOOMAR; underlying schedules from US government agencies.",
+        "forecast_available": False,
         "execution_enabled": False,
-        "note": "Economic calendar events can be revised; verify release times with the official source.",
+        "note": "Forecast consensus is not provided. Verify release times with the issuing agency; this calendar is not an order signal.",
     }
 
 
