@@ -536,3 +536,158 @@ def check_risk(request: RiskCheckRequest) -> RiskCheckResponse:
         max_allowed_risk_percent=settings.max_risk_per_trade_percent,
         reasons=reasons,
     )
+
+
+class PriceActionRequest(BaseModel):
+    symbol: str = "GOLD"
+    timeframe: str
+    candles: list[Candle] = Field(min_length=60, max_length=500)
+    swing_left: int = Field(default=3, ge=2, le=10)
+    swing_right: int = Field(default=3, ge=2, le=10)
+    equal_level_tolerance_atr: float = Field(default=0.12, gt=0, le=0.5)
+
+
+def _confirmed_swings(candles: list[Candle], left: int, right: int) -> tuple[list[dict], list[dict]]:
+    """Find non-repainting pivots: a pivot is emitted only after right bars close."""
+    highs: list[dict] = []
+    lows: list[dict] = []
+    for index in range(left, len(candles) - right):
+        window = candles[index - left:index + right + 1]
+        high = candles[index].high
+        low = candles[index].low
+        # Strict comparison against at least one neighbour avoids flat-window duplicates.
+        if high == max(item.high for item in window) and any(high > item.high for j, item in enumerate(window) if j != left):
+            highs.append({"index": index, "time": candles[index].time, "price": high})
+        if low == min(item.low for item in window) and any(low < item.low for j, item in enumerate(window) if j != left):
+            lows.append({"index": index, "time": candles[index].time, "price": low})
+    return highs, lows
+
+
+def _price_action_analysis(candles: list[Candle], left: int, right: int, equal_tolerance: float) -> dict:
+    highs, lows = _confirmed_swings(candles, left, right)
+    last = candles[-1]
+    atr = _atr_wilder(candles)
+    tolerance = max(atr * equal_tolerance, 1e-9)
+    recent_highs, recent_lows = highs[-4:], lows[-4:]
+
+    structure = "UNCONFIRMED"
+    if len(recent_highs) >= 2 and len(recent_lows) >= 2:
+        higher_highs = recent_highs[-1]["price"] > recent_highs[-2]["price"]
+        higher_lows = recent_lows[-1]["price"] > recent_lows[-2]["price"]
+        lower_highs = recent_highs[-1]["price"] < recent_highs[-2]["price"]
+        lower_lows = recent_lows[-1]["price"] < recent_lows[-2]["price"]
+        if higher_highs and higher_lows:
+            structure = "UPTREND"
+        elif lower_highs and lower_lows:
+            structure = "DOWNTREND"
+        else:
+            structure = "RANGE_OR_TRANSITION"
+
+    last_high = recent_highs[-1] if recent_highs else None
+    last_low = recent_lows[-1] if recent_lows else None
+    prior_close = candles[-2].close
+    bullish_bos = bool(last_high and last.close > last_high["price"] and prior_close <= last_high["price"])
+    bearish_bos = bool(last_low and last.close < last_low["price"] and prior_close >= last_low["price"])
+    bullish_sweep = bool(last_high and last.high > last_high["price"] + tolerance and last.close < last_high["price"])
+    bearish_sweep = bool(last_low and last.low < last_low["price"] - tolerance and last.close > last_low["price"])
+
+    equal_highs = []
+    equal_lows = []
+    for i in range(len(recent_highs)):
+        for j in range(i + 1, len(recent_highs)):
+            a, b = recent_highs[i], recent_highs[j]
+            if abs(a["price"] - b["price"]) <= tolerance:
+                equal_highs.append({"price": round((a["price"] + b["price"]) / 2, 5), "first_index": a["index"], "second_index": b["index"]})
+    for i in range(len(recent_lows)):
+        for j in range(i + 1, len(recent_lows)):
+            a, b = recent_lows[i], recent_lows[j]
+            if abs(a["price"] - b["price"]) <= tolerance:
+                equal_lows.append({"price": round((a["price"] + b["price"]) / 2, 5), "first_index": a["index"], "second_index": b["index"]})
+
+    bullish_fvg = []
+    bearish_fvg = []
+    for i in range(2, len(candles)):
+        first, third = candles[i - 2], candles[i]
+        if third.low > first.high:
+            bullish_fvg.append({"from_index": i - 2, "to_index": i, "lower": first.high, "upper": third.low, "mid": (first.high + third.low) / 2})
+        if third.high < first.low:
+            bearish_fvg.append({"from_index": i - 2, "to_index": i, "lower": third.high, "upper": first.low, "mid": (third.high + first.low) / 2})
+
+    # A basic order-block candidate is the last opposing candle before a confirmed structure break.
+    order_block = None
+    if bullish_bos and last_high:
+        for i in range(len(candles) - 2, max(-1, last_high["index"]), -1):
+            if candles[i].close < candles[i].open:
+                order_block = {"direction": "BULLISH", "index": i, "low": candles[i].low, "high": candles[i].high}
+                break
+    elif bearish_bos and last_low:
+        for i in range(len(candles) - 2, max(-1, last_low["index"]), -1):
+            if candles[i].close > candles[i].open:
+                order_block = {"direction": "BEARISH", "index": i, "low": candles[i].low, "high": candles[i].high}
+                break
+
+    events = []
+    if bullish_bos:
+        events.append("BULLISH_BREAK_OF_STRUCTURE")
+    if bearish_bos:
+        events.append("BEARISH_BREAK_OF_STRUCTURE")
+    if bullish_sweep:
+        events.append("BUY_SIDE_LIQUIDITY_SWEEP")
+    if bearish_sweep:
+        events.append("SELL_SIDE_LIQUIDITY_SWEEP")
+    if not events:
+        events.append("NO_CONFIRMED_STRUCTURE_EVENT")
+
+    return {
+        "market_structure": structure,
+        "swing_highs": recent_highs,
+        "swing_lows": recent_lows,
+        "last_confirmed_swing_high": last_high,
+        "last_confirmed_swing_low": last_low,
+        "events": events,
+        "liquidity_pools": {"equal_highs": equal_highs, "equal_lows": equal_lows},
+        "fair_value_gaps": {"bullish": bullish_fvg[-5:], "bearish": bearish_fvg[-5:]},
+        "order_block_candidate": order_block,
+        "atr14": round(atr, 5),
+        "swing_confirmation": {"left_bars": left, "right_bars": right, "repainting": False},
+        "notes": [
+            "Swing points are confirmed only after the configured right-side candles close.",
+            "Liquidity sweeps and structure breaks are rule-based candidates, not proof of institutional orders.",
+            "FVG and order-block zones are heuristic price-action features and require backtesting before use.",
+        ],
+    }
+
+
+@app.post("/api/v1/analysis/price-action")
+def price_action_analysis(request: PriceActionRequest) -> dict:
+    """Return deterministic, confirmed-candle market-structure and price-action features."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+    timeframe = request.timeframe.upper()
+    if timeframe not in _TIMEFRAME_SECONDS:
+        raise HTTPException(status_code=422, detail="Unsupported timeframe.")
+    _fresh_mt5_quote()
+    candles = request.candles
+    normalized_times = []
+    for candle in candles:
+        if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
+            raise HTTPException(status_code=422, detail="Invalid candle high/low values.")
+        timestamp = candle.time if candle.time.tzinfo else candle.time.replace(tzinfo=timezone.utc)
+        normalized_times.append(timestamp.astimezone(timezone.utc))
+    if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
+        raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
+    age = (datetime.now(timezone.utc) - normalized_times[-1]).total_seconds()
+    if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
+        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future.")
+    analysis = _price_action_analysis(candles, request.swing_left, request.swing_right, request.equal_level_tolerance_atr)
+    analysis.update({
+        "symbol": settings.broker_gold_symbol.upper(),
+        "timeframe": timeframe,
+        "candle_count": len(candles),
+        "latest_candle_time": normalized_times[-1],
+        "generated_at": datetime.now(timezone.utc),
+        "execution_enabled": False,
+        "signal": "WAIT",
+        "signal_note": "Price-action features are diagnostic only; no entry is authorized by this endpoint.",
+    })
+    return analysis
