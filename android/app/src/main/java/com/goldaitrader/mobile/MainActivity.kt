@@ -34,8 +34,10 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 
 private val Night = Color(0xFF10131B)
 private val Panel = Color(0xFF1B2230)
@@ -46,6 +48,8 @@ private val Red = Color(0xFFFF7373)
 
 class MainActivity : ComponentActivity() {
     private var backendStatus by mutableStateOf("لم يتم فحص الاتصال")
+    private var goldPrice by mutableStateOf("لم يتم جلب السعر")
+    private var quoteStatus by mutableStateOf("السعر الاسترشادي غير محمّل")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -59,7 +63,10 @@ class MainActivity : ComponentActivity() {
             )) {
                 DashboardScreen(
                     backendStatus = backendStatus,
-                    onCheckBackend = ::checkBackend
+                    goldPrice = goldPrice,
+                    quoteStatus = quoteStatus,
+                    onCheckBackend = ::checkBackend,
+                    onRefreshGold = ::refreshGold
                 )
             }
         }
@@ -90,12 +97,52 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun refreshGold() {
+        quoteStatus = "جارٍ جلب سعر الذهب..."
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val connection = URL("${BuildConfig.API_BASE_URL}/api/v1/market/snapshot")
+                        .openConnection() as HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 8000
+                    connection.readTimeout = 8000
+                    try {
+                        if (connection.responseCode != 200) {
+                            throw IllegalStateException("HTTP ${connection.responseCode}")
+                        }
+                        val body = connection.inputStream.bufferedReader().use { it.readText() }
+                        val json = JSONObject(body)
+                        val price = json.getDouble("price")
+                        val age = json.getInt("age_seconds")
+                        val formatted = "$" + String.format(Locale.US, "%,.2f", price)
+                        Pair(formatted, "سعر استرشادي • مصدر خارجي • عمر البيانات: ${age} ثانية")
+                    } finally {
+                        connection.disconnect()
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (result == null) {
+                goldPrice = "السعر غير متاح"
+                quoteStatus = "تعذر جلب سعر حديث — تحقق من الخادم"
+            } else {
+                goldPrice = result.first
+                quoteStatus = result.second
+            }
+        }
+    }
 }
 
 @Composable
 private fun DashboardScreen(
     backendStatus: String,
-    onCheckBackend: () -> Unit
+    goldPrice: String,
+    quoteStatus: String,
+    onCheckBackend: () -> Unit,
+    onRefreshGold: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = Night) {
         Column(
@@ -121,15 +168,24 @@ private fun DashboardScreen(
                 Column(Modifier.fillMaxWidth().padding(18.dp)) {
                     Text("XAUUSD · الذهب مقابل الدولار", color = Muted, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
-                    Text("بانتظار بيانات السوق", color = Color.White, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+                    Text(goldPrice, color = Color.White, fontSize = 27.sp, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
-                    Text("السعر المباشر غير متصل بعد", color = Gold, fontSize = 13.sp)
+                    Text(quoteStatus, color = Gold, fontSize = 11.sp)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "لن نعرض سعراً تقديرياً على أنه سعر حقيقي. سيظهر السعر بعد ربط مزود موثوق.",
+                        "هذا سعر استرشادي للذهب وليس سعر شراء/بيع وسيطك. لا تستخدمه وحده لتنفيذ الصفقات.",
                         color = Muted,
                         fontSize = 12.sp
                     )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = onRefreshGold,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Night),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("تحديث سعر الذهب", fontWeight = FontWeight.Bold)
+                    }
                 }
             }
 
@@ -158,7 +214,7 @@ private fun DashboardScreen(
                     Text("حالة الربط", color = Color.White, fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     StatusLine("خادم التحليل", backendStatus)
-                    StatusLine("بيانات الذهب", "غير متصلة")
+                    StatusLine("بيانات الذهب", if (goldPrice == "لم يتم جلب السعر" || goldPrice == "السعر غير متاح") "غير متصلة" else "تم استلام السعر")
                     StatusLine("MetaTrader 5", "غير مربوط")
                     Spacer(Modifier.height(12.dp))
                     Button(
@@ -170,7 +226,7 @@ private fun DashboardScreen(
                         Text("اختبر اتصال الخادم", fontWeight = FontWeight.Bold)
                     }
                     Text(
-                        "عنوان التطوير الافتراضي: ${BuildConfig.API_BASE_URL}",
+                        "عنوان التطوير: ${BuildConfig.API_BASE_URL}",
                         color = Muted,
                         fontSize = 10.sp
                     )
@@ -213,7 +269,8 @@ private fun StatusLine(label: String, value: String) {
         Text(label, color = Muted, fontSize = 12.sp)
         Text(
             value,
-            color = if (value.contains("بنجاح")) Green else if (value.contains("تعذر")) Red else Gold,
+            color = if (value.contains("بنجاح") || value.contains("استلام")) Green
+                else if (value.contains("تعذر") || value.contains("غير متصلة")) Red else Gold,
             fontSize = 11.sp
         )
     }
