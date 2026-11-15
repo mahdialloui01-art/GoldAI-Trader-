@@ -52,7 +52,7 @@ settings = Settings()
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
-    version="0.5.0",
+    version="0.6.0",
 )
 
 from .news_reaction import router as news_reaction_router
@@ -230,13 +230,14 @@ def get_config() -> dict:
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.5.0",
+        "analysis_engine_version": "0.6.0",
         "analysis_layers": [
             "multi_timeframe_m5_m15_h1_h4",
             "wilder_rsi_macd_adx_atr",
             "confirmed_market_structure_bos_liquidity_fvg",
             "closed_candle_microstructure",
             "optional_tick_volume_participation",
+            "explainable_weighted_signal_fusion",
             "macro_and_high_impact_news_fail_closed_gates",
         ],
     }
