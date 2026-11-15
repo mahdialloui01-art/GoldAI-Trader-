@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     trading_mode: str = "paper"
     live_trading_enabled: bool = False
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
-    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=5.0)
+    max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
+    demo_execution_enabled: bool = False
+    demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
@@ -229,6 +231,8 @@ def get_config() -> dict:
         "live_trading_enabled": settings.live_trading_enabled,
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
+        "demo_execution_enabled": settings.demo_execution_enabled,
+        "demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
         "supported_initial_symbol": settings.broker_gold_symbol,
         "analysis_engine_version": "0.6.2",
         "analysis_layers": [
@@ -2842,6 +2846,82 @@ def receive_mt5_candles(
         "latest_candle_times": {frame: rows[-1].time for frame, rows in normalized.items()},
         "data_quality": quality,
         "execution_enabled": False,
+    }
+
+
+@app.get("/api/v1/mt5/demo/signal")
+async def mt5_demo_signal(
+    daily_loss_percent: float = 0.0,
+    authorization: str | None = Header(default=None),
+) -> dict:
+    """Return a candidate for a separately demo-gated MT5 executor; never place orders."""
+    expected = settings.mt5_bridge_token
+    if not expected or not authorization or not secrets.compare_digest(
+        authorization.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper":
+        raise HTTPException(status_code=503, detail="Demo signal service is locked by the global safety policy.")
+    if not settings.demo_execution_enabled:
+        return {
+            "enabled": False, "decision": "WAIT",
+            "reason": "Demo execution has not been explicitly enabled on the server.",
+            "execution_enabled": False,
+        }
+    if daily_loss_percent >= settings.max_daily_loss_percent:
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": "Daily loss limit reached; new entries are locked.",
+            "daily_loss_percent": daily_loss_percent,
+            "max_daily_loss_percent": settings.max_daily_loss_percent,
+            "execution_enabled": False,
+        }
+
+    analysis = await live_expert_technical_analysis()
+    plan = analysis.get("setup_plan")
+    if analysis.get("decision") not in ("BUY", "SELL") or not isinstance(plan, dict):
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": "No fully confirmed expert setup is available.",
+            "blockers": analysis.get("blockers", []),
+            "execution_enabled": False,
+        }
+
+    quote = _fresh_mt5_quote()
+    point = float(quote["point"])
+    stop = float(plan["stop_loss_reference"])
+    entry = float(plan["entry_reference"])
+    stop_points = abs(entry - stop) / point
+    sizing = calculate_position_size(PositionSizeRequest(
+        stop_distance_points=stop_points,
+        risk_percent=settings.demo_risk_per_trade_percent,
+        account_equity=float(quote["account_equity"]),
+        daily_loss_percent=daily_loss_percent,
+    ))
+    if not sizing.get("approved") or sizing.get("recommended_lots", 0) <= 0:
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": sizing.get("reason", "Position sizing was not approved."),
+            "position_sizing": sizing,
+            "execution_enabled": False,
+        }
+
+    return {
+        "enabled": True,
+        "decision": analysis["decision"],
+        "symbol": settings.broker_gold_symbol.upper(),
+        "generated_at": analysis.get("generated_at"),
+        "entry_reference": entry,
+        "stop_loss": stop,
+        "take_profit": plan["targets"]["target_2R"],
+        "risk_reward": "1:2",
+        "recommended_lots": sizing["recommended_lots"],
+        "risk_percent": settings.demo_risk_per_trade_percent,
+        "daily_loss_percent": daily_loss_percent,
+        "max_daily_loss_percent": settings.max_daily_loss_percent,
+        "blockers": [],
+        "execution_enabled": False,
+        "note": "Candidate only. The MT5 EA must independently verify DEMO account mode and all local risk guards before any order.",
     }
 
 
