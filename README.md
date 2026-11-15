@@ -10,13 +10,13 @@ A demo-first XAUUSD research and trading assistant. The first milestone focuses 
 - Never put broker passwords, API keys, or MT5 credentials in this repository.
 
 ## Architecture
-- `android/`: native Android app built with Kotlin and Jetpack Compose (initial Arabic dashboard).
+- `android/`: native Android app built with Kotlin and Jetpack Compose.
 - `backend/`: FastAPI service, signal/risk engine, and MT5 adapter boundary.
-- `mt5/`: MetaTrader 5 Expert Advisor bridge (next milestone).
-- `tests/`: automated tests.
+- `backend/tests/`: API safety and behavior tests.
+- `mt5/`: MetaTrader 5 Expert Advisor bridge (planned).
 
 ## Android app
-Open the `android/` directory in Android Studio. See [android/README.md](android/README.md) for setup instructions. The current screen is a UI prototype: live market data and MetaTrader are not connected yet.
+Open the `android/` directory in Android Studio. The Arabic dashboard includes a backend health-check action. See [android/README.md](android/README.md) for setup and development URL configuration.
 
 ## Run the API
 Python 3.11+ is recommended.
@@ -32,5 +32,14 @@ uvicorn app.main:app --reload
 
 Open http://127.0.0.1:8000/docs.
 
-## Current milestone
-Initial Android dashboard and API scaffold with health, configuration, market snapshot placeholder, signal evaluation, and risk checks. No broker connection or order execution is active yet.
+## Run backend tests
+
+```bash
+cd backend
+pytest -q
+```
+
+GitHub Actions is configured to run the backend tests and an Android debug build on pushes and pull requests.
+
+## Current limitations
+No live market-data provider, economic-news provider, MetaTrader bridge, or order execution is connected. The app must not be used to make real trades until those components, authentication, risk controls, and demo/forward tests have been completed.
