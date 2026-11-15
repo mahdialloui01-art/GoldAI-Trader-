@@ -876,6 +876,8 @@ def test_pre_release_news_analysis_returns_probabilities_and_paper_candidate():
         "model_estimate": 0.8,
         "historical_error_std": 0.2,
         "historical_samples": 150,
+        "walk_forward_validation_passed": True,
+        "walk_forward_test_samples": 120,
         "gold_direction_if_above": "BEARISH",
         "gold_direction_if_inline": "MIXED",
         "gold_direction_if_below": "BULLISH",
@@ -912,6 +914,20 @@ def test_pre_release_news_analysis_rejects_release_too_close():
         "gold_direction_if_below": "BULLISH",
     })
     assert response.status_code == 422
+
+
+def test_pre_release_news_analysis_refuses_candidate_without_walk_forward_validation():
+    _set_fresh_quote()
+    response = client.post("/api/v1/news/pre-release-analysis", json={
+        "event_id": "US_RETAIL", "event_name": "US Retail Sales",
+        "release_at": (datetime.now(timezone.utc) + timedelta(minutes=60)).isoformat(),
+        "consensus": 0.2, "model_estimate": 0.8, "historical_error_std": 0.2,
+        "historical_samples": 150, "gold_direction_if_above": "BEARISH",
+        "gold_direction_if_below": "BULLISH",
+    })
+    assert response.status_code == 200
+    assert response.json()["decision"] == "NO_TRADE"
+    assert any("walk-forward" in reason for reason in response.json()["reasons"])
 
 
 def test_pre_release_news_analysis_blocks_small_sample_and_wide_spread():
