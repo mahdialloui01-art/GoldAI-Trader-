@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
+from decimal import Decimal, ROUND_DOWN
+import math
 from typing import Optional
 
 import httpx
@@ -53,6 +55,15 @@ class BrokerQuote(BaseModel):
     digits: int = Field(ge=0, le=10)
     point: float = Field(gt=0)
     spread_points: float = Field(ge=0)
+    tick_size: float | None = Field(default=None, gt=0)
+    tick_value_loss: float | None = Field(default=None, gt=0)
+    tick_value_profit: float | None = Field(default=None, gt=0)
+    volume_min: float | None = Field(default=None, gt=0)
+    volume_max: float | None = Field(default=None, gt=0)
+    volume_step: float | None = Field(default=None, gt=0)
+    contract_size: float | None = Field(default=None, gt=0)
+    account_equity: float | None = Field(default=None, gt=0)
+    account_currency: str | None = Field(default=None, min_length=3, max_length=8)
 
 
 _latest_mt5_quote: dict | None = None
@@ -85,11 +96,97 @@ class RiskCheckRequest(BaseModel):
     daily_loss_percent: float = Field(default=0, ge=0)
 
 
+
+class PositionSizeRequest(BaseModel):
+    stop_distance_points: float = Field(gt=0, le=10_000_000)
+    risk_percent: float = Field(default=0.5, gt=0, le=1.0)
+    account_equity: float | None = Field(default=None, gt=0)
+    daily_loss_percent: float = Field(default=0, ge=0, le=100)
+
+
 class RiskCheckResponse(BaseModel):
     approved: bool
     estimated_risk_percent: float
     max_allowed_risk_percent: float
     reasons: list[str]
+
+
+
+@app.post("/api/v1/risk/position-size")
+def calculate_position_size(request: PositionSizeRequest) -> dict:
+    """Calculate a conservative GOLD lot size from live MT5 tick-value and volume specs."""
+    quote = _fresh_mt5_quote()
+    required = (
+        "tick_size", "tick_value_loss", "volume_min", "volume_max",
+        "volume_step", "contract_size", "account_equity", "account_currency",
+    )
+    if any(quote.get(field) is None for field in required):
+        raise HTTPException(
+            status_code=503,
+            detail="Waiting for complete MT5 GOLD contract and account metadata; lot sizing is unavailable.",
+        )
+    if request.risk_percent > settings.max_risk_per_trade_percent:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Requested risk exceeds configured maximum of {settings.max_risk_per_trade_percent}%.",
+        )
+    if request.daily_loss_percent >= settings.max_daily_loss_percent:
+        return {
+            "approved": False, "recommended_lots": 0.0, "risk_amount": 0.0,
+            "estimated_risk_percent": 0.0, "account_currency": quote["account_currency"],
+            "reason": "Daily loss limit reached; new positions are locked.",
+            "execution_enabled": False,
+        }
+
+    equity = request.account_equity or quote["account_equity"]
+    price_distance = request.stop_distance_points * quote["point"]
+    ticks_to_stop = price_distance / quote["tick_size"]
+    loss_per_lot = ticks_to_stop * quote["tick_value_loss"]
+    if not math.isfinite(loss_per_lot) or loss_per_lot <= 0:
+        raise HTTPException(status_code=503, detail="MT5 tick-value metadata is invalid; lot sizing is paused.")
+
+    risk_amount = equity * request.risk_percent / 100
+    raw_lots = risk_amount / loss_per_lot
+    step = Decimal(str(quote["volume_step"]))
+    raw_steps = (Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN)
+    lots = float(raw_steps * step)
+    max_steps = (Decimal(str(quote["volume_max"])) / step).to_integral_value(rounding=ROUND_DOWN)
+    max_lots = float(max_steps * step)
+    lots = min(lots, max_lots)
+    if lots < quote["volume_min"]:
+        return {
+            "approved": False, "recommended_lots": 0.0,
+            "raw_lots_before_broker_limits": round(raw_lots, 8),
+            "risk_amount": round(risk_amount, 2),
+            "estimated_risk_percent": 0.0,
+            "account_currency": quote["account_currency"],
+            "reason": "The smallest broker-allowed lot would exceed the requested risk; no position is recommended.",
+            "execution_enabled": False,
+        }
+
+    estimated_loss = lots * loss_per_lot
+    estimated_percent = estimated_loss / equity * 100
+    return {
+        "approved": estimated_percent <= request.risk_percent + 1e-9,
+        "recommended_lots": lots,
+        "raw_lots_before_broker_limits": round(raw_lots, 8),
+        "risk_amount": round(risk_amount, 2),
+        "estimated_stop_loss_amount": round(estimated_loss, 2),
+        "estimated_risk_percent": round(estimated_percent, 4),
+        "requested_risk_percent": request.risk_percent,
+        "stop_distance_points": request.stop_distance_points,
+        "price_distance": round(price_distance, quote["digits"]),
+        "tick_size": quote["tick_size"],
+        "tick_value_loss_per_lot": quote["tick_value_loss"],
+        "volume_min": quote["volume_min"],
+        "volume_max": quote["volume_max"],
+        "volume_step": quote["volume_step"],
+        "contract_size": quote["contract_size"],
+        "account_currency": quote["account_currency"],
+        "symbol": quote["symbol"],
+        "reason": "Volume rounded down to the broker step; no minimum-lot uplift was applied.",
+        "execution_enabled": False,
+    }
 
 
 @app.get("/health")
@@ -134,6 +231,14 @@ def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(def
     age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
     if age < -30 or age > settings.market_quote_max_age_seconds:
         raise HTTPException(status_code=422, detail="MT5 quote timestamp is outside the accepted freshness window.")
+    spec_fields = (
+        quote.tick_size, quote.tick_value_loss, quote.volume_min, quote.volume_max,
+        quote.volume_step, quote.contract_size, quote.account_equity, quote.account_currency,
+    )
+    if any(value is not None for value in spec_fields) and not all(value is not None for value in spec_fields):
+        raise HTTPException(status_code=422, detail="MT5 symbol and account metadata must be supplied as a complete set.")
+    if quote.volume_min is not None and quote.volume_max < quote.volume_min:
+        raise HTTPException(status_code=422, detail="MT5 maximum volume must be greater than or equal to minimum volume.")
     _latest_mt5_quote = {
         "symbol": settings.broker_gold_symbol.upper(), "bid": quote.bid, "ask": quote.ask, "last": quote.last,
         "mid": round((quote.bid + quote.ask) / 2, quote.digits),
@@ -141,6 +246,11 @@ def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(def
         "point": quote.point, "source": "MetaTrader 5 broker feed",
         "source_updated_at": timestamp, "age_seconds": max(0, int(age)),
         "quote_type": "broker_bid_ask", "tradable_quote": True,
+        "tick_size": quote.tick_size, "tick_value_loss": quote.tick_value_loss,
+        "tick_value_profit": quote.tick_value_profit, "volume_min": quote.volume_min,
+        "volume_max": quote.volume_max, "volume_step": quote.volume_step,
+        "contract_size": quote.contract_size, "account_equity": quote.account_equity,
+        "account_currency": quote.account_currency,
     }
     return {"accepted": True, "symbol": settings.broker_gold_symbol.upper(), "source": "MT5"}
 
