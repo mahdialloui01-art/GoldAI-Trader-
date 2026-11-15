@@ -67,7 +67,7 @@ The Android-to-backend display path is implemented, but live broker connectivity
 4. The EA reads the configured broker symbol (default `GOLD`) and streams Bid/Ask, spread, precision and UTC timestamp. Android reads the latest broker snapshot from the backend.
 5. If MT5 disconnects or the quote becomes stale, the snapshot returns 503; the public spot reference is not substituted.
 
-The bridge transmits quotes only. It does not place orders. Trading remains paper/demo and live execution remains disabled.
+The bridge transmits quotes and closed broker candles only. It never places orders. Trading remains paper/demo and live execution remains disabled.
 
 
 ## Price action and multi-timeframe analysis
@@ -144,4 +144,4 @@ The backend includes a strict parser at `backend/app/calendar_import.py` for a u
 - Broker spread relative to M5 ATR, plus the existing macro and high-impact-news fail-closed gates.
 - Reference stop and 1R/2R/3R target levels only when every existing decision gate and the expert confluence layer pass.
 
-The endpoint never places orders. Missing/invalid broker candle analysis produces no dossier and no setup. Order blocks and liquidity features remain rule-based chart candidates, not proof of institutional order flow. The endpoint analyzes caller-supplied closed broker candles; it does not itself create or guarantee a continuous MT5 candle feed. Historical walk-forward validation and independent out-of-sample calibration are still required before any score can be described as predictive.
+The endpoint never places orders. Missing/invalid broker candle analysis produces no dossier and no setup. Order blocks and liquidity features remain rule-based chart candidates, not proof of institutional order flow. For live use, the MT5 EA sends authenticated closed broker candles to /api/v1/mt5/candles and Android reads /api/v1/analysis/expert/live. The in-memory cache resets on server restart; the EA must send a fresh complete batch again. Historical walk-forward validation and independent out-of-sample calibration are still required before any score can be described as predictive.
