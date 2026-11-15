@@ -5,6 +5,7 @@ from enum import Enum
 from decimal import Decimal, ROUND_DOWN
 import math
 import statistics
+import logging
 from typing import Optional
 from urllib.parse import quote
 
@@ -15,6 +16,8 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
+
+logger = logging.getLogger(__name__)
 
 
 class Settings(BaseSettings):
@@ -432,7 +435,16 @@ async def gold_macro_analysis() -> dict:
         }
     except HTTPException:
         raise
-    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+    except httpx.HTTPStatusError as exc:
+        # Never log the request URL: FRED API keys are sent as query parameters.
+        logger.error("FRED macro request failed with HTTP status %s.", exc.response.status_code)
+        raise HTTPException(status_code=503, detail="FRED macro data is unavailable, stale, or invalid; macro filter is paused.") from exc
+    except httpx.HTTPError as exc:
+        logger.error("FRED macro network request failed (%s).", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="FRED macro data is unavailable, stale, or invalid; macro filter is paused.") from exc
+    except (ValueError, TypeError, KeyError) as exc:
+        # The validation reason is safe: it contains series/date metadata, never credentials.
+        logger.error("FRED macro data validation failed: %s", str(exc)[:240])
         raise HTTPException(status_code=503, detail="FRED macro data is unavailable, stale, or invalid; macro filter is paused.") from exc
 
 
