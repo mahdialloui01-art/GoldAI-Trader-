@@ -724,3 +724,66 @@ def test_position_size_rejects_risk_above_configured_limit():
     })
     assert response.status_code == 422
     assert "configured maximum" in response.json()["detail"]
+
+
+
+def test_backtest_enters_on_next_bar_and_assumes_stop_first(monkeypatch):
+    candles = []
+    start = datetime.now(timezone.utc) - timedelta(minutes=100)
+    for index in range(100):
+        candles.append({
+            "time": (start + timedelta(minutes=index)).isoformat(),
+            "open": 100.0, "high": 104.0, "low": 96.0, "close": 100.0,
+            "tick_volume": 100,
+        })
+    monkeypatch.setattr(main, "_ema_series", lambda values, period: (
+        [101.0] * (len(values) - 19) if period == 20 else [100.0] * (len(values) - 49)
+    ))
+    monkeypatch.setattr(main, "_rsi_wilder_series", lambda values, period=14: [60.0] * len(values))
+    monkeypatch.setattr(main, "_atr_wilder_series", lambda values, period=14: [1.0] * len(values))
+    response = client.post("/api/v1/backtest", json={
+        "symbol": "GOLD", "timeframe": "M5", "candles": candles,
+        "initial_balance": 10000, "lots": 0.1, "contract_size": 100,
+        "spread_points": 20, "point": 0.01, "slippage_points": 2,
+        "commission_per_lot_round_turn": 0,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["trade_count"] > 0
+    assert body["trades"][0]["entry_time"] == candles[51]["time"]
+    assert body["trades"][0]["exit_reason"] == "STOP"
+    assert body["trades"][0]["net_pnl"] < 0
+    assert body["execution_enabled"] is False
+    assert any("following candle open" in item for item in body["lookahead_bias_controls"])
+
+
+def test_backtest_rejects_unsupported_symbol():
+    response = client.post("/api/v1/backtest", json={
+        "symbol": "EURUSD", "timeframe": "M15",
+        "candles": _technical_payload("M15")["candles"],
+    })
+    assert response.status_code == 400
+
+
+def test_backtest_rejects_non_increasing_timestamps():
+    candles = _technical_payload("M5", count=100)["candles"]
+    candles[-1]["time"] = candles[-2]["time"]
+    response = client.post("/api/v1/backtest", json={
+        "symbol": "GOLD", "timeframe": "M5", "candles": candles,
+    })
+    assert response.status_code == 422
+    assert "strictly increasing" in response.json()["detail"]
+
+
+def test_backtest_flat_market_returns_zero_trades_without_fake_win_rate():
+    candles = _technical_payload("M5", count=100)["candles"]
+    response = client.post("/api/v1/backtest", json={
+        "symbol": "GOLD", "timeframe": "M5", "candles": candles,
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["trade_count"] == 0
+    assert body["win_rate_percent"] == 0
+    assert body["net_profit"] == 0
+    assert body["ending_balance"] == 10000
+    assert body["execution_enabled"] is False
