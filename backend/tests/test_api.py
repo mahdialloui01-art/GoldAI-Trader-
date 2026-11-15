@@ -500,7 +500,18 @@ def _sample_xoomar_event(event_name="CPI", event_time=None):
     }
 
 
+def _reset_news_engine_cache_for_test():
+    main._NEWS_CALENDAR_CACHE = []
+    main._NEWS_HEADLINES_CACHE = []
+    main._NEWS_CALENDAR_LAST_ATTEMPT = None
+    main._NEWS_CALENDAR_LAST_SUCCESS = None
+    main._NEWS_CALENDAR_LAST_ERROR = None
+    main._NEWS_HEADLINES_LAST_SUCCESS = None
+    main._NEWS_HEADLINES_ERRORS = []
+
+
 def test_economic_calendar_returns_only_high_impact_us_events(monkeypatch):
+    _reset_news_engine_cache_for_test()
     async def fake_load(days_ahead=7, api_key=""):
         assert days_ahead == 3
         return [_sample_xoomar_event()]
@@ -517,6 +528,7 @@ def test_economic_calendar_returns_only_high_impact_us_events(monkeypatch):
 
 
 def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
+    _reset_news_engine_cache_for_test()
     event_time = datetime.now(timezone.utc) + timedelta(minutes=10)
     async def fake_load(days_ahead=7, api_key=""):
         return [_sample_xoomar_event("FOMC Rate Decision", event_time)]
@@ -532,6 +544,7 @@ def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
 
 
 def test_news_filter_fails_closed_when_calendar_is_unavailable(monkeypatch):
+    _reset_news_engine_cache_for_test()
     async def fail_load(days_ahead=7, api_key=""):
         raise httpx.ConnectError("provider unavailable")
     monkeypatch.setattr(main, "load_xoomar_high_impact_events", fail_load)
@@ -540,6 +553,7 @@ def test_news_filter_fails_closed_when_calendar_is_unavailable(monkeypatch):
     assert "unavailable" in response.json()["detail"].lower()
 
 def test_news_filter_fails_closed_when_provider_is_unavailable(monkeypatch):
+    _reset_news_engine_cache_for_test()
     monkeypatch.setattr(main.settings, "economic_calendar_api_key", "calendar-test-key")
     class FakeClient:
         async def __aenter__(self):
