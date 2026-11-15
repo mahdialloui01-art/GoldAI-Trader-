@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Optional
 
 import httpx
+import secrets
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +21,7 @@ class Settings(BaseSettings):
     max_daily_loss_percent: float = Field(default=2.0, gt=0, le=5.0)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
+    mt5_bridge_token: str = ""
 
 
 settings = Settings()
@@ -34,6 +36,20 @@ class Direction(str, Enum):
     BUY = "BUY"
     SELL = "SELL"
     WAIT = "WAIT"
+
+
+class BrokerQuote(BaseModel):
+    symbol: str = "XAUUSD"
+    bid: float = Field(gt=0)
+    ask: float = Field(gt=0)
+    last: float = Field(default=0, ge=0)
+    timestamp: datetime
+    digits: int = Field(ge=0, le=10)
+    point: float = Field(gt=0)
+    spread_points: float = Field(ge=0)
+
+
+_latest_mt5_quote: dict | None = None
 
 
 class SignalRequest(BaseModel):
@@ -93,9 +109,50 @@ def get_config() -> dict:
     }
 
 
+@app.post("/api/v1/mt5/quote")
+def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = None) -> dict:
+    """Receive the broker's live XAUUSD quote from the authenticated MT5 EA."""
+    global _latest_mt5_quote
+    expected = settings.mt5_bridge_token
+    if not expected or not authorization or not secrets.compare_digest(
+        authorization.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
+    if quote.symbol.upper() != "XAUUSD":
+        raise HTTPException(status_code=400, detail="Only XAUUSD quotes are accepted.")
+    if quote.ask < quote.bid:
+        raise HTTPException(status_code=422, detail="Ask must be greater than or equal to Bid.")
+    timestamp = quote.timestamp
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
+    if age < -30 or age > settings.market_quote_max_age_seconds:
+        raise HTTPException(status_code=422, detail="MT5 quote timestamp is outside the accepted freshness window.")
+    _latest_mt5_quote = {
+        "symbol": "XAUUSD", "bid": quote.bid, "ask": quote.ask, "last": quote.last,
+        "mid": round((quote.bid + quote.ask) / 2, quote.digits),
+        "spread_points": quote.spread_points, "digits": quote.digits,
+        "point": quote.point, "source": "MetaTrader 5 broker feed",
+        "source_updated_at": timestamp, "age_seconds": max(0, int(age)),
+        "quote_type": "broker_bid_ask", "tradable_quote": True,
+    }
+    return {"accepted": True, "symbol": "XAUUSD", "source": "MT5"}
+
+
 @app.get("/api/v1/market/snapshot")
-async def market_snapshot() -> dict:
-    """Return an indicative spot reference, never a broker execution quote."""
+def market_snapshot() -> dict:
+    """Return only a fresh broker quote; never silently fall back to public spot."""
+    if _latest_mt5_quote is None:
+        raise HTTPException(status_code=503, detail="Waiting for a fresh XAUUSD quote from MetaTrader 5.")
+    age = max(0, int((datetime.now(timezone.utc) - _latest_mt5_quote["source_updated_at"].astimezone(timezone.utc)).total_seconds()))
+    if age > settings.market_quote_max_age_seconds:
+        raise HTTPException(status_code=503, detail="MT5 quote is stale; market signals must remain paused.")
+    return {**_latest_mt5_quote, "age_seconds": age}
+
+
+@app.get("/api/v1/market/spot-reference")
+async def market_spot_reference() -> dict:
+    """Return a public indicative spot reference for comparison only."""
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             response = await client.get(settings.gold_spot_api_url)
