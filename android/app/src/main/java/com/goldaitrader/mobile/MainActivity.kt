@@ -157,9 +157,9 @@ class MainActivity : ComponentActivity() {
                     val interval = (j.optInt("poll_interval_seconds", 300) / 60).coerceAtLeast(1)
                     val age = j.optInt("calendar_age_seconds", -1)
                     val last = j.optString("calendar_last_success_at", "لم يصل بعد")
-                    "الحالة: $state — التحديث الآلي كل $interval دقائق — عمر التقويم: \${if (age >= 0) "$age ثانية" else "غير متاح"} — آخر نجاح: $last"
+                    "الحالة: $state — التحديث الآلي كل $interval دقائق — عمر التقويم: ${if (age >= 0) "$age ثانية" else "غير متاح"} — آخر نجاح: $last"
                 } catch (e: Exception) {
-                    "حالة المحرك غير متاحة حالياً: \${e.message ?: "تعذر الاتصال"}"
+                    "حالة المحرك غير متاحة حالياً: ${e.message ?: "تعذر الاتصال"}"
                 }
             Triple(macro, news, engine)
             }
