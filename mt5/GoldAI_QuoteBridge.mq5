@@ -68,7 +68,9 @@ bool PostJson(string url, string body)
    int status = WebRequest("POST", url, headers, 8000, data, result, responseHeaders);
    if(status != 200)
    {
-      Print("GoldAI bridge HTTP status=", status, " error=", GetLastError(), " url=", url);
+      string responseBody = CharArrayToString(result, 0, -1, CP_UTF8);
+      Print("GoldAI bridge HTTP status=", status, " error=", GetLastError(),
+            " url=", url, " response=", responseBody);
       return false;
    }
    return true;
