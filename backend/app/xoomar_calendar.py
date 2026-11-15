@@ -45,6 +45,10 @@ async def load_xoomar_high_impact_events(
     rows = payload.get("data")
     if not isinstance(rows, list):
         raise ValueError("XOOMAR data must be an array.")
+    meta = payload.get("meta")
+    source_attribution = meta.get("sourceAttribution") if isinstance(meta, dict) else None
+    if not isinstance(source_attribution, str) or not source_attribution.strip():
+        raise ValueError("XOOMAR source attribution is missing.")
 
     updated_raw = payload.get("updatedAt")
     if not isinstance(updated_raw, str) or not updated_raw.strip():
@@ -96,6 +100,7 @@ async def load_xoomar_high_impact_events(
             "unit": str(item.get("unit") or ""),
             "forecast_available": False,
             "data_provider": "XOOMAR",
+            "source_attribution": source_attribution,
             "data_updated_at": updated_at,
         })
 
