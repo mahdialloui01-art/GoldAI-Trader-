@@ -133,7 +133,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         " — لا توجد أحداث عالية التأثير مجدولة في الأيام القادمة"
                     }
-                    "القرار: $decision — أحداث نشطة: $count — $reason$nextEvent"
+                    val attribution = j.optString("calendar_attribution", "Data: XOOMAR — xoomar.com/markets/api/calendar")
+                    "القرار: $decision — أحداث نشطة: $count — $reason$nextEvent — المصدر: $attribution"
                 } catch (e: Exception) {
                     "غير متاح: ${e.message ?: "التقويم الاقتصادي غير متصل"}"
                 }
