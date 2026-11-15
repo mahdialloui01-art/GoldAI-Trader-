@@ -51,7 +51,7 @@ def test_market_snapshot_returns_provider_price_and_marks_it_non_tradable(monkey
             return FakeResponse()
 
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
-    response = client.get("/api/v1/market/snapshot")
+    response = client.get("/api/v1/market/spot-reference")
     assert response.status_code == 200
     body = response.json()
     assert body["price"] == 4012.34
@@ -83,7 +83,7 @@ def test_market_snapshot_rejects_stale_provider_data(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
-    response = client.get("/api/v1/market/snapshot")
+    response = client.get("/api/v1/market/spot-reference")
     assert response.status_code == 503
     assert "stale" in response.json()["detail"]
 
@@ -100,7 +100,7 @@ def test_market_snapshot_handles_provider_failure(monkeypatch):
             raise main.httpx.ConnectError("offline")
 
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
-    response = client.get("/api/v1/market/snapshot")
+    response = client.get("/api/v1/market/spot-reference")
     assert response.status_code == 503
 
 
@@ -178,7 +178,7 @@ def test_mt5_quote_requires_token_and_becomes_primary_market_snapshot(monkeypatc
         headers={"Authorization": "Bearer test-secret"},
     )
     assert accepted.status_code == 200
-    snapshot = client.get("/api/v1/market/snapshot")
+    snapshot = client.get("/api/v1/market/spot-reference")
     assert snapshot.status_code == 200
     body = snapshot.json()
     assert body["source"] == "MetaTrader 5 broker feed"
@@ -189,7 +189,7 @@ def test_mt5_quote_requires_token_and_becomes_primary_market_snapshot(monkeypatc
 
 def test_market_snapshot_does_not_fall_back_to_public_spot():
     main._latest_mt5_quote = None
-    response = client.get("/api/v1/market/snapshot")
+    response = client.get("/api/v1/market/spot-reference")
     assert response.status_code == 503
     assert "MetaTrader 5" in response.json()["detail"]
 
