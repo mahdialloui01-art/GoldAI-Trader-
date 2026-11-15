@@ -329,7 +329,7 @@ void TryDemoTrade()
    ENUM_ORDER_TYPE orderType;
    double estimatedEntry = 0.0;
    if(direction == "BUY") { orderType = ORDER_TYPE_BUY; estimatedEntry = tick.ask; }
-   else if(direction == "SELL) { orderType = ORDER_TYPE_SELL; estimatedEntry = tick.bid; }
+   else if(direction == "SELL") { orderType = ORDER_TYPE_SELL; estimatedEntry = tick.bid; }
    else return;
    double estimatedStopPnl = 0.0;
    if(!OrderCalcProfit(orderType, RequiredSymbol, lots, estimatedEntry, stop, estimatedStopPnl))
