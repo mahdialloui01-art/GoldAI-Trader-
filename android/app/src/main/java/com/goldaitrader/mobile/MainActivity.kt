@@ -558,7 +558,7 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
 
     SectionHeading("مؤشرات سريعة", "إعدادات الحماية الحالية")
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        MiniMetric("المخاطرة / صفقة", "0.25%", "حد الديمو", Modifier.weight(1f))
+        MiniMetric("المخاطرة / صفقة يدوية", "2%", "تُحسب تلقائياً", Modifier.weight(1f))
         MiniMetric("الخسارة اليومية", "10%", "حد إيقاف", Modifier.weight(1f))
     }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -744,7 +744,8 @@ private fun CandlestickChart(candles: List<ChartCandle>) {
 private fun RiskPage() {
     SectionHeading("مركز إدارة المخاطر", "الحماية تسبق البحث عن الربح")
     StatusBanner("التداول الحقيقي معطّل — Paper mode فقط", Green)
-    RiskRow("المخاطرة القصوى لكل صفقة", "0.25% — ديمو")
+    RiskRow("المخاطرة اليدوية القصوى", "2% — ديمو فقط")
+    RiskRow("المخاطرة الآلية", "0.25% — مستقلة عن اليدوي")
     RiskRow("حد الخسارة اليومية", "10% — ديمو")
     RiskRow("حساب حجم العقد", "حسب مواصفات XM من MT5")
     RiskRow("تقريب حجم العقد", "للأسفل حسب Volume Step")
