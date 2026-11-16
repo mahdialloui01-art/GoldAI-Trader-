@@ -249,14 +249,26 @@ class MainActivity : ComponentActivity() {
                     ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
                 }
                 val report = chart.optJSONObject("reports_by_timeframe")?.optJSONObject("M5")
-                chartReport = if (report == null) "لا يوجد تقرير فني متاح لهذا الإطار." else
-                    "الاتجاه: ${report.optString("direction", "WAIT")}\n" +
-                    "حالة السوق: ${report.optString("market_regime", "غير محدد")}\n" +
-                    "هيكل السوق: ${report.optString("market_structure", "غير محدد")}\n" +
-                    "RSI: ${report.optDouble("rsi14")}  •  ADX: ${report.optDouble("adx14")}\n" +
-                    "ATR: ${report.optDouble("atr14")}  •  MACD: ${report.optDouble("macd_histogram")}\n" +
-                    "الأحداث: ${report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"}\n" +
-                    "الأدلة: ${report.optJSONArray("evidence")?.toString() ?: "غير متاحة"}"
+                chartReport = if (report == null) "لا يوجد تقرير فني متاح لهذا الإطار." else {
+                    val direction = report.optString("direction", "WAIT")
+                    val regime = report.optString("market_regime", "غير محدد")
+                    val structure = report.optString("market_structure", "غير محدد")
+                    val rsi = report.optString("rsi14", "—")
+                    val adx = report.optString("adx14", "—")
+                    val atr = report.optString("atr14", "—")
+                    val macd = report.optString("macd_histogram", "—")
+                    val events = report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"
+                    val evidence = report.optJSONArray("evidence")?.toString() ?: "غير متاحة"
+                    listOf(
+                        "الاتجاه: $direction",
+                        "حالة السوق: $regime",
+                        "هيكل السوق: $structure",
+                        "RSI: $rsi  •  ADX: $adx",
+                        "ATR: $atr  •  MACD: $macd",
+                        "الأحداث: $events",
+                        "الأدلة: $evidence"
+                    ).joinToString("\n")
+                }
             } catch (_: Exception) {
                 chartRows = emptyList()
                 chartReport = "تعذر قراءة بيانات الرسم والتحليل."
