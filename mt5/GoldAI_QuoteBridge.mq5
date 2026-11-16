@@ -32,6 +32,7 @@ input double AtrTrailMultiple = 1.5;
 datetime lastCandleSend = 0;
 ulong lastQuoteSendMs = 0;
 datetime lastDemoDecisionBar = 0;
+datetime lastJournalSync = 0;
 
 int OnInit()
 {
@@ -616,8 +617,9 @@ bool SendClosedDealToLearning(ulong deal)
    ulong positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
    string direction = LearningPositionDirection(positionId);
    datetime dealTime = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+   datetime utcDealTime = dealTime + (TimeGMT() - TimeTradeServer());
    MqlDateTime stamp;
-   TimeToStruct(dealTime, stamp);
+   TimeToStruct(utcDealTime, stamp);
    string isoTime = StringFormat("%04d-%02d-%02dT%02d:%02d:%02dZ",
       stamp.year, stamp.mon, stamp.day, stamp.hour, stamp.min, stamp.sec);
    string payload = StringFormat(
@@ -653,8 +655,7 @@ void ExportClosedDealsToJournal()
    if(now <= 0) now = TimeCurrent();
    MqlDateTime day;
    TimeToStruct(now, day);
-   day.hour = 0; day.min = 0; day.sec = 0;
-   datetime from = StructToTime(day);
+   datetime from = now - 90 * 24 * 60 * 60;
    if(!HistorySelect(from, now)) return;
 
    int file = FileOpen("GoldAI_TradeJournal.csv", FILE_READ|FILE_WRITE|FILE_CSV|FILE_COMMON, ',');
@@ -723,7 +724,11 @@ void OnTimer()
       lastCandleSend = now;
    }
    ManageDemoPositions();
-   ExportClosedDealsToJournal();
+   if(lastJournalSync == 0 || now - lastJournalSync >= 60)
+   {
+      ExportClosedDealsToJournal();
+      lastJournalSync = now;
+   }
    TryManualDemoTrade();
    TryDemoTrade();
 }
