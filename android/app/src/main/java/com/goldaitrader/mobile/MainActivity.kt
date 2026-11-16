@@ -527,7 +527,8 @@ private fun AnalysisPage(
             Text("GOLD · $selectedChartFrame", color = Gold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             if (chartRows.size > 1) CandlestickChart(chartRows)
             else Text("بانتظار شموع كافية لهذا الإطار من MT5.", color = Muted, modifier = Modifier.padding(vertical = 30.dp))
-            Text("آخر إغلاق: \${chartRows.lastOrNull()?.close ?: "—"}", color = Muted, fontSize = 11.sp)
+            val lastClose = chartRows.lastOrNull()?.close?.toString() ?: "—"
+            Text("آخر إغلاق: $lastClose", color = Muted, fontSize = 11.sp)
             Text(chartReportsByFrame[selectedChartFrame] ?: "لم يصل التقرير الفني لهذا الإطار.", color = Color.White, fontSize = 11.sp)
         }
     }
