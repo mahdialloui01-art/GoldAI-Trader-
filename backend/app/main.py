@@ -3141,6 +3141,68 @@ def receive_mt5_candles(
     }
 
 
+_DEMO_MIN_CONFLUENCE_SCORE = 85.0
+_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP"}
+
+
+def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
+    """Require strong confluence and a confirmed non-reversal setup before DEMO execution."""
+    dossier = analysis.get("technical_dossier")
+    if not isinstance(dossier, dict):
+        return False, "Expert technical dossier is unavailable.", {}
+    try:
+        confluence = float(dossier.get("confluence_score"))
+    except (TypeError, ValueError):
+        confluence = float("nan")
+    if not math.isfinite(confluence):
+        return False, "Confluence score is missing or invalid.", {}
+    if confluence < _DEMO_MIN_CONFLUENCE_SCORE:
+        return False, "Confluence is below the 85/100 DEMO entry threshold.", {
+            "confluence_score": confluence,
+            "minimum_confluence_score": _DEMO_MIN_CONFLUENCE_SCORE,
+        }
+
+    scan = dossier.get("strategy_scan")
+    if not isinstance(scan, dict):
+        return False, "Strategy scan is unavailable.", {"confluence_score": confluence}
+    blockers = scan.get("blockers") or []
+    if blockers:
+        return False, "Strategy scan has active safety blockers.", {
+            "confluence_score": confluence, "strategy_blockers": blockers,
+        }
+    selected = scan.get("selected")
+    if not isinstance(selected, dict):
+        return False, "No confirmed entry strategy is selected.", {
+            "confluence_score": confluence,
+        }
+    strategy = str(selected.get("strategy", "")).upper()
+    if strategy not in _DEMO_ALLOWED_ENTRY_STRATEGIES:
+        return False, "Selected setup is informational only and cannot authorize entry.", {
+            "confluence_score": confluence, "selected_strategy": strategy,
+        }
+    try:
+        setup_score = float(selected.get("score"))
+        setup_max = float(selected.get("max_score"))
+    except (TypeError, ValueError):
+        setup_score, setup_max = 0.0, 0.0
+    if not math.isfinite(setup_score) or not math.isfinite(setup_max) or setup_max <= 0:
+        return False, "Selected setup score is invalid.", {
+            "confluence_score": confluence, "selected_strategy": strategy,
+        }
+    if setup_score < setup_max * 0.8:
+        return False, "Selected setup quality is below 80% of its strategy score.", {
+            "confluence_score": confluence, "selected_strategy": strategy,
+            "setup_score": setup_score, "setup_max_score": setup_max,
+        }
+    return True, "DEMO entry quality gates passed.", {
+        "confluence_score": confluence,
+        "minimum_confluence_score": _DEMO_MIN_CONFLUENCE_SCORE,
+        "selected_strategy": strategy,
+        "setup_score": setup_score,
+        "setup_max_score": setup_max,
+    }
+
+
 @app.get("/api/v1/mt5/demo/signal")
 async def mt5_demo_signal(
     daily_loss_percent: float = 0.0,
@@ -3172,6 +3234,14 @@ async def mt5_demo_signal(
         }
 
     analysis = await live_expert_technical_analysis()
+    quality_ok, quality_reason, quality_details = _demo_candidate_quality_gate(analysis)
+    if not quality_ok:
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": quality_reason,
+            "quality_gate": quality_details,
+            "execution_enabled": False,
+        }
     plan = analysis.get("setup_plan")
     if analysis.get("decision") not in ("BUY", "SELL") or not isinstance(plan, dict):
         return {
