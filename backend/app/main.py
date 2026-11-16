@@ -189,7 +189,7 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
         raise HTTPException(status_code=503, detail="MT5 tick-value metadata is invalid; lot sizing is paused.")
 
     risk_amount = equity * request.risk_percent / 100
-    raw_lots = risk_amount / (loss_per_lot * 1.05)
+    raw_lots = risk_amount / loss_per_lot
     step = Decimal(str(quote["volume_step"]))
     raw_steps = (Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN)
     lots = float(raw_steps * step)
@@ -3280,7 +3280,7 @@ def manual_demo_trade_defaults() -> dict:
     if not math.isfinite(loss_per_lot) or loss_per_lot <= 0 or equity <= 0:
         raise HTTPException(status_code=503, detail="Broker risk metadata is invalid; manual sizing is paused.")
     risk_amount = equity * settings.demo_risk_per_trade_percent / 100.0
-    raw_lots = risk_amount / loss_per_lot
+    raw_lots = risk_amount / (loss_per_lot * 1.05)
     step = Decimal(str(quote["volume_step"]))
     lots = float((Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN) * step)
     if lots < float(quote["volume_min"]):
