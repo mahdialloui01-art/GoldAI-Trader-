@@ -60,8 +60,10 @@ class MainActivity : ComponentActivity() {
     private var expertSummary by mutableStateOf("لم يتم جلب التحليل بعد")
     private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
     private var candlesReceived by mutableStateOf(false)
-    private var chartRows by mutableStateOf<List<ChartCandle>>(emptyList())
-    private var chartReport by mutableStateOf("بانتظار تقرير الرسم والتحليل")
+    private var chartRowsByFrame by mutableStateOf<Map<String, List<ChartCandle>>>(emptyMap())
+    private var chartReportsByFrame by mutableStateOf<Map<String, String>>(emptyMap())
+    private var chartMeta by mutableStateOf("بانتظار بيانات التحليل")
+    private var selectedChartFrame by mutableStateOf("M5")
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -86,8 +88,11 @@ class MainActivity : ComponentActivity() {
                     expertSummary = expertSummary,
                     candleSummary = candleSummary,
                     candlesReceived = candlesReceived,
-                    chartRows = chartRows,
-                    chartReport = chartReport,
+                    chartRowsByFrame = chartRowsByFrame,
+                    chartReportsByFrame = chartReportsByFrame,
+                    chartMeta = chartMeta,
+                    selectedChartFrame = selectedChartFrame,
+                    onSelectChartFrame = { selectedChartFrame = it },
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -231,7 +236,7 @@ class MainActivity : ComponentActivity() {
                     candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
                 }
-                val chartPayload = try { request("/api/v1/analysis/chart?timeframe=M5").toString() } catch (_: Exception) { "{}" }
+                val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
                 listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString(), chartPayload)
             }
             macroSummary = result[0]
@@ -243,35 +248,49 @@ class MainActivity : ComponentActivity() {
             candlesReceived = result[6] == "true"
             try {
                 val chart = JSONObject(result[7])
-                val rows = chart.optJSONObject("candles_by_timeframe")?.optJSONArray("M5")
-                chartRows = if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { i ->
-                    val item = rows.optJSONObject(i) ?: return@mapNotNull null
-                    ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
+                val candleObject = chart.optJSONObject("candles_by_timeframe")
+                val reportObject = chart.optJSONObject("reports_by_timeframe")
+                val parsedRows = mutableMapOf<String, List<ChartCandle>>()
+                val parsedReports = mutableMapOf<String, String>()
+                listOf("M5", "M15", "H1", "H4").forEach { frame ->
+                    val rows = candleObject?.optJSONArray(frame)
+                    if (rows != null) parsedRows[frame] = (0 until rows.length()).mapNotNull { i ->
+                        val item = rows.optJSONObject(i) ?: return@mapNotNull null
+                        ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
+                    }
+                    val report = reportObject?.optJSONObject(frame)
+                    if (report != null) {
+                        val direction = report.optString("direction", "WAIT")
+                        val regime = report.optString("market_regime", "غير محدد")
+                        val structure = report.optString("market_structure", "غير محدد")
+                        val rsi = report.optString("rsi14", "—")
+                        val adx = report.optString("adx14", "—")
+                        val atr = report.optString("atr14", "—")
+                        val macd = report.optString("macd_histogram", "—")
+                        val events = report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"
+                        val liquidity = report.optJSONArray("liquidity_pools")?.toString() ?: "غير متاحة"
+                        val gaps = report.optJSONArray("recent_fair_value_gaps")?.toString() ?: "غير متاحة"
+                        val evidence = report.optJSONArray("evidence")?.toString() ?: "غير متاحة"
+                        parsedReports[frame] = listOf(
+                            "الاتجاه: $direction",
+                            "حالة السوق: $regime",
+                            "هيكل السوق: $structure",
+                            "RSI: $rsi  •  ADX: $adx",
+                            "ATR: $atr  •  MACD: $macd",
+                            "الأحداث المؤكدة: $events",
+                            "مناطق السيولة: $liquidity",
+                            "فجوات القيمة العادلة FVG: $gaps",
+                            "الأدلة: $evidence"
+                        ).joinToString("\n")
+                    }
                 }
-                val report = chart.optJSONObject("reports_by_timeframe")?.optJSONObject("M5")
-                chartReport = if (report == null) "لا يوجد تقرير فني متاح لهذا الإطار." else {
-                    val direction = report.optString("direction", "WAIT")
-                    val regime = report.optString("market_regime", "غير محدد")
-                    val structure = report.optString("market_structure", "غير محدد")
-                    val rsi = report.optString("rsi14", "—")
-                    val adx = report.optString("adx14", "—")
-                    val atr = report.optString("atr14", "—")
-                    val macd = report.optString("macd_histogram", "—")
-                    val events = report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"
-                    val evidence = report.optJSONArray("evidence")?.toString() ?: "غير متاحة"
-                    listOf(
-                        "الاتجاه: $direction",
-                        "حالة السوق: $regime",
-                        "هيكل السوق: $structure",
-                        "RSI: $rsi  •  ADX: $adx",
-                        "ATR: $atr  •  MACD: $macd",
-                        "الأحداث: $events",
-                        "الأدلة: $evidence"
-                    ).joinToString("\n")
-                }
+                chartRowsByFrame = parsedRows
+                chartReportsByFrame = parsedReports
+                chartMeta = "القرار: \${chart.optString("decision", "WAIT")}  •  التوافق: \${chart.optString("confluence_score", "—")}/100  •  \${chart.optString("confluence_grade", "غير محدد")}"
             } catch (_: Exception) {
-                chartRows = emptyList()
-                chartReport = "تعذر قراءة بيانات الرسم والتحليل."
+                chartRowsByFrame = emptyMap()
+                chartReportsByFrame = emptyMap()
+                chartMeta = "تعذر قراءة بيانات الرسم والتحليل."
             }
         }
     }
@@ -338,8 +357,11 @@ private fun GoldAiApp(
     expertSummary: String,
     candleSummary: String,
     candlesReceived: Boolean,
-    chartRows: List<ChartCandle>,
-    chartReport: String,
+    chartRowsByFrame: Map<String, List<ChartCandle>>,
+    chartReportsByFrame: Map<String, String>,
+    chartMeta: String,
+    selectedChartFrame: String,
+    onSelectChartFrame: (String) -> Unit,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -371,7 +393,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, chartRows, chartReport)
+                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, chartRowsByFrame, chartReportsByFrame, chartMeta, selectedChartFrame, onSelectChartFrame)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -489,14 +511,26 @@ private fun AnalysisPage(
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (candlesReceived) "تم استلام شموع MT5 للأطر الأربعة" else "لم يتم تأكيد حداثة واكتمال شموع MT5", if (candlesReceived) Green else Gold)
-    SectionHeading("الرسم البياني للذهب", "شموع M5 حقيقية من MT5 — آخر 100 شمعة مغلقة")
+    SectionHeading("الرسم البياني متعدد الأطر", "شموع MT5 الحقيقية — M5 وM15 وH1 وH4")
+    Text(chartMeta, color = Gold, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf("M5", "M15", "H1", "H4").forEach { frame ->
+            FilterChip(selected = selectedChartFrame == frame, onClick = { onSelectChartFrame(frame) }, label = { Text(frame, fontSize = 11.sp) })
+        }
+    }
+    val chartRows = chartRowsByFrame[selectedChartFrame].orEmpty()
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("GOLD · M5", color = Gold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            Text("GOLD · $selectedChartFrame", color = Gold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             if (chartRows.size > 1) CandlestickChart(chartRows)
-            else Text("بانتظار شموع MT5 كافية للرسم.", color = Muted, modifier = Modifier.padding(vertical = 30.dp))
-            Text(chartReport, color = Color.White, fontSize = 11.sp)
+            else Text("بانتظار شموع كافية لهذا الإطار من MT5.", color = Muted, modifier = Modifier.padding(vertical = 30.dp))
+            Text("آخر إغلاق: \${chartRows.lastOrNull()?.close ?: "—"}", color = Muted, fontSize = 11.sp)
+            Text(chartReportsByFrame[selectedChartFrame] ?: "لم يصل التقرير الفني لهذا الإطار.", color = Color.White, fontSize = 11.sp)
         }
+    }
+    SectionHeading("التقارير الكتابية للأطر الأربعة", "كل تقرير مرتبط بنفس بيانات الشموع المرسومة")
+    listOf("M5", "M15", "H1", "H4").forEach { frame ->
+        AnalysisCard(frame, "تحليل $frame", "الاتجاه • RSI • MACD • ADX • ATR • الهيكل • السيولة • FVG", chartReportsByFrame[frame] ?: "بانتظار التقرير.")
     }
     AnalysisCard("00", "حالة شموع MT5 الفعلية", "M5 • M15 • H1 • H4 — قراءة مباشرة من رد الخادم", candleSummary)
     AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", if (candlesReceived) "تعمل على أحدث شموع MT5 المستلمة" else candleSummary)
