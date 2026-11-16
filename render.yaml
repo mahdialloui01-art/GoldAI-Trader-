@@ -20,6 +20,8 @@ services:
         value: "false"
       - key: DEMO_EXECUTION_ENABLED
         value: "false"
+      - key: MANUAL_DEMO_EXECUTION_ENABLED
+        value: "true"
       - key: MT5_BRIDGE_TOKEN
         generateValue: true
       - key: FRED_API_KEY
