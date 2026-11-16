@@ -85,3 +85,32 @@ def test_manual_demo_command_is_delivered_only_to_authenticated_bridge(monkeypat
     assert response.json()["available"] is True
     assert response.json()["direction"] == "SELL"
     assert main._manual_trade_queue == []
+
+
+def test_manual_demo_queue_rejects_duplicate_pending_request(monkeypatch):
+    _ready_manual_demo(monkeypatch)
+    main._manual_trade_queue.append({
+        "id": "already-pending", "symbol": "GOLD", "direction": "BUY",
+        "lots": 0.01, "stop_loss_points": 100, "take_profit_points": 200,
+        "risk_percent": 0.1, "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    response = client.post(
+        "/api/v1/manual/demo/request",
+        headers={"X-Manual-Trade-Pin": "A" * 32},
+        json={"direction": "SELL", "lots": 0.01, "stop_loss_points": 100, "take_profit_points": 200},
+    )
+    assert response.status_code == 429
+
+
+def test_manual_demo_queue_discards_expired_request(monkeypatch):
+    _ready_manual_demo(monkeypatch)
+    monkeypatch.setattr(main.settings, "mt5_bridge_token", "B" * 32)
+    main._manual_trade_queue.append({
+        "id": "expired", "symbol": "GOLD", "direction": "BUY",
+        "lots": 0.01, "stop_loss_points": 100, "take_profit_points": 200,
+        "risk_percent": 0.1, "created_at": "2020-01-01T00:00:00+00:00",
+    })
+    response = client.get("/api/v1/mt5/manual/next", headers={"Authorization": "Bearer " + "B" * 32})
+    assert response.status_code == 200
+    assert response.json()["available"] is False
+    assert response.json()["expired"] is True
