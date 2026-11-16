@@ -189,7 +189,7 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
         raise HTTPException(status_code=503, detail="MT5 tick-value metadata is invalid; lot sizing is paused.")
 
     risk_amount = equity * request.risk_percent / 100
-    raw_lots = risk_amount / loss_per_lot
+    raw_lots = risk_amount / (loss_per_lot * 1.05)
     step = Decimal(str(quote["volume_step"]))
     raw_steps = (Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN)
     lots = float(raw_steps * step)
@@ -3272,8 +3272,9 @@ def manual_demo_trade_defaults() -> dict:
     point = float(quote["point"])
     if not math.isfinite(atr) or atr <= 0 or point <= 0:
         raise HTTPException(status_code=503, detail="M5 ATR or broker point metadata is invalid.")
-    stop_points = max(1, math.ceil((1.5 * atr) / point))
-    target_points = max(1, math.ceil((3.0 * atr) / point))
+    spread_points = float(quote.get("spread_points") or 0.0)
+    stop_points = max(1, math.ceil((1.5 * atr) / point), math.ceil(3.0 * spread_points))
+    target_points = stop_points * 2
     loss_per_lot = ((stop_points * point) / float(quote["tick_size"])) * float(quote["tick_value_loss"])
     equity = float(quote["account_equity"])
     if not math.isfinite(loss_per_lot) or loss_per_lot <= 0 or equity <= 0:
@@ -3294,7 +3295,7 @@ def manual_demo_trade_defaults() -> dict:
         "estimated_risk_percent": round(estimated_risk, 4),
         "risk_amount": round(lots * loss_per_lot, 2), "account_currency": quote.get("account_currency"),
         "m5_atr": round(atr, int(quote["digits"])), "quote_age_seconds": quote["age_seconds"],
-        "method": "SL=1.5×M5 ATR; TP=3×M5 ATR; lot rounded down to XM volume step.",
+        "method": "SL=max(1.5×M5 ATR, 3×spread); TP=2R; lot rounded down with 5% execution-risk buffer.",
     }
 
 
