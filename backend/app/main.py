@@ -36,7 +36,8 @@ class Settings(BaseSettings):
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
     max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
     demo_execution_enabled: bool = False
-    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only\n    auto_demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
+    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only
+    auto_demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
