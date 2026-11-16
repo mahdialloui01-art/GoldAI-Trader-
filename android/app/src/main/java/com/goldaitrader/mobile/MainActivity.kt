@@ -1,6 +1,8 @@
 package com.goldaitrader.mobile
 
 import android.os.Bundle
+import android.content.Intent
+import android.os.Build
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -69,6 +71,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(Intent(this, MarketMonitorService::class.java))
+        } else {
+            startService(Intent(this, MarketMonitorService::class.java))
+        }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
                 background = Night, surface = Panel, primary = Gold,
