@@ -1453,7 +1453,14 @@ def run_backtest(request: BacktestRequest) -> dict:
     return {
         "symbol": settings.broker_gold_symbol.upper(),
         "timeframe": timeframe,
-        "strategy": request.strategy,\n        "strategy_description": {\n            "EMA_TREND": "EMA20/EMA50 with Wilder RSI confirmation",\n            "PULLBACK": "EMA20 retest within 0.45 ATR with directional candle",\n            "BREAKOUT": "Confirmed BOS close with EMA trend filter",\n            "LIQUIDITY_SWEEP": "Confirmed opposing-liquidity sweep with directional impulse",\n        }[request.strategy],\n        "execution_model": "Signal on closed candle; enter at following candle open; stop-first when SL and TP touch in same bar",
+        "strategy": request.strategy,
+        "strategy_description": {
+            "EMA_TREND": "EMA20/EMA50 with Wilder RSI confirmation",
+            "PULLBACK": "EMA20 retest within 0.45 ATR with directional candle",
+            "BREAKOUT": "Confirmed BOS close with EMA trend filter",
+            "LIQUIDITY_SWEEP": "Confirmed opposing-liquidity sweep with directional impulse",
+        }[request.strategy],
+        "execution_model": "Signal on closed candle; enter at following candle open; stop-first when SL and TP touch in same bar",
         "trade_count": len(trades),
         "wins": len(wins),
         "losses": len(losses),
