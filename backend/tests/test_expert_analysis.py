@@ -179,11 +179,9 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
         "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
     }
 
-    async def fake_gold_decision(request, *, allow_h4_session_gap=False):
-        assert allow_h4_session_gap is True
-        mtf = main.multi_timeframe_analysis(
-            request, allow_h4_session_gap=allow_h4_session_gap
-        )
+    async def fake_gold_decision(request):
+        assert main._ALLOW_H4_SESSION_GAP.get() is True
+        mtf = main.multi_timeframe_analysis(request)
         timeframes = {
             frame: {
                 "direction": "BUY",
