@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone, timedelta
+from contextvars import ContextVar
 import asyncio
 from enum import Enum
 from decimal import Decimal, ROUND_DOWN
@@ -89,6 +90,7 @@ class BrokerQuote(BaseModel):
 
 
 _latest_mt5_quote: dict | None = None
+_ALLOW_H4_SESSION_GAP: ContextVar[bool] = ContextVar("allow_h4_session_gap", default=False)
 
 
 class SignalRequest(BaseModel):
@@ -1479,7 +1481,7 @@ def market_regime_analysis(request: MarketRegimeRequest) -> dict:
 
 
 @app.post("/api/v1/analysis/technical")
-def technical_analysis(request: TechnicalAnalysisRequest, *, allow_h4_session_gap: bool = False) -> dict:
+def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
     """Broker-candle analysis. It deliberately returns WAIT when inputs are unsafe."""
     timeframe = request.timeframe.upper()
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
@@ -1505,11 +1507,11 @@ def technical_analysis(request: TechnicalAnalysisRequest, *, allow_h4_session_ga
     freshness_limit = _TIMEFRAME_SECONDS[timeframe] * 2 + 60
     h4_session_gap_allowed = (
         timeframe == "H4"
-        and allow_h4_session_gap
+        and _ALLOW_H4_SESSION_GAP.get()
         and latest_age <= 7 * 24 * 60 * 60
     )
     if latest_age < -30 or (latest_age > freshness_limit and not h4_session_gap_allowed):
-        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future; refresh MT5 candle data.")
+        raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale or from the future; age_seconds={int(latest_age)}, limit_seconds={freshness_limit}.")
 
     closes = [item.close for item in candles]
     ema20 = _ema_series(closes, 20)[-1]
@@ -1595,7 +1597,7 @@ def technical_analysis(request: TechnicalAnalysisRequest, *, allow_h4_session_ga
 
 
 @app.post("/api/v1/analysis/multi-timeframe")
-def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest, *, allow_h4_session_gap: bool = False) -> dict:
+def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     """Require aligned M5 entry, M15 confirmation, H1 trend and H4 macro bias."""
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
@@ -1612,7 +1614,6 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest, *, allow_h4
         )),
         "H4": technical_analysis(TechnicalAnalysisRequest(
             symbol=request.symbol, timeframe="H4", candles=request.h4,
-            allow_h4_session_gap=allow_h4_session_gap,
         )),
     }
     directions = {frame: result["direction"] for frame, result in analyses.items()}
@@ -2399,7 +2400,7 @@ async def historical_news_calendar(start_date: date, end_date: date) -> dict:
 
 
 @app.post("/api/v1/analysis/gold-decision")
-async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest, *, allow_h4_session_gap: bool = False) -> dict:
+async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     """Combine broker multi-timeframe, structure, regime, macro and news gates into one paper-only decision."""
     if request.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} is supported.")
@@ -2410,7 +2411,7 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest, *, allo
 
     # Price/technical components are based exclusively on fresh broker candles and quotes.
     try:
-        mtf = multi_timeframe_analysis(request, allow_h4_session_gap=allow_h4_session_gap)
+        mtf = multi_timeframe_analysis(request)
         components["multi_timeframe"] = mtf
         direction = str(mtf["direction"].value if isinstance(mtf["direction"], Direction) else mtf["direction"])
         if direction == "WAIT":
@@ -2517,7 +2518,7 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest, *, allo
 
 
 @app.post("/api/v1/analysis/expert")
-async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest, *, allow_h4_session_gap: bool = False) -> dict:
+async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     """Produce a conservative, explainable multi-layer GOLD technical dossier.
 
     Scores are confluence points, never probabilities. The endpoint only emits a
@@ -2529,7 +2530,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest, *, a
 
     # Reuse the existing full decision pipeline; this also validates all four
     # broker candle streams and applies the fail-closed macro/news filters.
-    base = await gold_decision_analysis(request, allow_h4_session_gap=allow_h4_session_gap)
+    base = await gold_decision_analysis(request)
     quote = _fresh_mt5_quote()
     blockers = list(base.get("blockers", []))
     reasons = list(base.get("reasons", []))
@@ -2978,9 +2979,11 @@ async def live_expert_technical_analysis() -> dict:
         symbol=_latest_mt5_candles["symbol"],
         m5=series["M5"], m15=series["M15"], h1=series["H1"], h4=series["H4"],
     )
-    result = await expert_technical_analysis(
-        request, allow_h4_session_gap=allow_h4_session_gap
-    )
+    context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
+    try:
+        result = await expert_technical_analysis(request)
+    finally:
+        _ALLOW_H4_SESSION_GAP.reset(context_token)
     result["market_data"] = {
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
