@@ -3253,8 +3253,8 @@ def request_manual_demo_trade(
             status_code=422,
             detail=f"Requested lot/stop risks {risk_percent:.3f}% which exceeds the {settings.demo_risk_per_trade_percent:.2f}% DEMO limit. Reduce lots or widen the stop.",
         )
-    if len(_manual_trade_queue) >= 5:
-        raise HTTPException(status_code=429, detail="Manual order queue is full; wait for MT5 to collect pending requests.")
+    if _manual_trade_queue:
+        raise HTTPException(status_code=429, detail="A manual order is already waiting for MT5; avoid duplicate requests.")
     command_id = secrets.token_urlsafe(12)
     command = {
         "id": command_id,
@@ -3288,6 +3288,15 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
     if not _manual_trade_queue:
         return {"available": False}
     command = _manual_trade_queue.pop(0)
+    try:
+        created_at = datetime.fromisoformat(command["created_at"])
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        age_seconds = (datetime.now(timezone.utc) - created_at.astimezone(timezone.utc)).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        return {"available": False, "expired": True, "reason": "Manual order timestamp is invalid."}
+    if age_seconds < -5 or age_seconds > 30:
+        return {"available": False, "expired": True, "reason": "Manual order expired; send a fresh request."}
     return {"available": True, **command}
 
 
