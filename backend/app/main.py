@@ -879,28 +879,44 @@ async def us_high_impact_calendar(days_ahead: int = 7) -> dict:
 
 @app.get("/api/v1/analysis/news-filter")
 async def economic_news_filter() -> dict:
-    """Return WAIT during high-impact USD news blackout windows; fail closed on missing data."""
-    events = await _load_us_high_impact_events(7)
+    """Provide economic-calendar context as advisory information, never as a standalone entry gate."""
     now = datetime.now(timezone.utc)
     before = settings.news_blackout_before_minutes
     after = settings.news_blackout_after_minutes
+    try:
+        events = await _load_us_high_impact_events(7)
+    except HTTPException as exc:
+        return {
+            "status": "UNAVAILABLE",
+            "decision": "ADVISORY",
+            "trading_allowed": True,
+            "reason": "Economic calendar unavailable; technical and risk checks remain authoritative.",
+            "warning": f"Calendar provider returned HTTP {exc.status_code}.",
+            "blackout_before_minutes": before,
+            "blackout_after_minutes": after,
+            "active_events": [],
+            "upcoming_events": [],
+            "calendar_source": "XOOMAR",
+            "checked_at": now,
+            "execution_enabled": False,
+            "fail_closed": False,
+        }
     active = []
     for event in events:
         delta_minutes = (event["date"] - now).total_seconds() / 60
-        # An estimated-time event blocks its full UTC date because its exact time is unknown.
         same_estimated_day = event["date_span"] == "1" and event["date"].date() == now.date()
         if same_estimated_day or -after <= delta_minutes <= before:
             active.append({**event, "minutes_until_event": round(delta_minutes, 1)})
-    blocked = bool(active)
     upcoming = [
         {**event, "minutes_until_event": round((event["date"] - now).total_seconds() / 60, 1)}
         for event in events
         if (event["date"] - now).total_seconds() > 0
     ][:5]
     return {
-        "decision": "WAIT" if blocked else "CLEAR",
-        "trading_allowed": not blocked,
-        "reason": "High-impact US event blackout is active." if blocked else "No high-impact US event is inside the configured blackout window.",
+        "status": "AVAILABLE",
+        "decision": "ADVISORY" if active else "CLEAR",
+        "trading_allowed": True,
+        "reason": "High-impact US event is near; review volatility and spread." if active else "No high-impact US event is inside the configured advisory window.",
         "blackout_before_minutes": before,
         "blackout_after_minutes": after,
         "active_events": active,
@@ -910,7 +926,7 @@ async def economic_news_filter() -> dict:
         "calendar_attribution": "Data: XOOMAR. " + (events[0]["source_attribution"] if events else "Release schedules are aggregated from the issuing US agencies."),
         "checked_at": now,
         "execution_enabled": False,
-        "fail_closed": True,
+        "fail_closed": False,
     }
 
 
@@ -2484,13 +2500,13 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
     try:
         news = await economic_news_filter()
         components["news_filter"] = news
-        if news.get("decision") != "CLEAR" or not news.get("trading_allowed", False):
-            blockers.append("HIGH_IMPACT_NEWS_BLACKOUT")
-            reasons.append("فلتر الأخبار يمنع التداول داخل نافذة خبر أمريكي عالي التأثير.")
+        if news.get("status") == "UNAVAILABLE":
+            reasons.append("تنبيه: التقويم الاقتصادي غير متاح؛ لن يمنع الدخول وحده، وتبقى شروط التحليل الفني والمخاطر إلزامية.")
+        elif news.get("active_events"):
+            reasons.append("تنبيه: يوجد خبر أمريكي عالي التأثير قريب؛ راقب السبريد والتذبذب، لكنه ليس مانع دخول مستقلاً.")
     except HTTPException as exc:
-        components["news_filter"] = {"status": "UNAVAILABLE", "http_status": exc.status_code}
-        blockers.append("ECONOMIC_CALENDAR_UNAVAILABLE")
-        reasons.append("التقويم الاقتصادي غير متاح أو غير صالح؛ القرار WAIT حفاظاً على السلامة.")
+        components["news_filter"] = {"status": "UNAVAILABLE", "http_status": exc.status_code, "decision": "ADVISORY", "trading_allowed": True, "fail_closed": False}
+        reasons.append("تنبيه: تعذر تحميل التقويم الاقتصادي؛ لن يمنع الدخول وحده، وتبقى شروط التحليل الفني والمخاطر إلزامية.")
 
     final_direction = direction if not blockers else "WAIT"
     if final_direction == "WAIT" and not reasons:
