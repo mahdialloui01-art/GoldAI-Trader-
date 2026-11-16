@@ -2571,6 +2571,84 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
 
 
 @app.post("/api/v1/analysis/expert")
+def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], reports: dict[str, dict], spread_atr_ratio: float) -> dict:
+    """Rank deterministic closed-candle setup candidates; scores are not probabilities."""
+    if direction not in ("BUY", "SELL"):
+        return {"selected": None, "candidates": [], "note": "No directional bias; setup scan is diagnostic only."}
+    m5 = frames["M5"]
+    report = reports["M5"]
+    structure = _price_action_analysis(m5, 3, 3, 0.12)
+    micro = report.get("microstructure", {})
+    atr = float(report.get("atr14") or 0.0)
+    close = float(m5[-1].close)
+    ema20 = float(report.get("ema20") or close)
+    extension = abs(close - ema20) / atr if atr > 0 else float("inf")
+    events = set(structure.get("events", []))
+    pattern = micro.get("closed_candle_pattern", "NONE")
+    impulse = micro.get("impulse_direction", "NONE")
+    bullish = direction == "BUY"
+    wanted_bos = "BULLISH_BREAK_OF_STRUCTURE" if bullish else "BEARISH_BREAK_OF_STRUCTURE"
+    wanted_sweep = "SELL_SIDE_LIQUIDITY_SWEEP" if bullish else "BUY_SIDE_LIQUIDITY_SWEEP"
+    wanted_pattern = ("BULLISH_ENGULFING", "BULLISH_REJECTION") if bullish else ("BEARISH_ENGULFING", "BEARISH_REJECTION")
+    candidates = []
+
+    # Pullback: price returns near EMA20 without excessive extension and closes with directional intent.
+    pullback_score = 0
+    if extension <= 0.45:
+        pullback_score += 2
+    if pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH"):
+        pullback_score += 2
+    if report.get("market_structure") == ("UPTREND" if bullish else "DOWNTREND"):
+        pullback_score += 1
+    if pullback_score:
+        candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
+                           "evidence": ["M5 قريب من EMA20" if extension <= 0.45 else "السعر ليس داخل منطقة إعادة الاختبار المثالية",
+                                        "شمعة/اندفاع مؤيد" if pullback_score >= 2 and (pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH")) else "تأكيد الشمعة غير مكتمل"]})
+
+    # Breakout: only a confirmed close through a previously confirmed swing level.
+    if wanted_bos in events:
+        candidates.append({"strategy": "BREAKOUT", "score": 5, "max_score": 5,
+                           "evidence": ["كسر هيكل مؤكد بإغلاق شمعة مكتملة"]})
+
+    # Liquidity sweep: wick takes the opposing pool then closes back through the level.
+    if wanted_sweep in events and (pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH")):
+        candidates.append({"strategy": "LIQUIDITY_SWEEP", "score": 5, "max_score": 5,
+                           "evidence": ["سحب سيولة معاكس ثم إغلاق/اندفاع مؤيد"]})
+
+    # Reversal is deliberately informational only; it cannot override H4/H1 trend bias.
+    opposite_structure = "DOWNTREND" if bullish else "UPTREND"
+    if report.get("market_structure") == opposite_structure and wanted_sweep in events:
+        candidates.append({"strategy": "REVERSAL_WATCH", "score": 3, "max_score": 5,
+                           "evidence": ["احتمال انعكاس بعد سحب سيولة؛ لا يدخل عكس اتجاه H4/H1"]})
+
+    candidates.sort(key=lambda item: (item["score"], item["strategy"] == "BREAKOUT"), reverse=True)
+    selected = candidates[0] if candidates else None
+    blockers = []
+    if spread_atr_ratio > 0.15:
+        blockers.append("SPREAD_TOO_HIGH")
+    if report.get("market_regime") == "HIGH_VOLATILITY":
+        blockers.append("EXTREME_M5_VOLATILITY")
+    if extension > 1.5:
+        blockers.append("M5_OVEREXTENDED")
+    if blockers:
+        selected = None
+    return {
+        "selected": selected,
+        "candidates": candidates,
+        "direction": direction,
+        "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4),
+        "m5_extension_from_ema20_atr": round(extension, 3) if math.isfinite(extension) else None,
+        "blockers": blockers,
+        "score_note": "Rule-based setup quality points, not win probability; requires walk-forward backtesting.",
+        "strategy_policy": {
+            "pullback": "trend-following retest near EMA20 with closed-candle confirmation",
+            "breakout": "confirmed BOS only; no intrabar breakout entries",
+            "liquidity_sweep": "sweep of opposing liquidity followed by directional close/impulse",
+            "reversal_watch": "watchlist only; cannot reverse H4/H1 bias",
+        },
+    }
+
+
 async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     """Produce a conservative, explainable multi-layer GOLD technical dossier.
 
@@ -2797,6 +2875,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
 
     if decision == "WAIT" and "NO_TRADE" not in blockers:
         blockers.append("NO_FULL_CONFLUENCE")
+    strategy_scan = _classify_entry_setups(decision, frames, frame_reports, spread_atr_ratio)
     grade = (
         "HIGH_CONFLUENCE" if confluence >= 70 else
         "MODERATE_CONFLUENCE" if confluence >= 45 else
@@ -2818,6 +2897,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "timeframes": frame_reports,
             "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4),
             "directional_timeframe_agreement_percent": agreement_percent,
+            "strategy_scan": strategy_scan,
             "entry_quality": {
                 "m5_price_extension_from_ema20_atr": round(m5_extension, 3),
                 "m5_extension_limit_atr": 1.5,
