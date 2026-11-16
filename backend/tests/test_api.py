@@ -25,7 +25,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.5.0"
+    assert body["analysis_engine_version"] == "0.6.2"
     assert "closed_candle_microstructure" in body["analysis_layers"]
     assert "optional_tick_volume_participation" in body["analysis_layers"]
     assert "password" not in body
@@ -196,7 +196,7 @@ def test_risk_check_blocks_when_daily_loss_limit_is_reached():
             "stop_distance_points": 10,
             "point_value_per_lot": 1,
             "proposed_lots": 0.1,
-            "daily_loss_percent": 2.0,
+            "daily_loss_percent": 10.0,
         },
     )
     assert response.status_code == 200
@@ -731,7 +731,7 @@ def test_position_size_blocks_when_daily_loss_limit_is_reached():
     response = client.post("/api/v1/risk/position-size", json={
         "stop_distance_points": 100,
         "risk_percent": 0.5,
-        "daily_loss_percent": 2.0,
+        "daily_loss_percent": 10.0,
     })
     assert response.status_code == 200
     assert response.json()["recommended_lots"] == 0.0
