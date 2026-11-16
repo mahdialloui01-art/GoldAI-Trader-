@@ -21,6 +21,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -68,6 +69,7 @@ class MainActivity : ComponentActivity() {
     private var chartMeta by mutableStateOf("بانتظار بيانات التحليل")
     private var selectedChartFrame by mutableStateOf("M5")
     private var selectedTab by mutableStateOf(AppTab.HOME)
+    private var manualTradeStatus by mutableStateOf("لا توجد أوامر يدوية مرسلة")
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -107,7 +109,9 @@ class MainActivity : ComponentActivity() {
                     onSelectChartFrame = { selectedChartFrame = it },
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
-                    onRefreshContext = ::refreshEconomicContext
+                    onRefreshContext = ::refreshEconomicContext,
+                    manualTradeStatus = manualTradeStatus,
+                    onManualTrade = ::submitManualTrade
                 )
             }
         }
@@ -318,6 +322,51 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun submitManualTrade(direction: String, lots: String, stopPoints: String, targetPoints: String, pin: String) {
+        val lotValue = lots.toDoubleOrNull()
+        val stopValue = stopPoints.toDoubleOrNull()
+        val targetValue = targetPoints.toDoubleOrNull()
+        if (pin.length < 16 || lotValue == null || stopValue == null || targetValue == null ||
+            lotValue <= 0.0 || stopValue <= 0.0 || targetValue <= 0.0) {
+            manualTradeStatus = "تحقق من رمز الأمان والأرقام المدخلة؛ الرمز يجب أن يكون 16 حرفاً على الأقل."
+            return
+        }
+        manualTradeStatus = "جارٍ إرسال طلب الصفقة اليدوية..."
+        lifecycleScope.launch {
+            manualTradeStatus = withContext(Dispatchers.IO) {
+                try {
+                    val c = URL("${BuildConfig.API_BASE_URL}/api/v1/manual/demo/request")
+                        .openConnection() as HttpURLConnection
+                    c.requestMethod = "POST"
+                    c.connectTimeout = 8000
+                    c.readTimeout = 10000
+                    c.doOutput = true
+                    c.setRequestProperty("Content-Type", "application/json")
+                    c.setRequestProperty("X-Manual-Trade-Pin", pin)
+                    val payload = JSONObject()
+                        .put("direction", direction)
+                        .put("lots", lotValue)
+                        .put("stop_loss_points", stopValue)
+                        .put("take_profit_points", targetValue)
+                    try {
+                        c.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
+                        val code = c.responseCode
+                        val stream = if (code in 200..299) c.inputStream else c.errorStream
+                        val body = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+                        val response = JSONObject(body.ifBlank { "{}" })
+                        if (code !in 200..299) {
+                            response.optString("detail", "رفض الخادم الطلب (HTTP $code)")
+                        } else {
+                            "تم وضع طلب $direction في قائمة MT5 — رقم: ${response.optString("command_id")} — المخاطرة المقدرة: ${response.optString("estimated_risk_percent")}% . هذا ليس تأكيداً بفتح الصفقة؛ انتظر سجل قبول الأمر في MT5."
+                        }
+                    } finally { c.disconnect() }
+                } catch (e: Exception) {
+                    "تعذر إرسال الطلب: ${e.message ?: "خطأ اتصال"}"
+                }
+            }
+        }
+    }
+
     private fun refreshGold() {
         if (quoteLoading) return
         if (!backendConfigured) {
@@ -387,7 +436,9 @@ private fun GoldAiApp(
     onSelectChartFrame: (String) -> Unit,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
-    onRefreshContext: () -> Unit
+    onRefreshContext: () -> Unit,
+    manualTradeStatus: String,
+    onManualTrade: (String, String, String, String, String) -> Unit
 ) {
     LaunchedEffect(Unit) {
         onCheckBackend()
@@ -415,7 +466,7 @@ private fun GoldAiApp(
             ) {
                 TopHeader()
                 when (selectedTab) {
-                    AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
+                    AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold, manualTradeStatus, onManualTrade)
                     AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, chartRowsByFrame, chartReportsByFrame, chartMeta, selectedChartFrame, onSelectChartFrame)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
@@ -469,7 +520,7 @@ private fun TopHeader() {
 }
 
 @Composable
-private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean, onRefresh: () -> Unit) {
+private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean, onRefresh: () -> Unit, manualTradeStatus: String, onManualTrade: (String, String, String, String, String) -> Unit) {
     SectionHeading("نظرة عامة", "ملخص السوق وحالة التحليل")
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(22.dp)) {
         Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -488,6 +539,8 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
             GoldButton("تحديث سعر الوسيط", onRefresh)
         }
     }
+
+    ManualTradePanel(manualTradeStatus, onManualTrade)
 
     SectionHeading("قرار النظام", "الإشارة لا تتحول إلى أمر تداول تلقائي")
     Card(colors = CardDefaults.cardColors(containerColor = PanelSoft), shape = RoundedCornerShape(20.dp)) {
@@ -518,6 +571,58 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
     FeatureTile("02", "التحليل متعدد الأطر", "M5 • M15 • H1 • H4")
     FeatureTile("03", "إدارة رأس المال", "حجم العقد • وقف الخسارة • حدود اليوم")
     FeatureTile("04", "اختبار الاستراتيجيات", "Backtesting • الأداء • السحب")
+}
+
+@Composable
+private fun ManualTradePanel(status: String, onSubmit: (String, String, String, String, String) -> Unit) {
+    var direction by remember { mutableStateOf("BUY") }
+    var lots by remember { mutableStateOf("") }
+    var stopPoints by remember { mutableStateOf("") }
+    var targetPoints by remember { mutableStateOf("") }
+    var pin by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf(false) }
+
+    SectionHeading("فتح صفقة يدوية", "تجاوز شروط التحليل — مع بقاء حماية الحساب إلزامية")
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button(onClick = { direction = "BUY" }, modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (direction == "BUY") Green else PanelSoft, contentColor = Night)) {
+                    Text("BUY / شراء", fontWeight = FontWeight.Bold)
+                }
+                Button(onClick = { direction = "SELL" }, modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = if (direction == "SELL") Red else PanelSoft, contentColor = Color.White)) {
+                    Text("SELL / بيع", fontWeight = FontWeight.Bold)
+                }
+            }
+            OutlinedTextField(value = lots, onValueChange = { lots = it }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("حجم العقد (Lots)") }, placeholder = { Text("مثال: 0.01") }, singleLine = true)
+            OutlinedTextField(value = stopPoints, onValueChange = { stopPoints = it }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("وقف الخسارة بالنقاط") }, placeholder = { Text("أدخل مسافة SL") }, singleLine = true)
+            OutlinedTextField(value = targetPoints, onValueChange = { targetPoints = it }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("جني الأرباح بالنقاط") }, placeholder = { Text("أدخل مسافة TP") }, singleLine = true)
+            OutlinedTextField(value = pin, onValueChange = { pin = it }, modifier = Modifier.fillMaxWidth(),
+                label = { Text("رمز أمان التداول اليدوي") }, singleLine = true,
+                visualTransformation = PasswordVisualTransformation())
+            Text("الأمر يتجاوز توافق التحليل فقط. لا يتجاوز DEMO فقط، حد مخاطرة 0.25%، حد الخسارة اليومية، السبريد، شرط SL/TP أو وجود صفقة مفتوحة. يتطلب بقاء MT5 وEA متصلين.", color = Muted, fontSize = 10.sp)
+            GoldButton("مراجعة وتأكيد الصفقة", onClick = { confirm = true })
+            Text(status, color = Gold, fontSize = 11.sp)
+        }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("تأكيد أمر يدوي — DEMO") },
+            text = { Text("$direction GOLD بحجم $lots lot، وقف $stopPoints نقطة، هدف $targetPoints نقطة. سيتم رفض الأمر إذا تجاوز حدود المخاطرة أو شروط الوسيط. هل تريد إرساله؟") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    onSubmit(direction, lots, stopPoints, targetPoints, pin)
+                }) { Text("إرسال الأمر") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("إلغاء") } }
+        )
+    }
 }
 
 @Composable
