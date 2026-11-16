@@ -243,7 +243,7 @@ class MainActivity : ComponentActivity() {
             candlesReceived = result[6] == "true"
             try {
                 val chart = JSONObject(result[7])
-                val rows = chart.optJSONArray("candles_by_timeframe")?.optJSONArray("M5")
+                val rows = chart.optJSONObject("candles_by_timeframe")?.optJSONArray("M5")
                 chartRows = if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { i ->
                     val item = rows.optJSONObject(i) ?: return@mapNotNull null
                     ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
