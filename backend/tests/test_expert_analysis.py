@@ -232,3 +232,40 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
     assert body["market_data"]["source"].startswith("Authenticated MetaTrader 5")
     assert body["setup_plan"] is None
     assert body["policy"]["execution_enabled"] is False
+
+
+def test_strategy_scan_identifies_confirmed_breakout_without_claiming_probability():
+    base_time = datetime.now(timezone.utc) - timedelta(minutes=500)
+    candles = []
+    for index in range(100):
+        close = 100.0 + (index % 8 if index % 8 < 4 else 8 - index % 8) * 0.2
+        candles.append(main.Candle(
+            time=base_time + timedelta(minutes=index * 5),
+            open=close - 0.05, high=close + 0.1, low=close - 0.1, close=close,
+        ))
+    previous = candles[-1]
+    candles.append(main.Candle(
+        time=base_time + timedelta(minutes=500),
+        open=previous.close, high=103.0, low=previous.close - 0.1, close=102.8,
+    ))
+    frames = {"M5": candles, "M15": candles, "H1": candles, "H4": candles}
+    reports = {"M5": {
+        "microstructure": {"closed_candle_pattern": "BULLISH_ENGULFING", "impulse_direction": "BULLISH"},
+        "market_structure": "UPTREND", "market_regime": "NORMAL",
+        "atr14": 1.0, "ema20": 102.0,
+    }}
+    result = main._classify_entry_setups("BUY", frames, reports, 0.02)
+    assert any(item["strategy"] == "BREAKOUT" for item in result["candidates"])
+    assert result["selected"]["strategy"] == "BREAKOUT"
+    assert "not win probability" in result["score_note"]
+
+
+def test_strategy_scan_never_selects_when_direction_is_wait():
+    candles = [main.Candle(
+        time=datetime.now(timezone.utc) - timedelta(minutes=500 - i * 5),
+        open=100, high=101, low=99, close=100,
+    ) for i in range(100)]
+    frames = {"M5": candles, "M15": candles, "H1": candles, "H4": candles}
+    result = main._classify_entry_setups("WAIT", frames, {}, 0.01)
+    assert result["selected"] is None
+    assert result["candidates"] == []
