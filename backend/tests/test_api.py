@@ -530,7 +530,7 @@ def test_economic_calendar_returns_only_high_impact_us_events(monkeypatch):
     assert body["execution_enabled"] is False
 
 
-def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
+def test_news_filter_treats_high_impact_window_as_advisory(monkeypatch):
     _reset_news_engine_cache_for_test()
     event_time = datetime.now(timezone.utc) + timedelta(minutes=10)
     async def fake_load(days_ahead=7, api_key=""):
@@ -539,23 +539,25 @@ def test_news_filter_blocks_inside_high_impact_blackout_window(monkeypatch):
     response = client.get("/api/v1/analysis/news-filter")
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["decision"] == "WAIT"
-    assert body["trading_allowed"] is False
+    assert body["decision"] == "ADVISORY"
+    assert body["trading_allowed"] is True
     assert body["active_events"][0]["event"] == "FOMC Rate Decision"
-    assert body["fail_closed"] is True
+    assert body["fail_closed"] is False
     assert body["calendar_source"] == "XOOMAR"
 
 
-def test_news_filter_fails_closed_when_calendar_is_unavailable(monkeypatch):
+def test_news_filter_is_advisory_when_calendar_is_unavailable(monkeypatch):
     _reset_news_engine_cache_for_test()
     async def fail_load(days_ahead=7, api_key=""):
         raise httpx.ConnectError("provider unavailable")
     monkeypatch.setattr(main, "load_xoomar_high_impact_events", fail_load)
     response = client.get("/api/v1/analysis/news-filter")
-    assert response.status_code == 503
-    assert "unavailable" in response.json()["detail"].lower()
+    assert response.status_code == 200
+    assert response.json()["status"] == "UNAVAILABLE"
+    assert response.json()["trading_allowed"] is True
+    assert response.json()["fail_closed"] is False
 
-def test_news_filter_fails_closed_when_provider_is_unavailable(monkeypatch):
+def test_news_filter_is_advisory_when_provider_is_unavailable(monkeypatch):
     _reset_news_engine_cache_for_test()
     monkeypatch.setattr(main.settings, "economic_calendar_api_key", "calendar-test-key")
     class FakeClient:
@@ -567,8 +569,10 @@ def test_news_filter_fails_closed_when_provider_is_unavailable(monkeypatch):
             raise main.httpx.ConnectError("offline")
     monkeypatch.setattr(main.httpx, "AsyncClient", lambda **kwargs: FakeClient())
     response = client.get("/api/v1/analysis/news-filter")
-    assert response.status_code == 503
-    assert "paused" in response.json()["detail"]
+    assert response.status_code == 200
+    assert response.json()["status"] == "UNAVAILABLE"
+    assert response.json()["trading_allowed"] is True
+    assert response.json()["fail_closed"] is False
 
 
 def test_economic_calendar_rejects_excessive_date_window():
