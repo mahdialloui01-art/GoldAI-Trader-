@@ -2600,7 +2600,6 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
     }
 
 
-@app.post("/api/v1/analysis/expert")
 def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], reports: dict[str, dict], spread_atr_ratio: float) -> dict:
     """Rank deterministic closed-candle setup candidates; scores are not probabilities."""
     if direction not in ("BUY", "SELL"):
@@ -2679,6 +2678,7 @@ def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], repo
     }
 
 
+@app.post("/api/v1/analysis/expert")
 async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     """Produce a conservative, explainable multi-layer GOLD technical dossier.
 
