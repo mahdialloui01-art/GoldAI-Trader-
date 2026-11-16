@@ -8,6 +8,7 @@ CTrade trade;
 input string BackendUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/quote";
 input string CandleDataUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/candles";
 input string DemoSignalUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/demo/signal";
+input string ManualTradeUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/manual/next";
 input string BridgeToken = "CHANGE_ME";
 input int MinQuoteIntervalMilliseconds = 250;
 input int CandleRefreshSeconds = 60;
@@ -37,6 +38,7 @@ int OnInit()
       StringFind(BackendUrl, "https://") != 0 ||
       StringFind(CandleDataUrl, "https://") != 0 ||
       StringFind(DemoSignalUrl, "https://") != 0 ||
+      StringFind(ManualTradeUrl, "https://") != 0 ||
       DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 10.0 ||
       DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||
       BreakEvenTriggerR <= 0 || BreakEvenLockR < 0 || PartialCloseTriggerR <= 0 ||
@@ -286,6 +288,118 @@ bool FetchDemoSignal(double dailyLoss, string &payload)
    }
    payload = CharArrayToString(result, 0, -1, CP_UTF8);
    return StringLen(payload) > 0;
+}
+
+bool FetchManualTrade(string &payload)
+{
+   char data[], result[];
+   ArrayResize(data, 0);
+   string headers = "Authorization: Bearer " + BridgeToken + "\r\n";
+   string responseHeaders;
+   ResetLastError();
+   int status = WebRequest("GET", ManualTradeUrl, headers, 8000, data, result, responseHeaders);
+   if(status != 200)
+   {
+      if(status != -1)
+         Print("GoldAI manual queue HTTP status=", status, " error=", GetLastError());
+      return false;
+   }
+   payload = CharArrayToString(result, 0, -1, CP_UTF8);
+   return StringLen(payload) > 0 && JsonValue(payload, "available") == "true";
+}
+
+void TryManualDemoTrade()
+{
+   if(!EnableDemoExecution || !IsDemoAccount()) return;
+   if(_Symbol != RequiredSymbol || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
+      !MQLInfoInteger(MQL_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return;
+
+   string payload;
+   if(!FetchManualTrade(payload)) return;
+   string direction = JsonValue(payload, "direction");
+   string symbol = JsonValue(payload, "symbol");
+   double lots = JsonNumber(payload, "lots");
+   double slPoints = JsonNumber(payload, "stop_loss_points");
+   double tpPoints = JsonNumber(payload, "take_profit_points");
+   if(symbol != RequiredSymbol || (direction != "BUY" && direction != "SELL") ||
+      lots <= 0 || slPoints <= 0 || tpPoints <= 0)
+   {
+      Print("GoldAI manual DEMO request rejected locally: invalid command fields.");
+      return;
+   }
+   double dailyLoss = TodayAccountLossPercent();
+   if(dailyLoss >= DemoDailyLossLimitPercent)
+   {
+      Print("GoldAI manual DEMO blocked by daily loss lock: ", DoubleToString(dailyLoss, 2), "%");
+      return;
+   }
+   if(CountOurOpenPositions() > 0)
+   {
+      Print("GoldAI manual DEMO blocked: a GOLD position is already open.");
+      return;
+   }
+
+   MqlTick tick;
+   if(!SymbolInfoTick(RequiredSymbol, tick) || tick.bid <= 0 || tick.ask < tick.bid) return;
+   double point = SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
+   if(point <= 0 || (tick.ask - tick.bid) / point > DemoMaxSpreadPoints)
+   {
+      Print("GoldAI manual DEMO blocked: invalid quote or spread above limit.");
+      return;
+   }
+   double vmin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0 || lots < vmin || lots > vmax ||
+      MathAbs(lots / step - MathRound(lots / step)) > 1e-7)
+   {
+      Print("GoldAI manual DEMO blocked: lot size violates broker volume rules.");
+      return;
+   }
+
+   int digits = (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS);
+   long stopsLevel = SymbolInfoInteger(RequiredSymbol, SYMBOL_TRADE_STOPS_LEVEL);
+   double minDistance = (double)stopsLevel * point;
+   double entry = direction == "BUY" ? tick.ask : tick.bid;
+   double stop = direction == "BUY" ? entry - slPoints * point : entry + slPoints * point;
+   double target = direction == "BUY" ? entry + tpPoints * point : entry - tpPoints * point;
+   stop = NormalizeDouble(stop, digits);
+   target = NormalizeDouble(target, digits);
+   if(MathAbs(entry - stop) < minDistance || MathAbs(target - entry) < minDistance)
+   {
+      Print("GoldAI manual DEMO blocked: SL/TP is inside broker minimum stop distance.");
+      return;
+   }
+
+   ENUM_ORDER_TYPE orderType = direction == "BUY" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+   double estimatedStopPnl = 0.0;
+   if(!OrderCalcProfit(orderType, RequiredSymbol, lots, entry, stop, estimatedStopPnl))
+   {
+      Print("GoldAI manual DEMO blocked: broker risk calculation failed. error=", GetLastError());
+      return;
+   }
+   double equity = AccountInfoDouble(ACCOUNT_EQUITY);
+   double maxRiskMoney = equity * DemoMaxRiskPerTradePercent / 100.0;
+   if(equity <= 0 || estimatedStopPnl >= 0 || (-estimatedStopPnl * 1.05) > maxRiskMoney)
+   {
+      Print("GoldAI manual DEMO blocked: stop risk exceeds configured maximum ",
+            DoubleToString(DemoMaxRiskPerTradePercent, 2), "%.");
+      return;
+   }
+
+   trade.SetExpertMagicNumber(DemoMagicNumber);
+   trade.SetDeviationInPoints(DemoMaxDeviationPoints);
+   trade.SetTypeFillingBySymbol(RequiredSymbol);
+   bool sent = direction == "BUY" ?
+      trade.Buy(lots, RequiredSymbol, 0.0, stop, target, "GoldAI MANUAL DEMO BUY") :
+      trade.Sell(lots, RequiredSymbol, 0.0, stop, target, "GoldAI MANUAL DEMO SELL");
+   if(sent && (trade.ResultRetcode() == TRADE_RETCODE_DONE ||
+               trade.ResultRetcode() == TRADE_RETCODE_PLACED))
+      Print("GoldAI MANUAL DEMO order accepted: ", direction, " lots=", DoubleToString(lots, 2),
+            " SL=", DoubleToString(stop, digits), " TP=", DoubleToString(target, digits));
+   else
+      Print("GoldAI MANUAL DEMO order rejected. retcode=", trade.ResultRetcode(),
+            " ", trade.ResultRetcodeDescription());
 }
 
 void TryDemoTrade()
@@ -554,5 +668,6 @@ void OnTimer()
    }
    ManageDemoPositions();
    ExportClosedDealsToJournal();
+   TryManualDemoTrade();
    TryDemoTrade();
 }
