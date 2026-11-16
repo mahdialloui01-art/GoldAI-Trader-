@@ -22,26 +22,34 @@ import java.net.URL
 import java.util.Locale
 
 /**
- * Persistent phone-side monitor. It refreshes quote, expert analysis and news status.
- * MT5/EA remains responsible for trade execution and open-position management.
+ * User-visible phone monitor. The backend remains the source of analysis;
+ * the MT5 EA on the desktop remains responsible for execution and position management.
  */
 class MarketMonitorService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val channelId = "goldai_market_monitor"
     private val notificationId = 7401
-    @Volatile private var analysisLine = "التحليل: في انتظار أول تحديث"
-    @Volatile private var newsLine = "الأخبار: في انتظار التحديث"
+
+    @Volatile private var analysisLine = "WAIT"
+    @Volatile private var newsLine = "غير متاحة"
+    @Volatile private var macroLine = "غير متاح"
+    @Volatile private var headlinesLine = "لا توجد عناوين محملة"
+    @Volatile private var lastError = ""
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        startForeground(notificationId, buildNotification("جارٍ الاتصال بخادم GoldAI", false))
+        startForeground(notificationId, buildNotification("جارٍ تشغيل مراقبة السوق", false))
         serviceScope.launch {
             var lastAnalysisAt = 0L
             var lastNewsAt = 0L
+            var lastMacroAt = 0L
+            var lastHeadlinesAt = 0L
+
             while (isActive) {
-                val state = fetchMarketState()
                 val now = SystemClock.elapsedRealtime()
+                val market = fetchMarketState()
+
                 if (now - lastAnalysisAt >= 60_000L) {
                     analysisLine = fetchExpertAnalysis()
                     lastAnalysisAt = now
@@ -50,21 +58,39 @@ class MarketMonitorService : Service() {
                     newsLine = fetchNewsStatus()
                     lastNewsAt = now
                 }
-                val message = if (state.connected) {
-                    "GOLD ${state.price} | ${analysisLine} | ${newsLine}"
-                } else {
-                    "الخادم أو تغذية MT5 غير متاحة؛ ستتم إعادة المحاولة تلقائياً"
+                if (now - lastMacroAt >= 300_000L) {
+                    macroLine = fetchMacroContext()
+                    lastMacroAt = now
                 }
-                getSharedPreferences("goldai_monitor", MODE_PRIVATE).edit()
-                    .putString("connection", if (state.connected) "متصل" else "منقطع")
-                    .putString("price", state.price)
+                if (now - lastHeadlinesAt >= 300_000L) {
+                    headlinesLine = fetchHeadlines()
+                    lastHeadlinesAt = now
+                }
+
+                val connected = market.connected
+                val notificationText = if (connected) {
+                    "GOLD ${market.price} · ${analysisLine.take(70)} · أخبار: ${newsLine.take(55)}"
+                } else {
+                    "لا توجد تغذية سعر حديثة من MT5؛ إعادة المحاولة تلقائياً"
+                }
+
+                val prefs = getSharedPreferences("goldai_monitor", MODE_PRIVATE)
+                prefs.edit()
+                    .putString("connection", if (connected) "متصل" else "منقطع")
+                    .putString("price", market.price)
                     .putString("analysis", analysisLine)
                     .putString("news", newsLine)
+                    .putString("macro", macroLine)
+                    .putString("headlines", headlinesLine)
+                    .putString("last_error", lastError)
                     .putLong("updated_at", System.currentTimeMillis())
                     .apply()
+
                 getSystemService(NotificationManager::class.java)
-                    .notify(notificationId, buildNotification(message, state.connected))
-                delay(if (state.connected) 15_000L else 30_000L)
+                    .notify(notificationId, buildNotification(notificationText, connected))
+
+                // The phone monitors and displays state only; it never places orders itself.
+                delay(if (connected) 15_000L else 30_000L)
             }
         }
     }
@@ -78,9 +104,16 @@ class MarketMonitorService : Service() {
             connection.requestMethod = "GET"
             connection.connectTimeout = 7000
             connection.readTimeout = 9000
-            if (connection.responseCode != 200) null
-            else JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-        } catch (_: Exception) {
+            val code = connection.responseCode
+            if (code !in 200..299) {
+                lastError = "$path HTTP $code"
+                null
+            } else {
+                lastError = ""
+                JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+            }
+        } catch (e: Exception) {
+            lastError = "$path: ${e.message ?: "connection error"}".take(180)
             null
         } finally {
             connection?.disconnect()
@@ -91,37 +124,59 @@ class MarketMonitorService : Service() {
         val json = getJson("/api/v1/market/snapshot")
             ?: return MarketState(false, "غير متاح")
         val mid = json.optDouble("mid", Double.NaN)
-        return if (!mid.isFinite()) MarketState(false, "غير متاح")
-        else MarketState(true, "$" + String.format(Locale.US, "%,.2f", mid))
+        val age = json.optInt("age_seconds", -1)
+        return if (!mid.isFinite() || age !in 0..90) {
+            MarketState(false, "سعر قديم")
+        } else {
+            MarketState(true, "$" + String.format(Locale.US, "%,.2f", mid))
+        }
     }
 
     private fun fetchExpertAnalysis(): String {
         val json = getJson("/api/v1/analysis/expert/live")
-            ?: return "التحليل: الخادم غير متاح"
+            ?: return "WAIT · التحليل غير متاح"
         val decision = json.optString("decision", "WAIT")
         val dossier = json.optJSONObject("technical_dossier")
         val score = dossier?.optDouble("confluence_score", Double.NaN) ?: Double.NaN
         val market = json.optJSONObject("market_data")
         val age = market?.optInt("feed_age_seconds", -1) ?: -1
-        val freshness = if (age >= 0) "عمر الشموع ${age}ث" else "حداثة الشموع غير معروفة"
-        val scoreText = if (score.isFinite()) "التوافق ${score.toInt()}/100" else "التوافق غير متاح"
-        return "التحليل: $decision · $scoreText · $freshness"
+        val scoreText = if (score.isFinite()) "${score.toInt()}/100" else "—"
+        val freshness = if (age >= 0) "${age}ث" else "؟"
+        val blockers = json.optJSONArray("blockers")
+        val blockerText = if (blockers != null && blockers.length() > 0) {
+            (0 until minOf(2, blockers.length())).joinToString("، ") { blockers.optString(it) }
+        } else "لا توجد موانع"
+        return "$decision · توافق $scoreText · شموع $freshness · $blockerText"
     }
 
     private fun fetchNewsStatus(): String {
-        val json = getJson("/api/v1/news/status")
-            ?: return "الأخبار: حالة المحرك غير متاحة"
-        val status = json.optString("overall_status", "UNKNOWN")
-        val age = json.optInt("calendar_age_seconds", -1)
-        val ageText = if (age >= 0) "عمر التقويم ${age}ث" else "عمر التقويم غير معروف"
-        return "الأخبار: $status · $ageText"
+        val json = getJson("/api/v1/analysis/news-filter")
+            ?: return "غير متاحة حالياً"
+        val decision = json.optString("decision", "غير محدد")
+        val count = json.optJSONArray("active_events")?.length() ?: 0
+        val reason = json.optString("reason", "")
+        return "$decision · أحداث نشطة $count · $reason".take(180)
+    }
+
+    private fun fetchMacroContext(): String {
+        val json = getJson("/api/v1/analysis/gold-macro") ?: return "غير متاح حالياً"
+        return "${json.optString("bias", "غير محدد")} · ${json.optString("explanation", "")}".take(180)
+    }
+
+    private fun fetchHeadlines(): String {
+        val json = getJson("/api/v1/news/feed") ?: return "تعذر جلب العناوين"
+        val items = json.optJSONArray("headlines") ?: return "لا توجد عناوين حالياً"
+        if (items.length() == 0) return "لا توجد عناوين جديدة"
+        return (0 until minOf(3, items.length())).joinToString(" | ") { index ->
+            items.optJSONObject(index)?.optString("title", "عنوان غير متاح") ?: "عنوان غير متاح"
+        }.take(350)
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 channelId, "GoldAI Market Monitor", NotificationManager.IMPORTANCE_LOW
-            ).apply { description = "مراقبة سعر الذهب والتحليل والأخبار في الخلفية" }
+            ).apply { description = "مراقبة سعر الذهب والتحليل الفني والأخبار الاقتصادية" }
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
@@ -129,7 +184,7 @@ class MarketMonitorService : Service() {
     private fun buildNotification(message: String, connected: Boolean): Notification =
         NotificationCompat.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(if (connected) "GoldAI · مراقبة نشطة" else "GoldAI · إعادة الاتصال")
+            .setContentTitle(if (connected) "GoldAI · مراقبة نشطة" else "GoldAI · فحص الاتصال")
             .setContentText(message)
             .setStyle(NotificationCompat.BigTextStyle().bigText(message))
             .setOngoing(true)
