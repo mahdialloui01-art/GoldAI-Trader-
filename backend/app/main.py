@@ -2789,7 +2789,17 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
         age = (now - stamps[-1]).total_seconds()
         if age < interval - 5:
             raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle does not appear to be fully closed.")
-        if age > interval * 2 + 60:
+        # At market reopen, the latest *closed* H4 bar can legitimately be
+        # Friday's final bar while fresh M5/M15/H1 bars are already arriving.
+        # Keep strict freshness for all frames, but allow this H4 session gap
+        # only after the three lower timeframes have independently passed their
+        # freshness checks. Never relax freshness for M5/M15/H1.
+        h4_session_reopen_gap = (
+            timeframe == "H4"
+            and all(frame in quality for frame in ("M5", "M15", "H1"))
+            and age <= 7 * 24 * 60 * 60
+        )
+        if age > interval * 2 + 60 and not h4_session_reopen_gap:
             raise HTTPException(
                 status_code=422,
                 detail=(
@@ -2810,6 +2820,7 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
             "latest_bar_age_seconds": max(0, int(age)),
             "session_gaps_observed": len(gaps),
             "largest_gap_seconds": max(gaps, default=0),
+            "h4_session_reopen_gap": h4_session_reopen_gap,
             "strictly_increasing": True,
             "timeframe_spacing_valid": True,
         }
