@@ -301,7 +301,15 @@ class MainActivity : ComponentActivity() {
                 val decision = chart.optString("decision", "WAIT")
                 val score = chart.optString("confluence_score", "—")
                 val grade = chart.optString("confluence_grade", "غير محدد")
-                chartMeta = "القرار: $decision  •  التوافق: $score/100  •  $grade"
+                val scan = chart.optJSONObject("strategy_scan")
+                val selected = scan?.optJSONObject("selected")
+                val strategyName = selected?.optString("strategy", "لا توجد فرصة مكتملة") ?: "لا توجد فرصة مكتملة"
+                val strategyScore = if (selected != null) "${selected.optInt("score")}/${selected.optInt("max_score")}" else "—"
+                val scanBlockers = scan?.optJSONArray("blockers")
+                val blockerText = if (scanBlockers != null && scanBlockers.length() > 0)
+                    (0 until scanBlockers.length()).joinToString("، ") { scanBlockers.optString(it) }
+                else "لا توجد موانع إضافية"
+                chartMeta = "القرار: $decision  •  التوافق: $score/100  •  $grade\nأفضل إعداد: $strategyName ($strategyScore)\nموانع الإعداد: $blockerText"
             } catch (_: Exception) {
                 chartRowsByFrame = emptyMap()
                 chartReportsByFrame = emptyMap()
