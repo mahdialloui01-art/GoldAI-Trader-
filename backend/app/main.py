@@ -2639,18 +2639,20 @@ def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], repo
     wanted_pattern = ("BULLISH_ENGULFING", "BULLISH_REJECTION") if bullish else ("BEARISH_ENGULFING", "BEARISH_REJECTION")
     candidates = []
 
-    # Pullback: price returns near EMA20 without excessive extension and closes with directional intent.
+    # Pullback: allow a wider retest zone, but award fewer points near its outer edge.
     pullback_score = 0
-    if extension <= 0.45:
+    if extension <= 0.60:
         pullback_score += 2
+    elif extension <= 0.85:
+        pullback_score += 1
     if pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH"):
         pullback_score += 2
     if report.get("market_structure") == ("UPTREND" if bullish else "DOWNTREND"):
         pullback_score += 1
     if pullback_score:
         candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
-                           "evidence": ["M5 قريب من EMA20" if extension <= 0.45 else "السعر ليس داخل منطقة إعادة الاختبار المثالية",
-                                        "شمعة/اندفاع مؤيد" if pullback_score >= 2 and (pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH")) else "تأكيد الشمعة غير مكتمل"]})
+                           "evidence": ["إعادة اختبار قريبة من EMA20" if extension <= 0.60 else "السعر في الطرف الخارجي لمنطقة إعادة الاختبار" if extension <= 0.85 else "السعر بعيد عن منطقة إعادة الاختبار",
+                                        "شمعة/اندفاع مؤيد" if pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH") else "تأكيد الشمعة غير مكتمل"]})
 
     # Breakout: only a confirmed close through a previously confirmed swing level.
     if wanted_bos in events:
@@ -3160,11 +3162,13 @@ def receive_mt5_candles(
 
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
+_DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 82.0
 _DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP"}
+_DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 
 
 def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
-    """Require strong confluence and a confirmed non-reversal setup before DEMO execution."""
+    """Allow a small DEMO-only threshold relief for fully confirmed structural triggers."""
     dossier = analysis.get("technical_dossier")
     if not isinstance(dossier, dict):
         return False, "Expert technical dossier is unavailable.", {}
@@ -3174,11 +3178,6 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
         confluence = float("nan")
     if not math.isfinite(confluence):
         return False, "Confluence score is missing or invalid.", {}
-    if confluence < _DEMO_MIN_CONFLUENCE_SCORE:
-        return False, "Confluence is below the 85/100 DEMO entry threshold.", {
-            "confluence_score": confluence,
-            "minimum_confluence_score": _DEMO_MIN_CONFLUENCE_SCORE,
-        }
 
     scan = dossier.get("strategy_scan")
     if not isinstance(scan, dict):
@@ -3212,12 +3211,31 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
             "confluence_score": confluence, "selected_strategy": strategy,
             "setup_score": setup_score, "setup_max_score": setup_max,
         }
+
+    # Only a perfect 5/5 confirmed BOS or liquidity sweep earns the 82/100
+    # DEMO threshold. Pullbacks and partial structural scores retain 85/100.
+    structural_full_score = (
+        strategy in _DEMO_STRUCTURAL_ENTRY_STRATEGIES and setup_score >= setup_max
+    )
+    minimum_confluence = (
+        _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE
+        if structural_full_score else _DEMO_MIN_CONFLUENCE_SCORE
+    )
+    if confluence < minimum_confluence:
+        return False, f"Confluence is below the {minimum_confluence:.0f}/100 DEMO entry threshold.", {
+            "confluence_score": confluence,
+            "minimum_confluence_score": minimum_confluence,
+            "selected_strategy": strategy,
+            "setup_score": setup_score,
+            "setup_max_score": setup_max,
+        }
     return True, "DEMO entry quality gates passed.", {
         "confluence_score": confluence,
-        "minimum_confluence_score": _DEMO_MIN_CONFLUENCE_SCORE,
+        "minimum_confluence_score": minimum_confluence,
         "selected_strategy": strategy,
         "setup_score": setup_score,
         "setup_max_score": setup_max,
+        "threshold_profile": "STRUCTURAL_FULL_CONFIRMATION" if structural_full_score else "STANDARD",
     }
 
 
