@@ -58,7 +58,11 @@ async def load_xoomar_high_impact_events(
         raise ValueError("XOOMAR updatedAt must include a timezone.")
     age = now - updated_at.astimezone(timezone.utc)
     if age < timedelta(minutes=-10) or age > MAX_UPDATED_AGE:
-        raise ValueError("XOOMAR calendar update is outside the accepted freshness window.")
+        raise ValueError(
+            "XOOMAR calendar update is outside the accepted freshness window "
+            f"(updatedAt={updated_at.isoformat()}, age_hours={age.total_seconds() / 3600:.2f}, "
+            f"max_age_hours={MAX_UPDATED_AGE.total_seconds() / 3600:.0f})."
+        )
 
     events: list[dict] = []
     seen: set[tuple[str, datetime]] = set()
