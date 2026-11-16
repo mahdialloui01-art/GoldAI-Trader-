@@ -252,6 +252,7 @@ def get_config() -> dict:
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "demo_execution_enabled": settings.demo_execution_enabled,
         "demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
+        "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
         "analysis_engine_version": "0.6.2",
         "analysis_layers": [
