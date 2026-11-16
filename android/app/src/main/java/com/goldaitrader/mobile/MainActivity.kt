@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -14,6 +15,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -35,6 +38,8 @@ private val Green = Color(0xFF39D6A0)
 private val Red = Color(0xFFFF7373)
 private val Blue = Color(0xFF69B7FF)
 
+private data class ChartCandle(val open: Double, val high: Double, val low: Double, val close: Double)
+
 private enum class AppTab(val title: String, val symbol: String) {
     HOME("الرئيسية", "⌂"),
     ANALYSIS("التحليل", "⌁"),
@@ -55,6 +60,8 @@ class MainActivity : ComponentActivity() {
     private var expertSummary by mutableStateOf("لم يتم جلب التحليل بعد")
     private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
     private var candlesReceived by mutableStateOf(false)
+    private var chartRows by mutableStateOf<List<ChartCandle>>(emptyList())
+    private var chartReport by mutableStateOf("بانتظار تقرير الرسم والتحليل")
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -79,6 +86,8 @@ class MainActivity : ComponentActivity() {
                     expertSummary = expertSummary,
                     candleSummary = candleSummary,
                     candlesReceived = candlesReceived,
+                    chartRows = chartRows,
+                    chartReport = chartReport,
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -222,7 +231,8 @@ class MainActivity : ComponentActivity() {
                     candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
                 }
-                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString())
+                val chartPayload = try { request("/api/v1/analysis/chart?timeframe=M5").toString() } catch (_: Exception) { "{}" }
+                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString(), chartPayload)
             }
             macroSummary = result[0]
             calendarSummary = result[1]
@@ -231,6 +241,26 @@ class MainActivity : ComponentActivity() {
             expertSummary = result[4]
             candleSummary = result[5]
             candlesReceived = result[6] == "true"
+            try {
+                val chart = JSONObject(result[7])
+                val rows = chart.optJSONArray("candles_by_timeframe")?.optJSONArray("M5")
+                chartRows = if (rows == null) emptyList() else (0 until rows.length()).mapNotNull { i ->
+                    val item = rows.optJSONObject(i) ?: return@mapNotNull null
+                    ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
+                }
+                val report = chart.optJSONObject("reports_by_timeframe")?.optJSONObject("M5")
+                chartReport = if (report == null) "لا يوجد تقرير فني متاح لهذا الإطار." else
+                    "الاتجاه: \${report.optString("direction", "WAIT")}\n" +
+                    "حالة السوق: \${report.optString("market_regime", "غير محدد")}\n" +
+                    "هيكل السوق: \${report.optString("market_structure", "غير محدد")}\n" +
+                    "RSI: \${report.optDouble("rsi14")}  •  ADX: \${report.optDouble("adx14")}\n" +
+                    "ATR: \${report.optDouble("atr14")}  •  MACD: \${report.optDouble("macd_histogram")}\n" +
+                    "الأحداث: \${report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"}\n" +
+                    "الأدلة: \${report.optJSONArray("evidence")?.toString() ?: "غير متاحة"}"
+            } catch (_: Exception) {
+                chartRows = emptyList()
+                chartReport = "تعذر قراءة بيانات الرسم والتحليل."
+            }
         }
     }
 
@@ -296,6 +326,8 @@ private fun GoldAiApp(
     expertSummary: String,
     candleSummary: String,
     candlesReceived: Boolean,
+    chartRows: List<ChartCandle>,
+    chartReport: String,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -327,7 +359,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary)
+                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, chartRows, chartReport)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -439,10 +471,21 @@ private fun AnalysisPage(
     calendarSummary: String,
     newsEngineSummary: String,
     newsHeadlinesSummary: String,
-    expertSummary: String
+    expertSummary: String,
+    chartRows: List<ChartCandle>,
+    chartReport: String
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (candlesReceived) "تم استلام شموع MT5 للأطر الأربعة" else "لم يتم تأكيد حداثة واكتمال شموع MT5", if (candlesReceived) Green else Gold)
+    SectionHeading("الرسم البياني للذهب", "شموع M5 حقيقية من MT5 — آخر 100 شمعة مغلقة")
+    Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(18.dp)) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("GOLD · M5", color = Gold, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+            if (chartRows.size > 1) CandlestickChart(chartRows)
+            else Text("بانتظار شموع MT5 كافية للرسم.", color = Muted, modifier = Modifier.padding(vertical = 30.dp))
+            Text(chartReport, color = Color.White, fontSize = 11.sp)
+        }
+    }
     AnalysisCard("00", "حالة شموع MT5 الفعلية", "M5 • M15 • H1 • H4 — قراءة مباشرة من رد الخادم", candleSummary)
     AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", if (candlesReceived) "تعمل على أحدث شموع MT5 المستلمة" else candleSummary)
     AnalysisCard("02", "Liquidity & Imbalance", "Equal Highs/Lows • Sweep • Fair Value Gap", if (candlesReceived) "بيانات الشموع متاحة للتحليل" else candleSummary)
@@ -455,6 +498,34 @@ private fun AnalysisPage(
     AnalysisCard("09", "Expert GOLD Technical Engine", "توافق M5/M15/H1/H4 • السيولة • BOS • FVG • خطة المخاطر", expertSummary)
     Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
+
+@Composable
+private fun CandlestickChart(candles: List<ChartCandle>) {
+    val visible = candles.takeLast(70)
+    val low = visible.minOf { it.low }
+    val high = visible.maxOf { it.high }
+    val range = (high - low).takeIf { it > 0.0 } ?: 1.0
+    Canvas(Modifier.fillMaxWidth().height(230.dp).background(PanelSoft, RoundedCornerShape(12.dp))) {
+        val pad = 8.dp.toPx()
+        val plotHeight = size.height - 2 * pad
+        val step = size.width / visible.size
+        val bodyWidth = (step * 0.58f).coerceAtLeast(2f)
+        repeat(5) { n ->
+            val y = pad + plotHeight * n / 4f
+            drawLine(Color(0xFF344356), Offset(0f, y), Offset(size.width, y), 1f)
+        }
+        visible.forEachIndexed { i, c ->
+            val x = step * i + step / 2f
+            fun py(v: Double) = pad + ((high - v) / range * plotHeight).toFloat()
+            val tint = if (c.close >= c.open) Green else Red
+            drawLine(tint, Offset(x, py(c.high)), Offset(x, py(c.low)), 1.4f)
+            val y1 = py(c.open)
+            val y2 = py(c.close)
+            drawRect(tint, Offset(x - bodyWidth / 2f, minOf(y1, y2)), Size(bodyWidth, maxOf(2f, kotlin.math.abs(y2 - y1))))
+        }
+    }
+}
+
 
 @Composable
 private fun RiskPage() {
