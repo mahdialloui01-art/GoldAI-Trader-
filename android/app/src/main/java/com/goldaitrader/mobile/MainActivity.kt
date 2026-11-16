@@ -580,7 +580,49 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
     var stopPoints by remember { mutableStateOf("") }
     var targetPoints by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
-    var confirm by remember { mutableStateOf(false) }
+    var defaultsStatus by remember { mutableStateOf("جارٍ حساب حجم العقد ووقف الخسارة والهدف من بيانات MT5...") }
+    val scope = rememberCoroutineScope()
+
+    suspend fun loadDefaults(): Boolean {
+        return withContext(Dispatchers.IO) {
+            try {
+                val connection = URL("${BuildConfig.API_BASE_URL}/api/v1/manual/demo/defaults")
+                    .openConnection() as HttpURLConnection
+                connection.requestMethod = "GET"
+                connection.connectTimeout = 8000
+                connection.readTimeout = 10000
+                try {
+                    val code = connection.responseCode
+                    val body = (if (code in 200..299) connection.inputStream else connection.errorStream)
+                        ?.bufferedReader()?.use { it.readText() }.orEmpty()
+                    if (code !in 200..299) {
+                        val detail = try { JSONObject(body).optString("detail", "HTTP $code") } catch (_: Exception) { "HTTP $code" }
+                        throw IllegalStateException(detail)
+                    }
+                    val data = JSONObject(body)
+                    withContext(Dispatchers.Main) {
+                        lots = data.getDouble("recommended_lots").toString()
+                        stopPoints = data.getInt("stop_loss_points").toString()
+                        targetPoints = data.getInt("take_profit_points").toString()
+                        defaultsStatus = "جاهز: مخاطرة ${data.optString("estimated_risk_percent")}% من الرصيد — SL/TP حسب ATR لشموع M5."
+                    }
+                    true
+                } finally { connection.disconnect() }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    defaultsStatus = "في انتظار بيانات MT5: ${e.message ?: "تعذر حساب الإعدادات"}"
+                }
+                false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        while (lots.isBlank() || stopPoints.isBlank() || targetPoints.isBlank()) {
+            if (loadDefaults()) break
+            delay(15000)
+        }
+    }
 
     SectionHeading("فتح صفقة يدوية", "تجاوز شروط التحليل — مع بقاء حماية الحساب إلزامية")
     Card(colors = CardDefaults.cardColors(containerColor = Panel), shape = RoundedCornerShape(20.dp)) {
@@ -595,33 +637,26 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
                     Text("SELL / بيع", fontWeight = FontWeight.Bold)
                 }
             }
-            OutlinedTextField(value = lots, onValueChange = { lots = it }, modifier = Modifier.fillMaxWidth(),
-                label = { Text("حجم العقد (Lots)") }, placeholder = { Text("مثال: 0.01") }, singleLine = true)
-            OutlinedTextField(value = stopPoints, onValueChange = { stopPoints = it }, modifier = Modifier.fillMaxWidth(),
-                label = { Text("وقف الخسارة بالنقاط") }, placeholder = { Text("أدخل مسافة SL") }, singleLine = true)
-            OutlinedTextField(value = targetPoints, onValueChange = { targetPoints = it }, modifier = Modifier.fillMaxWidth(),
-                label = { Text("جني الأرباح بالنقاط") }, placeholder = { Text("أدخل مسافة TP") }, singleLine = true)
+            OutlinedTextField(value = lots, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
+                label = { Text("حجم العقد المحسوب تلقائياً (Lots)") }, singleLine = true, readOnly = true)
+            OutlinedTextField(value = stopPoints, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
+                label = { Text("وقف الخسارة التلقائي (نقاط)") }, singleLine = true, readOnly = true)
+            OutlinedTextField(value = targetPoints, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
+                label = { Text("جني الأرباح التلقائي (نقاط)") }, singleLine = true, readOnly = true)
+            Text(defaultsStatus, color = if (lots.isNotBlank()) Green else Gold, fontSize = 10.sp)
+            TextButton(onClick = { scope.launch { loadDefaults() } }) { Text("تحديث الحسابات من MT5") }
             OutlinedTextField(value = pin, onValueChange = { pin = it }, modifier = Modifier.fillMaxWidth(),
                 label = { Text("رمز أمان التداول اليدوي") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation())
-            Text("الأمر يتجاوز توافق التحليل فقط. لا يتجاوز DEMO فقط، حد مخاطرة 0.25%، حد الخسارة اليومية، السبريد، شرط SL/TP أو وجود صفقة مفتوحة. يتطلب بقاء MT5 وEA متصلين.", color = Muted, fontSize = 10.sp)
-            GoldButton("مراجعة وتأكيد الصفقة", onClick = { confirm = true })
+            Text("المخاطرة اليدوية القصوى 2% فقط. يتم حساب اللوت حسب Equity وTick Value، وSL=1.5×ATR وTP=3×ATR. التداول الآلي يبقى على حدّه المنفصل 0.25%. التنفيذ DEMO فقط ويتطلب MT5 وEA شغالين.", color = Muted, fontSize = 10.sp)
+            Button(
+                onClick = { onSubmit(direction, lots, stopPoints, targetPoints, pin) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = lots.isNotBlank() && stopPoints.isNotBlank() && targetPoints.isNotBlank() && pin.length >= 16,
+                colors = ButtonDefaults.buttonColors(containerColor = Gold, contentColor = Night)
+            ) { Text("فتح الصفقة الآن", fontWeight = FontWeight.Bold) }
             Text(status, color = Gold, fontSize = 11.sp)
         }
-    }
-    if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text("تأكيد أمر يدوي — DEMO") },
-            text = { Text("$direction GOLD بحجم $lots lot، وقف $stopPoints نقطة، هدف $targetPoints نقطة. سيتم رفض الأمر إذا تجاوز حدود المخاطرة أو شروط الوسيط. هل تريد إرساله؟") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    onSubmit(direction, lots, stopPoints, targetPoints, pin)
-                }) { Text("إرسال الأمر") }
-            },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("إلغاء") } }
-        )
     }
 }
 
