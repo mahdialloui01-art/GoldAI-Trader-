@@ -2790,7 +2790,16 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
         if age < interval - 5:
             raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle does not appear to be fully closed.")
         if age > interval * 2 + 60:
-            raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale.")
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Latest {timeframe} candle is stale: "
+                    f"bar_time_utc={stamps[-1].isoformat()}, "
+                    f"age_seconds={int(age)}, "
+                    f"limit_seconds={interval * 2 + 60}, "
+                    f"server_now_utc={now.isoformat()}."
+                ),
+            )
         # Longer gaps can be legitimate weekends, holidays, or broker session breaks.
         # Report them for visibility instead of rejecting valid market closures.
         gaps = [int(delta) for delta in deltas if delta > interval + 1]
