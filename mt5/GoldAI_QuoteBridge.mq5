@@ -595,6 +595,58 @@ void ManageDemoPositions()
    }
 }
 
+string LearningPositionDirection(ulong positionId)
+{
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong candidate = HistoryDealGetTicket(i);
+      if(candidate == 0) continue;
+      if((ulong)HistoryDealGetInteger(candidate, DEAL_POSITION_ID) != positionId) continue;
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(candidate, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_IN && entry != DEAL_ENTRY_INOUT) continue;
+      ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(candidate, DEAL_TYPE);
+      if(type == DEAL_TYPE_BUY) return "BUY";
+      if(type == DEAL_TYPE_SELL) return "SELL";
+   }
+   return "OTHER";
+}
+
+bool SendClosedDealToLearning(ulong deal)
+{
+   ulong positionId = (ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID);
+   string direction = LearningPositionDirection(positionId);
+   datetime dealTime = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+   MqlDateTime stamp;
+   TimeToStruct(dealTime, stamp);
+   string isoTime = StringFormat("%04d-%02d-%02dT%02d:%02d:%02dZ",
+      stamp.year, stamp.mon, stamp.day, stamp.hour, stamp.min, stamp.sec);
+   string payload = StringFormat(
+      "{\"deals\":[{\"deal_ticket\":%I64u,\"position_id\":%I64u,\"deal_time\":\"%s\",\"symbol\":\"%s\",\"direction\":\"%s\",\"volume\":%s,\"price\":%s,\"profit\":%s,\"commission\":%s,\"swap\":%s,\"reason\":%d}]}",
+      deal, positionId, isoTime, RequiredSymbol, direction,
+      DoubleToString(HistoryDealGetDouble(deal, DEAL_VOLUME), 8),
+      DoubleToString(HistoryDealGetDouble(deal, DEAL_PRICE), (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS)),
+      DoubleToString(HistoryDealGetDouble(deal, DEAL_PROFIT), 8),
+      DoubleToString(HistoryDealGetDouble(deal, DEAL_COMMISSION), 8),
+      DoubleToString(HistoryDealGetDouble(deal, DEAL_SWAP), 8),
+      (int)HistoryDealGetInteger(deal, DEAL_REASON));
+   char data[];
+   char result[];
+   string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + BridgeToken + "\\r\\n";
+   StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
+   ArrayResize(data, ArraySize(data) - 1);
+   string responseHeaders;
+   ResetLastError();
+   int status = WebRequest("POST", "https://goldai-trader-api.onrender.com/api/v1/learning/trades/journal",
+                           headers, 10000, data, result, responseHeaders);
+   if(status != 200)
+   {
+      Print("GoldAI learning journal upload failed: HTTP=", status, " error=", GetLastError(),
+            " deal=", (long)deal, " response=", CharArrayToString(result, 0, -1, CP_UTF8));
+      return false;
+   }
+   return true;
+}
+
 void ExportClosedDealsToJournal()
 {
    datetime now = TimeTradeServer();
@@ -627,8 +679,10 @@ void ExportClosedDealsToJournal()
       string key = "GoldAI_JOURNAL_" + IntegerToString((long)deal);
       if(GlobalVariableCheck(key)) continue;
 
-      ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(deal, DEAL_TYPE);
-      string direction = type == DEAL_TYPE_BUY ? "BUY" : (type == DEAL_TYPE_SELL ? "SELL" : "OTHER");
+      if(!SendClosedDealToLearning(deal))
+         continue; // Keep it unacknowledged; the next timer cycle retries it.
+
+      string direction = LearningPositionDirection((ulong)HistoryDealGetInteger(deal, DEAL_POSITION_ID));
       datetime dealTime = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
       FileWrite(file,
          (long)deal,
