@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
     max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
     demo_execution_enabled: bool = False
-    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)
+    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only\n    auto_demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
@@ -251,7 +251,7 @@ def get_config() -> dict:
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "demo_execution_enabled": settings.demo_execution_enabled,
-        "demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
+        "demo_risk_per_trade_percent": settings.auto_demo_risk_per_trade_percent,\n        "manual_demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
         "analysis_engine_version": "0.6.2",
@@ -3430,7 +3430,7 @@ async def mt5_demo_signal(
     stop_points = abs(entry - stop) / point
     sizing = calculate_position_size(PositionSizeRequest(
         stop_distance_points=stop_points,
-        risk_percent=settings.demo_risk_per_trade_percent,
+        risk_percent=settings.auto_demo_risk_per_trade_percent,
         account_equity=float(quote["account_equity"]),
         daily_loss_percent=daily_loss_percent,
     ))
@@ -3452,7 +3452,7 @@ async def mt5_demo_signal(
         "take_profit": plan["targets"]["target_2R"],
         "risk_reward": "1:2",
         "recommended_lots": sizing["recommended_lots"],
-        "risk_percent": settings.demo_risk_per_trade_percent,
+        "risk_percent": settings.auto_demo_risk_per_trade_percent,
         "daily_loss_percent": daily_loss_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "blockers": [],
