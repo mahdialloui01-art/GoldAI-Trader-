@@ -3509,6 +3509,7 @@ async def live_expert_technical_analysis() -> dict:
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
         "candle_counts": {frame: len(rows) for frame, rows in series.items()},
+        "latest_candle_times": {frame: rows[-1].time for frame, rows in series.items()},
         "data_quality": _latest_mt5_candles.get("data_quality", {}),
         "feed_age_seconds": max(0, int((now - _latest_mt5_candles["received_at"]).total_seconds())),
         "closed_candles_only": True,
