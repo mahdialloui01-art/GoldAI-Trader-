@@ -250,13 +250,13 @@ class MainActivity : ComponentActivity() {
                 }
                 val report = chart.optJSONObject("reports_by_timeframe")?.optJSONObject("M5")
                 chartReport = if (report == null) "لا يوجد تقرير فني متاح لهذا الإطار." else
-                    "الاتجاه: \${report.optString("direction", "WAIT")}\n" +
-                    "حالة السوق: \${report.optString("market_regime", "غير محدد")}\n" +
-                    "هيكل السوق: \${report.optString("market_structure", "غير محدد")}\n" +
-                    "RSI: \${report.optDouble("rsi14")}  •  ADX: \${report.optDouble("adx14")}\n" +
-                    "ATR: \${report.optDouble("atr14")}  •  MACD: \${report.optDouble("macd_histogram")}\n" +
-                    "الأحداث: \${report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"}\n" +
-                    "الأدلة: \${report.optJSONArray("evidence")?.toString() ?: "غير متاحة"}"
+                    "الاتجاه: ${report.optString("direction", "WAIT")}\n" +
+                    "حالة السوق: ${report.optString("market_regime", "غير محدد")}\n" +
+                    "هيكل السوق: ${report.optString("market_structure", "غير محدد")}\n" +
+                    "RSI: ${report.optDouble("rsi14")}  •  ADX: ${report.optDouble("adx14")}\n" +
+                    "ATR: ${report.optDouble("atr14")}  •  MACD: ${report.optDouble("macd_histogram")}\n" +
+                    "الأحداث: ${report.optJSONArray("confirmed_events")?.toString() ?: "لا يوجد"}\n" +
+                    "الأدلة: ${report.optJSONArray("evidence")?.toString() ?: "غير متاحة"}"
             } catch (_: Exception) {
                 chartRows = emptyList()
                 chartReport = "تعذر قراءة بيانات الرسم والتحليل."
