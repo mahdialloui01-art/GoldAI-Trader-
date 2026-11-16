@@ -52,7 +52,9 @@ class MainActivity : ComponentActivity() {
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
     private var newsHeadlinesSummary by mutableStateOf("في انتظار العناوين الرسمية")
-    private var expertSummary by mutableStateOf("في انتظار تغذية شموع MT5 للأطر الأربعة")
+    private var expertSummary by mutableStateOf("لم يتم جلب التحليل بعد")
+    private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
+    private var candlesReceived by mutableStateOf(false)
     private var selectedTab by mutableStateOf(AppTab.HOME)
     private val backendConfigured: Boolean get() = BuildConfig.API_BASE_URL.trim().startsWith("https://") || BuildConfig.API_BASE_URL.trim().startsWith("http://")
 
@@ -75,6 +77,8 @@ class MainActivity : ComponentActivity() {
                     newsEngineSummary = newsEngineSummary,
                     newsHeadlinesSummary = newsHeadlinesSummary,
                     expertSummary = expertSummary,
+                    candleSummary = candleSummary,
+                    candlesReceived = candlesReceived,
                     onCheckBackend = ::checkBackend,
                     onRefreshGold = ::refreshGold,
                     onRefreshContext = ::refreshEconomicContext
@@ -115,6 +119,7 @@ class MainActivity : ComponentActivity() {
         macroSummary = "جارٍ جلب مؤشرات الدولار والعوائد..."
         calendarSummary = "جارٍ فحص الأخبار الأمريكية عالية التأثير..."
         expertSummary = "جارٍ جلب التحليل الفني متعدد الأطر..."
+        candleSummary = "جارٍ فحص شموع MT5..."
         lifecycleScope.launch {
             val result = withContext(Dispatchers.IO) {
                 fun request(path: String): JSONObject {
@@ -182,36 +187,50 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     "العناوين الرسمية غير متاحة: ${e.message ?: "تعذر الاتصال"}"
                 }
+                var candles = "لم يرجع الخادم تفاصيل استقبال الشموع"
+                var hasCandles = false
                 val expert = try {
                     val j = request("/api/v1/analysis/expert/live")
+                    val market = j.optJSONObject("market_data")
+                    if (market != null) {
+                        val counts = market.optJSONObject("candle_counts")
+                        val m5 = counts?.optInt("M5", 0) ?: 0
+                        val m15 = counts?.optInt("M15", 0) ?: 0
+                        val h1 = counts?.optInt("H1", 0) ?: 0
+                        val h4 = counts?.optInt("H4", 0) ?: 0
+                        val age = market.optInt("feed_age_seconds", -1)
+                        hasCandles = listOf(m5, m15, h1, h4).all { it >= 60 } && age in 0..180
+                        candles = "شموع MT5: M5=$m5، M15=$m15، H1=$h1، H4=$h4 — عمر آخر دفعة: ${if (age >= 0) "$age ثانية" else "غير معروف"}"
+                        if (hasCandles) candles = "وصلت الشموع بنجاح — $candles"
+                        else candles = "بيانات الشموع غير مكتملة أو قديمة — $candles"
+                    }
                     val decision = j.optString("decision", "WAIT")
                     val dossier = j.optJSONObject("technical_dossier")
+                    val blockers = j.optJSONArray("blockers")
+                    val blockText = if (blockers != null && blockers.length() > 0) {
+                        (0 until minOf(4, blockers.length())).joinToString("، ") { blockers.optString(it) }
+                    } else "لا توجد موانع مسجلة"
                     if (dossier == null) {
-                        "القرار: WAIT — لا توجد بيانات شموع كافية لإنتاج ملف التحليل"
+                        "القرار: $decision — لم يرجع الخادم ملف التحليل الفني. $blockText"
                     } else {
                         val score = dossier.optDouble("confluence_score", 0.0)
                         val grade = dossier.optString("confluence_grade", "غير محدد")
                         val dominant = dossier.optString("dominant_technical_direction", "WAIT")
-                        val blockers = j.optJSONArray("blockers")
-                        val blockText = if (blockers != null && blockers.length() > 0) {
-                            (0 until minOf(3, blockers.length())).joinToString("، ") { blockers.optString(it) }
-                        } else "لا توجد موانع مسجلة"
-                        val plan = j.optJSONObject("setup_plan")
-                        val levels = if (plan != null) {
-                            " — دخول مرجعي: ${plan.optString("entry_reference")} — وقف: ${plan.optString("stop_loss_reference")}"
-                        } else ""
-                        "القرار: $decision — توافق: ${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText$levels"
+                        "القرار: $decision — توافق: ${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText"
                     }
                 } catch (e: Exception) {
-                    "متوقف أو ينتظر شموع MT5: ${e.message ?: "لا توجد تغذية حديثة للأطر الأربعة"}"
+                    candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
+                    "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
                 }
-                listOf(macro, news, engine, headlines, expert)
+                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString())
             }
             macroSummary = result[0]
             calendarSummary = result[1]
             newsEngineSummary = result[2]
             newsHeadlinesSummary = result[3]
             expertSummary = result[4]
+            candleSummary = result[5]
+            candlesReceived = result[6] == "true"
         }
     }
 
@@ -275,6 +294,8 @@ private fun GoldAiApp(
     newsEngineSummary: String,
     newsHeadlinesSummary: String,
     expertSummary: String,
+    candleSummary: String,
+    candlesReceived: Boolean,
     onCheckBackend: () -> Unit,
     onRefreshGold: () -> Unit,
     onRefreshContext: () -> Unit
@@ -306,7 +327,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold)
-                    AppTab.ANALYSIS -> AnalysisPage(quoteReceived, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary)
+                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -412,7 +433,8 @@ private fun HomePage(price: String, quoteStatus: String, quoteReceived: Boolean,
 
 @Composable
 private fun AnalysisPage(
-    quoteReceived: Boolean,
+    candlesReceived: Boolean,
+    candleSummary: String,
     macroSummary: String,
     calendarSummary: String,
     newsEngineSummary: String,
@@ -420,11 +442,12 @@ private fun AnalysisPage(
     expertSummary: String
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
-    StatusBanner(if (quoteReceived) "تم استلام سعر الوسيط" else "التحليل متوقف: لا توجد بيانات MT5 حديثة", if (quoteReceived) Green else Gold)
-    AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", "بانتظار شموع GOLD من جسر MT5")
-    AnalysisCard("02", "Liquidity & Imbalance", "Equal Highs/Lows • Sweep • Fair Value Gap", "بانتظار بيانات الشموع")
-    AnalysisCard("03", "Multi-Timeframe", "توافق M5 و M15 مع سياق H1 و H4", "بانتظار تغذية الشموع للأطر الأربعة")
-    AnalysisCard("04", "Market Regime", "Trend • Range • Transition • Volatility", "بانتظار شموع حديثة لتصنيف السوق")
+    StatusBanner(if (candlesReceived) "تم استلام شموع MT5 للأطر الأربعة" else "لم يتم تأكيد حداثة واكتمال شموع MT5", if (candlesReceived) Green else Gold)
+    AnalysisCard("00", "حالة شموع MT5 الفعلية", "M5 • M15 • H1 • H4 — قراءة مباشرة من رد الخادم", candleSummary)
+    AnalysisCard("01", "Price Action & Structure", "اتجاه السوق • Swing High/Low • BOS / CHoCH", if (candlesReceived) "تعمل على أحدث شموع MT5 المستلمة" else candleSummary)
+    AnalysisCard("02", "Liquidity & Imbalance", "Equal Highs/Lows • Sweep • Fair Value Gap", if (candlesReceived) "بيانات الشموع متاحة للتحليل" else candleSummary)
+    AnalysisCard("03", "Multi-Timeframe", "توافق M5 و M15 مع سياق H1 و H4", if (candlesReceived) "تم تحميل الأطر الأربعة؛ التوافق يحدده المحرك" else candleSummary)
+    AnalysisCard("04", "Market Regime", "Trend • Range • Transition • Volatility", if (candlesReceived) "يتم تصنيف السوق من الشموع المستلمة" else candleSummary)
     AnalysisCard("05", "Gold Macro — FRED", "العوائد الأمريكية والدولار الأمريكي", macroSummary)
     AnalysisCard("06", "Economic News Filter", "الأحداث الأمريكية عالية التأثير ونافذة الحظر", calendarSummary)
     AnalysisCard("07", "Auto News Monitor", "تحديث تلقائي للخادم كل 5 دقائق ولعرض التطبيق كل دقيقة", newsEngineSummary)
