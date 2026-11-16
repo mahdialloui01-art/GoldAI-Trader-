@@ -11,7 +11,8 @@ client = TestClient(app)
 
 def _ready_manual_demo(monkeypatch):
     monkeypatch.setattr(main.settings, "manual_trade_pin", "A" * 32)
-    monkeypatch.setattr(main.settings, "demo_execution_enabled", True)
+    monkeypatch.setattr(main.settings, "demo_execution_enabled", False)
+    monkeypatch.setattr(main.settings, "manual_demo_execution_enabled", True)
     monkeypatch.setattr(main.settings, "live_trading_enabled", False)
     monkeypatch.setattr(main.settings, "trading_mode", "paper")
     monkeypatch.setattr(main.settings, "demo_risk_per_trade_percent", 2.0)
