@@ -509,8 +509,11 @@ private fun AnalysisPage(
     newsEngineSummary: String,
     newsHeadlinesSummary: String,
     expertSummary: String,
-    chartRows: List<ChartCandle>,
-    chartReport: String
+    chartRowsByFrame: Map<String, List<ChartCandle>>,
+    chartReportsByFrame: Map<String, String>,
+    chartMeta: String,
+    selectedChartFrame: String,
+    onSelectChartFrame: (String) -> Unit
 ) {
     SectionHeading("مركز التحليل الاحترافي", "تحليل متعدد الطبقات للذهب")
     StatusBanner(if (candlesReceived) "تم استلام شموع MT5 للأطر الأربعة" else "لم يتم تأكيد حداثة واكتمال شموع MT5", if (candlesReceived) Green else Gold)
