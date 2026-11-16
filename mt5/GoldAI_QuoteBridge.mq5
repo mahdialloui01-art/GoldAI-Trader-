@@ -16,7 +16,8 @@ input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
 input bool EnableDemoExecution = true;
 input double DemoDailyLossLimitPercent = 10.0;
-input double DemoMaxRiskPerTradePercent = 0.25;\ninput double ManualMaxRiskPerTradePercent = 2.0;
+input double DemoMaxRiskPerTradePercent = 0.25;
+input double ManualMaxRiskPerTradePercent = 2.0;
 input ulong DemoMagicNumber = 26111601;
 input int DemoMaxDeviationPoints = 30;
 input double DemoMaxSpreadPoints = 1000.0;
@@ -40,7 +41,8 @@ int OnInit()
       StringFind(DemoSignalUrl, "https://") != 0 ||
       StringFind(ManualTradeUrl, "https://") != 0 ||
       DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 10.0 ||
-      DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||\n      ManualMaxRiskPerTradePercent <= 0 || ManualMaxRiskPerTradePercent > 2.0 ||
+      DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||
+      ManualMaxRiskPerTradePercent <= 0 || ManualMaxRiskPerTradePercent > 2.0 ||
       BreakEvenTriggerR <= 0 || BreakEvenLockR < 0 || PartialCloseTriggerR <= 0 ||
       PartialClosePercent <= 0 || PartialClosePercent >= 100 || AtrTrailStartR <= 0 || AtrTrailMultiple <= 0 ||
       DemoMaxDeviationPoints < 0 || DemoMaxSpreadPoints <= 0 ||
