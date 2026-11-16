@@ -39,6 +39,8 @@ int OnInit()
       StringFind(DemoSignalUrl, "https://") != 0 ||
       DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 10.0 ||
       DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||
+      BreakEvenTriggerR <= 0 || BreakEvenLockR < 0 || PartialCloseTriggerR <= 0 ||
+      PartialClosePercent <= 0 || PartialClosePercent >= 100 || AtrTrailStartR <= 0 || AtrTrailMultiple <= 0 ||
       DemoMaxDeviationPoints < 0 || DemoMaxSpreadPoints <= 0 ||
       CandleBarsPerTimeframe < 60 || CandleBarsPerTimeframe > 500 ||
       MinQuoteIntervalMilliseconds < 50 || MinQuoteIntervalMilliseconds > 5000)
@@ -477,6 +479,59 @@ void ManageDemoPositions()
    }
 }
 
+void ExportClosedDealsToJournal()
+{
+   datetime now = TimeTradeServer();
+   if(now <= 0) now = TimeCurrent();
+   MqlDateTime day;
+   TimeToStruct(now, day);
+   day.hour = 0; day.min = 0; day.sec = 0;
+   datetime from = StructToTime(day);
+   if(!HistorySelect(from, now)) return;
+
+   int file = FileOpen("GoldAI_TradeJournal.csv", FILE_READ|FILE_WRITE|FILE_CSV|FILE_COMMON, ',');
+   if(file == INVALID_HANDLE)
+   {
+      Print("GoldAI journal: cannot open CSV. error=", GetLastError());
+      return;
+   }
+   if(FileSize(file) == 0)
+      FileWrite(file, "deal_ticket", "position_id", "time", "symbol", "direction", "volume",
+                "price", "profit", "commission", "swap", "reason");
+   FileSeek(file, 0, SEEK_END);
+
+   for(int i = 0; i < HistoryDealsTotal(); i++)
+   {
+      ulong deal = HistoryDealGetTicket(i);
+      if(deal == 0) continue;
+      if(HistoryDealGetString(deal, DEAL_SYMBOL) != RequiredSymbol) continue;
+      if((ulong)HistoryDealGetInteger(deal, DEAL_MAGIC) != DemoMagicNumber) continue;
+      ENUM_DEAL_ENTRY entry = (ENUM_DEAL_ENTRY)HistoryDealGetInteger(deal, DEAL_ENTRY);
+      if(entry != DEAL_ENTRY_OUT && entry != DEAL_ENTRY_OUT_BY && entry != DEAL_ENTRY_INOUT) continue;
+      string key = "GoldAI_JOURNAL_" + IntegerToString((long)deal);
+      if(GlobalVariableCheck(key)) continue;
+
+      ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(deal, DEAL_TYPE);
+      string direction = type == DEAL_TYPE_BUY ? "BUY" : (type == DEAL_TYPE_SELL ? "SELL" : "OTHER");
+      datetime dealTime = (datetime)HistoryDealGetInteger(deal, DEAL_TIME);
+      FileWrite(file,
+         (long)deal,
+         (long)HistoryDealGetInteger(deal, DEAL_POSITION_ID),
+         TimeToString(dealTime, TIME_DATE|TIME_SECONDS),
+         RequiredSymbol,
+         direction,
+         DoubleToString(HistoryDealGetDouble(deal, DEAL_VOLUME), 2),
+         DoubleToString(HistoryDealGetDouble(deal, DEAL_PRICE), (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS)),
+         DoubleToString(HistoryDealGetDouble(deal, DEAL_PROFIT), 2),
+         DoubleToString(HistoryDealGetDouble(deal, DEAL_COMMISSION), 2),
+         DoubleToString(HistoryDealGetDouble(deal, DEAL_SWAP), 2),
+         IntegerToString((int)HistoryDealGetInteger(deal, DEAL_REASON)));
+      GlobalVariableSet(key, 1.0);
+   }
+   FileFlush(file);
+   FileClose(file);
+}
+
 void OnTick()
 {
    if(_Symbol != RequiredSymbol) return;
@@ -498,5 +553,6 @@ void OnTimer()
       lastCandleSend = now;
    }
    ManageDemoPositions();
+   ExportClosedDealsToJournal();
    TryDemoTrade();
 }
