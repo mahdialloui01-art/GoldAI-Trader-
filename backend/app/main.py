@@ -3250,6 +3250,12 @@ def manual_demo_trade_defaults() -> dict:
         raise HTTPException(status_code=503, detail="Waiting for complete MT5 contract/account metadata.")
     if _latest_mt5_candles is None:
         raise HTTPException(status_code=503, detail="Waiting for fresh closed M5 candles from MT5.")
+    candle_received_at = _latest_mt5_candles.get("received_at")
+    if not isinstance(candle_received_at, datetime):
+        raise HTTPException(status_code=503, detail="MT5 candle timestamp is unavailable.")
+    candle_age = (datetime.now(timezone.utc) - candle_received_at.astimezone(timezone.utc)).total_seconds()
+    if candle_age < -30 or candle_age > 180:
+        raise HTTPException(status_code=503, detail="MT5 M5 candles are stale; automatic manual sizing is paused.")
     candles = _latest_mt5_candles["timeframes"].get("M5", [])
     if len(candles) < 15:
         raise HTTPException(status_code=503, detail="At least 15 closed M5 candles are required to calculate manual SL/TP.")
