@@ -14,7 +14,7 @@ def _ready_manual_demo(monkeypatch):
     monkeypatch.setattr(main.settings, "demo_execution_enabled", True)
     monkeypatch.setattr(main.settings, "live_trading_enabled", False)
     monkeypatch.setattr(main.settings, "trading_mode", "paper")
-    monkeypatch.setattr(main.settings, "demo_risk_per_trade_percent", 0.25)
+    monkeypatch.setattr(main.settings, "demo_risk_per_trade_percent", 2.0)
     monkeypatch.setattr(main.settings, "broker_gold_symbol", "GOLD")
     monkeypatch.setattr(main.settings, "max_daily_loss_percent", 10.0)
     main._latest_mt5_quote = {
@@ -41,7 +41,7 @@ def test_manual_demo_request_queues_even_without_analysis_conditions(monkeypatch
     assert body["accepted"] is True
     assert body["queued"] is True
     assert body["direction"] == "BUY"
-    assert body["estimated_risk_percent"] <= 0.25
+    assert body["estimated_risk_percent"] <= 2.0
 
 
 def test_manual_demo_request_rejects_wrong_pin(monkeypatch):
@@ -59,7 +59,7 @@ def test_manual_demo_request_rejects_risk_above_limit(monkeypatch):
     response = client.post(
         "/api/v1/manual/demo/request",
         headers={"X-Manual-Trade-Pin": "A" * 32},
-        json={"direction": "BUY", "lots": 0.10, "stop_loss_points": 1000, "take_profit_points": 2000},
+        json={"direction": "BUY", "lots": 0.30, "stop_loss_points": 1000, "take_profit_points": 2000},
     )
     assert response.status_code == 422
     assert "exceeds" in response.json()["detail"]
