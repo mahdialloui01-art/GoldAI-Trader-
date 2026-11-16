@@ -62,8 +62,17 @@ app = FastAPI(
 )
 
 from .news_reaction import router as news_reaction_router
+from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity
 
 app.include_router(news_reaction_router)
+app.include_router(learning_router)
+
+
+@app.on_event("startup")
+def initialize_learning_database() -> None:
+    # Database outages must not take the market-analysis API offline.
+    # Learning endpoints report unavailable until PostgreSQL is reachable.
+    ensure_learning_schema()
 
 
 class Direction(str, Enum):
@@ -3504,4 +3513,4 @@ async def live_expert_technical_analysis() -> dict:
         "feed_age_seconds": max(0, int((now - _latest_mt5_candles["received_at"]).total_seconds())),
         "closed_candles_only": True,
     }
-    return result
+    save_opportunity(result)\n    return result
