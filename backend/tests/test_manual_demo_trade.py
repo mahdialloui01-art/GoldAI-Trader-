@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.main import app
+from app.main import app, Candle
 
 
 client = TestClient(app)
@@ -114,3 +114,34 @@ def test_manual_demo_queue_discards_expired_request(monkeypatch):
     assert response.status_code == 200
     assert response.json()["available"] is False
     assert response.json()["expired"] is True
+
+
+
+def test_manual_defaults_auto_calculates_lot_sl_tp_at_two_percent(monkeypatch):
+    _ready_manual_demo(monkeypatch)
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    rows = [
+        Candle(time=now, open=2350.0, high=2351.0, low=2349.0, close=2350.0, tick_volume=100)
+        for _ in range(20)
+    ]
+    main._latest_mt5_candles = {
+        "symbol": "GOLD",
+        "timeframes": {"M5": rows},
+        "received_at": datetime.now(timezone.utc),
+    }
+    response = client.get("/api/v1/manual/demo/defaults")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ready"] is True
+    assert body["risk_limit_percent"] == 2.0
+    assert body["stop_loss_points"] > 0
+    assert body["take_profit_points"] == body["stop_loss_points"] * 2
+    assert body["recommended_lots"] >= 0.01
+    assert body["estimated_risk_percent"] <= 2.0
+
+
+def test_manual_defaults_fail_closed_without_fresh_candles(monkeypatch):
+    _ready_manual_demo(monkeypatch)
+    main._latest_mt5_candles = None
+    response = client.get("/api/v1/manual/demo/defaults")
+    assert response.status_code == 503
