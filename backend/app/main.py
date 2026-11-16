@@ -2990,6 +2990,13 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
         for frame in frames
     }
     reports_by_timeframe = {frame: reports.get(frame, {}) for frame in frames}
+    m5_atr = float((reports.get("M5") or {}).get("atr14") or 0.0)
+    quote = _fresh_mt5_quote()
+    spread_price = float(quote.get("spread_points") or 0.0) * float(quote.get("point") or 0.0)
+    spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else 1.0
+    strategy_scan = _classify_entry_setups(
+        str(analysis.get("decision", "WAIT")), series, reports, spread_atr_ratio
+    )
     return {
         "symbol": _latest_mt5_candles["symbol"],
         "source": _latest_mt5_candles["source"],
@@ -3001,6 +3008,7 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
         "confluence_grade": dossier.get("confluence_grade"),
         "dominant_technical_direction": dossier.get("dominant_technical_direction"),
         "setup_plan": analysis.get("setup_plan"),
+        "strategy_scan": strategy_scan,
         "candles_by_timeframe": candles_by_timeframe,
         "reports_by_timeframe": reports_by_timeframe,
         "limitations": dossier.get("limitations", []),
