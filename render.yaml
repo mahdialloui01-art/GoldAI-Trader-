@@ -28,7 +28,7 @@ services:
         sync: false
       - key: MAX_RISK_PER_TRADE_PERCENT
         value: "0.25"
-      - key: MAX_DAILY_LOSS_PERCENT
+      - key: DEMO_RISK_PER_TRADE_PERCENT\n        value: "2.0"\n      - key: MAX_DAILY_LOSS_PERCENT
         value: "10.0"
       - key: BROKER_GOLD_SYMBOL
         value: GOLD
