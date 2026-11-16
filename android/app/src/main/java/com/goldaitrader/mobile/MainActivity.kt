@@ -286,7 +286,10 @@ class MainActivity : ComponentActivity() {
                 }
                 chartRowsByFrame = parsedRows
                 chartReportsByFrame = parsedReports
-                chartMeta = "القرار: \${chart.optString("decision", "WAIT")}  •  التوافق: \${chart.optString("confluence_score", "—")}/100  •  \${chart.optString("confluence_grade", "غير محدد")}"
+                val decision = chart.optString("decision", "WAIT")
+                val score = chart.optString("confluence_score", "—")
+                val grade = chart.optString("confluence_grade", "غير محدد")
+                chartMeta = "القرار: $decision  •  التوافق: $score/100  •  $grade"
             } catch (_: Exception) {
                 chartRowsByFrame = emptyMap()
                 chartReportsByFrame = emptyMap()
