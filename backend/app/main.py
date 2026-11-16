@@ -2767,6 +2767,44 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     }
 
 
+@app.get("/api/v1/analysis/chart")
+async def live_analysis_chart(timeframe: str = "ALL") -> dict:
+    """Return real, closed MT5 OHLC candles and their matching expert reports for charting."""
+    requested = timeframe.upper().strip()
+    allowed = {"M5", "M15", "H1", "H4", "ALL"}
+    if requested not in allowed:
+        raise HTTPException(status_code=400, detail="timeframe must be M5, M15, H1, H4 or ALL.")
+    # Reuse the same freshness and integrity checks as the live expert endpoint.
+    analysis = await live_expert_technical_analysis()
+    if _latest_mt5_candles is None:
+        raise HTTPException(status_code=503, detail="Waiting for authenticated MT5 candles.")
+    series = _latest_mt5_candles["timeframes"]
+    dossier = analysis.get("technical_dossier") or {}
+    reports = dossier.get("timeframes") or {}
+    frames = list(series.keys()) if requested == "ALL" else [requested]
+    candles_by_timeframe = {
+        frame: [bar.model_dump(mode="json") for bar in series[frame][-100:]]
+        for frame in frames
+    }
+    reports_by_timeframe = {frame: reports.get(frame, {}) for frame in frames}
+    return {
+        "symbol": _latest_mt5_candles["symbol"],
+        "source": _latest_mt5_candles["source"],
+        "received_at": _latest_mt5_candles["received_at"],
+        "closed_candles_only": True,
+        "decision": analysis.get("decision", "WAIT"),
+        "blockers": analysis.get("blockers", []),
+        "confluence_score": dossier.get("confluence_score"),
+        "confluence_grade": dossier.get("confluence_grade"),
+        "dominant_technical_direction": dossier.get("dominant_technical_direction"),
+        "setup_plan": analysis.get("setup_plan"),
+        "candles_by_timeframe": candles_by_timeframe,
+        "reports_by_timeframe": reports_by_timeframe,
+        "limitations": dossier.get("limitations", []),
+        "execution_enabled": False,
+    }
+
+
 # Authenticated MT5 candle cache. It is intentionally in-memory: after a server
 # restart the API waits for a fresh complete batch instead of reusing stale bars.
 _latest_mt5_candles: dict | None = None
