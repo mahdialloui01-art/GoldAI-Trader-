@@ -3,6 +3,7 @@ package com.goldaitrader.mobile
 import android.os.Bundle
 import android.content.Intent
 import android.os.Build
+import android.content.pm.PackageManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.lifecycle.lifecycleScope
@@ -75,6 +76,10 @@ class MainActivity : ComponentActivity() {
             startForegroundService(Intent(this, MarketMonitorService::class.java))
         } else {
             startService(Intent(this, MarketMonitorService::class.java))
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7402)
         }
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(
