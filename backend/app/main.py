@@ -1633,37 +1633,74 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
         )),
     }
     directions = {frame: result["direction"] for frame, result in analyses.items()}
-    entry = directions["M5"]
     reasons: list[str] = []
 
-    if entry == Direction.WAIT:
-        final_direction = Direction.WAIT
-        reasons.append("إطار M5 لا يقدم نقطة دخول مؤكدة.")
-    elif any(direction != entry for direction in directions.values()):
-        final_direction = Direction.WAIT
-        reasons.append("تعارض بين M5 وM15 وH1 وH4؛ تم إلغاء الإشارة حتى تتوافق جميع الأطر.")
+    # Role-based alignment: H4/H1 establish the bias, M15 validates structure,
+    # and M5 remains the mandatory entry trigger. M15 may be technically neutral
+    # only when its confirmed price structure independently supports the bias.
+    higher_bias = directions["H4"]
+    h1_bias = directions["H1"]
+    m15_direction = directions["M15"]
+    m5_trigger = directions["M5"]
+    final_direction = Direction.WAIT
+    alignment_details = {
+        "higher_timeframe_bias": higher_bias.value if isinstance(higher_bias, Direction) else str(higher_bias),
+        "h1_confirms_h4": h1_bias == higher_bias and higher_bias in (Direction.BUY, Direction.SELL),
+        "m15_technical_direction": m15_direction.value if isinstance(m15_direction, Direction) else str(m15_direction),
+        "m5_entry_trigger": m5_trigger.value if isinstance(m5_trigger, Direction) else str(m5_trigger),
+        "policy": "H4+H1 bias; M15 direction or confirmed structure; M5 trigger required",
+    }
+
+    if higher_bias not in (Direction.BUY, Direction.SELL) or h1_bias != higher_bias:
+        reasons.append("H4 وH1 لا يحددان اتجاهاً واحداً مؤكداً؛ لا توجد أفضلية إطار أعلى.")
+    elif m5_trigger != higher_bias:
+        reasons.append("إشارة M5 لا تؤكد اتجاه H4/H1؛ ننتظر محفز دخول واضحاً على M5.")
+    elif m15_direction == higher_bias:
+        final_direction = higher_bias
+        reasons.append("H4 وH1 متوافقان، وM15 يؤكد الاتجاه، وM5 يعطي محفز الدخول.")
+    elif m15_direction == Direction.WAIT:
+        m15_structure = _price_action_analysis(request.m15, 3, 3, 0.12)
+        m15_events = m15_structure.get("events", [])
+        structure_matches = (
+            (higher_bias == Direction.BUY and (
+                m15_structure.get("market_structure") == "UPTREND"
+                or "BULLISH_BREAK_OF_STRUCTURE" in m15_events
+            ))
+            or (higher_bias == Direction.SELL and (
+                m15_structure.get("market_structure") == "DOWNTREND"
+                or "BEARISH_BREAK_OF_STRUCTURE" in m15_events
+            ))
+        )
+        alignment_details["m15_structure"] = m15_structure.get("market_structure")
+        alignment_details["m15_structure_confirms"] = bool(structure_matches)
+        if structure_matches:
+            final_direction = higher_bias
+            reasons.append("M15 محايد بالمؤشرات لكنه يؤكد الاتجاه عبر بنية السعر؛ وM5 أعطى محفز الدخول.")
+        else:
+            reasons.append("M15 محايد ولا توجد بنية سعر مؤكدة تدعم اتجاه H4/H1.")
     else:
-        final_direction = entry
-        reasons.append("توافق M5 للدخول وM15 للتأكيد وH1 للاتجاه وH4 للسياق العام.")
+        reasons.append("M15 يعاكس اتجاه H4/H1؛ تم رفض الإشارة رغم توافق بقية الأطر.")
 
     if any(result["spread_atr_ratio"] > 0.15 for result in analyses.values()):
         final_direction = Direction.WAIT
-        reasons.append("فلتر السبريد منع الصفقة في إطار واحد على الأقل.")
+        reasons.append("فلتر السبريد منع الصفقة لأن تكلفته مرتفعة مقارنة بتذبذب أحد الأطر.")
 
     confidence_score = 0
     if final_direction != Direction.WAIT:
-        confidence_score = min(
-            85,
-            round(sum(result["confidence_score"] for result in analyses.values()) / len(analyses)),
-        )
+        confidence_weights = {"M5": 0.35, "M15": 0.25, "H1": 0.20, "H4": 0.20}
+        confidence_score = min(85, round(sum(
+            float(analyses[frame]["confidence_score"]) * weight
+            for frame, weight in confidence_weights.items()
+        )))
 
     return {
         "symbol": settings.broker_gold_symbol.upper(),
         "direction": final_direction,
         "confidence_score": confidence_score,
-        "confidence_note": "مؤشر توافق داخلي غير معاير، وليس احتمال نجاح الصفقة.",
+        "confidence_note": "مؤشر توافق داخلي موزون حسب دور الإطار؛ ليس احتمال نجاح أو نسبة ربح.",
         "timeframes": analyses,
         "alignment": directions,
+        "alignment_details": alignment_details,
         "reasons": reasons,
         "execution_enabled": False,
         "generated_at": datetime.now(timezone.utc),
