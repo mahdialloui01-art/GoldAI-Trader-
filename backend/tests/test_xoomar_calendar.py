@@ -84,6 +84,15 @@ def test_optional_api_key_is_sent_only_as_header(monkeypatch):
     assert "secret-test-key" not in str(FakeClient.request[1])
 
 
+def test_accepts_calendar_updated_within_72_hours(monkeypatch):
+    FakeClient.payload = envelope([], datetime.now(timezone.utc) - timedelta(hours=55))
+    monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
+
+    result = asyncio.run(xoomar_calendar.load_xoomar_high_impact_events())
+
+    assert result == []
+
+
 def test_rejects_stale_calendar(monkeypatch):
     FakeClient.payload = envelope([], datetime.now(timezone.utc) - timedelta(days=4))
     monkeypatch.setattr(xoomar_calendar.httpx, "AsyncClient", FakeClient)
