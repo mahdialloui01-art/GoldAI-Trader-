@@ -10,14 +10,16 @@ client = TestClient(app)
 
 
 def _candles(count: int, step_seconds: int) -> list[dict]:
-    now = datetime.now(timezone.utc)
+    now_epoch = int(datetime.now(timezone.utc).timestamp())
+    latest_closed_epoch = (now_epoch // step_seconds - 1) * step_seconds
+    latest_closed_bar = datetime.fromtimestamp(latest_closed_epoch, tz=timezone.utc)
     rows = []
     base = 2300.0
     for index in range(count):
         close = base + index * 0.08 + math.sin(index / 2.5) * 0.25
         open_price = close - 0.04
         rows.append({
-            "time": (now - timedelta(seconds=(count - index - 1) * step_seconds + 20)).isoformat(),
+            "time": (latest_closed_bar - timedelta(seconds=(count - index - 1) * step_seconds)).isoformat(),
             "open": open_price,
             "high": max(open_price, close) + 0.18,
             "low": min(open_price, close) - 0.18,
@@ -177,7 +179,11 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
         "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
     }
 
-    async def fake_gold_decision(request):
+    async def fake_gold_decision(request, *, allow_h4_session_gap=False):
+        assert allow_h4_session_gap is True
+        mtf = main.multi_timeframe_analysis(
+            request, allow_h4_session_gap=allow_h4_session_gap
+        )
         timeframes = {
             frame: {
                 "direction": "BUY",
@@ -190,7 +196,7 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
             "status": "NO_TRADE",
             "blockers": ["NEWS_BLACKOUT"],
             "reasons": ["News filter blocked the candidate."],
-            "components": {"multi_timeframe": {"timeframes": timeframes}},
+            "components": {"multi_timeframe": mtf},
             "policy": {"mode": "PAPER_ONLY", "live_trading_enabled": False, "execution_enabled": False},
         }
 
@@ -200,7 +206,15 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
         "m5": _candles(80, 300),
         "m15": _candles(80, 900),
         "h1": _candles(80, 3600),
-        "h4": _candles(80, 14400),
+        "h4": [
+            {
+                **candle,
+                "time": (
+                    datetime.fromisoformat(candle["time"]) - timedelta(days=3)
+                ).isoformat(),
+            }
+            for candle in _candles(80, 14400)
+        ],
     }
     accepted = client.post(
         "/api/v1/mt5/candles",
@@ -210,6 +224,7 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["accepted"] is True
     assert accepted.json()["candle_counts"] == {"M5": 80, "M15": 80, "H1": 80, "H4": 80}
+    assert accepted.json()["data_quality"]["H4"]["h4_session_reopen_gap"] is True
 
     live = client.get("/api/v1/analysis/expert/live")
     assert live.status_code == 200, live.text
