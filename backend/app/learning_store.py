@@ -113,10 +113,11 @@ def save_opportunity(analysis: dict[str, Any]) -> bool:
         }
         fingerprint_source = {
             "symbol": symbol,
-            "created": created.isoformat(),
             "decision": decision,
             "blockers": blockers,
-            "candle_counts": market.get("candle_counts", {}),
+            "latest_candle_times": market.get("latest_candle_times", {}),
+            "confluence_score": dossier.get("confluence_score"),
+            "strategy": plan.get("strategy") or dossier.get("setup_type"),
         }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_source, sort_keys=True, default=str).encode("utf-8")
@@ -192,12 +193,18 @@ def learning_summary() -> dict:
     try:
         with _connect() as conn:
             trades = conn.execute("""
+                WITH positions AS (
+                    SELECT position_id, SUM(profit + commission + swap) AS net_result
+                    FROM trade_journal
+                    WHERE symbol = 'GOLD'
+                    GROUP BY position_id
+                )
                 SELECT COUNT(*) AS total,
-                       COUNT(*) FILTER (WHERE profit + commission + swap > 0) AS wins,
-                       COUNT(*) FILTER (WHERE profit + commission + swap < 0) AS losses,
-                       COALESCE(SUM(profit + commission + swap), 0) AS net_profit,
-                       COALESCE(AVG(profit + commission + swap), 0) AS expectancy
-                FROM trade_journal WHERE symbol = 'GOLD'
+                       COUNT(*) FILTER (WHERE net_result > 0) AS wins,
+                       COUNT(*) FILTER (WHERE net_result < 0) AS losses,
+                       COALESCE(SUM(net_result), 0) AS net_profit,
+                       COALESCE(AVG(net_result), 0) AS expectancy
+                FROM positions
             """).fetchone()
             opportunities = conn.execute("""
                 SELECT COUNT(*) AS total,
