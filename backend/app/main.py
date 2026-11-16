@@ -942,6 +942,7 @@ class Candle(BaseModel):
 class BacktestRequest(BaseModel):
     symbol: str = "GOLD"
     timeframe: str = "M15"
+    strategy: str = Field(default="EMA_TREND", pattern="^(EMA_TREND|PULLBACK|BREAKOUT|LIQUIDITY_SWEEP)$")
     candles: list[Candle] = Field(min_length=100, max_length=5000)
     initial_balance: float = Field(default=10_000, gt=0)
     lots: float = Field(default=0.1, gt=0)
@@ -1406,12 +1407,34 @@ def run_backtest(request: BacktestRequest) -> dict:
         if position is None and index < len(candles) - 1 and atr[index] and rsi[index] is not None:
             ema_fast_value = ema20[index - 19]
             ema_slow_value = ema50[index - 49]
-            if ema_fast_value > ema_slow_value and 52 <= rsi[index] <= 68:
-                pending = {"direction": "BUY", "atr": atr[index]}
-            elif ema_fast_value < ema_slow_value and 32 <= rsi[index] <= 48:
-                pending = {"direction": "SELL", "atr": atr[index]}
-            else:
-                pending = None
+            direction = None
+            if request.strategy == "EMA_TREND":
+                if ema_fast_value > ema_slow_value and 52 <= rsi[index] <= 68:
+                    direction = "BUY"
+                elif ema_fast_value < ema_slow_value and 32 <= rsi[index] <= 48:
+                    direction = "SELL"
+            elif request.strategy == "PULLBACK":
+                extension = abs(candle.close - ema_fast_value) / atr[index] if atr[index] else float("inf")
+                if extension <= 0.45 and candle.close > candle.open and ema_fast_value > ema_slow_value and rsi[index] >= 50:
+                    direction = "BUY"
+                elif extension <= 0.45 and candle.close < candle.open and ema_fast_value < ema_slow_value and rsi[index] <= 50:
+                    direction = "SELL"
+            elif request.strategy in ("BREAKOUT", "LIQUIDITY_SWEEP"):
+                prefix = candles[:index + 1]
+                pa = _price_action_analysis(prefix, 3, 3, 0.12) if len(prefix) >= 60 else {}
+                events = set(pa.get("events", []))
+                micro = _candle_microstructure_analysis(prefix) if len(prefix) >= 60 else {}
+                if request.strategy == "BREAKOUT":
+                    if "BULLISH_BREAK_OF_STRUCTURE" in events and ema_fast_value >= ema_slow_value:
+                        direction = "BUY"
+                    elif "BEARISH_BREAK_OF_STRUCTURE" in events and ema_fast_value <= ema_slow_value:
+                        direction = "SELL"
+                else:
+                    if "SELL_SIDE_LIQUIDITY_SWEEP" in events and micro.get("impulse_direction") == "BULLISH":
+                        direction = "BUY"
+                    elif "BUY_SIDE_LIQUIDITY_SWEEP" in events and micro.get("impulse_direction") == "BEARISH":
+                        direction = "SELL"
+            pending = {"direction": direction, "atr": atr[index]} if direction else None
 
     if position is not None:
         last_index = len(candles) - 1
@@ -1430,7 +1453,7 @@ def run_backtest(request: BacktestRequest) -> dict:
     return {
         "symbol": settings.broker_gold_symbol.upper(),
         "timeframe": timeframe,
-        "strategy": "EMA20/EMA50 trend with Wilder RSI confirmation; ATR stop and fixed reward/risk target",
+        "strategy": request.strategy,\n        "strategy_description": {\n            "EMA_TREND": "EMA20/EMA50 with Wilder RSI confirmation",\n            "PULLBACK": "EMA20 retest within 0.45 ATR with directional candle",\n            "BREAKOUT": "Confirmed BOS close with EMA trend filter",\n            "LIQUIDITY_SWEEP": "Confirmed opposing-liquidity sweep with directional impulse",\n        }[request.strategy],\n        "execution_model": "Signal on closed candle; enter at following candle open; stop-first when SL and TP touch in same bar",
         "trade_count": len(trades),
         "wins": len(wins),
         "losses": len(losses),
