@@ -24,8 +24,33 @@ def test_demo_gate_accepts_high_confluence_confirmed_setup():
     assert details["selected_strategy"] == "PULLBACK"
 
 
-def test_demo_gate_rejects_confluence_below_85():
+def test_demo_gate_rejects_pullback_below_85():
     passed, reason, details = _demo_candidate_quality_gate(_analysis(score=84.99))
+    assert passed is False
+    assert "85/100" in reason
+
+
+def test_demo_gate_accepts_fully_confirmed_breakout_at_82():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=82.0, strategy="BREAKOUT", setup_score=5)
+    )
+    assert passed is True
+    assert details["minimum_confluence_score"] == 82.0
+    assert details["threshold_profile"] == "STRUCTURAL_FULL_CONFIRMATION"
+
+
+def test_demo_gate_rejects_breakout_below_82():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=81.99, strategy="BREAKOUT", setup_score=5)
+    )
+    assert passed is False
+    assert "82/100" in reason
+
+
+def test_demo_gate_keeps_partial_breakout_at_85():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=84.99, strategy="BREAKOUT", setup_score=4)
+    )
     assert passed is False
     assert "85/100" in reason
 
