@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
+    manual_trade_pin: str = ""  # Required for authenticated manual DEMO requests from the Android app.
     broker_gold_symbol: str = "GOLD"
     economic_calendar_api_key: str = ""  # Legacy key for point-in-time historical imports only.
     xoomar_api_key: str = ""  # Optional; keyless calendar access is supported.
@@ -110,6 +111,22 @@ class SignalResponse(BaseModel):
     reasons: list[str]
     generated_at: datetime
     disclaimer: str = "Analytical signal only; not a guarantee of profit."
+
+
+class ManualDemoTradeRequest(BaseModel):
+    direction: Direction
+    lots: float = Field(gt=0, le=100)
+    stop_loss_points: float = Field(gt=0, le=10_000_000)
+    take_profit_points: float = Field(gt=0, le=10_000_000)
+
+
+_manual_trade_queue: list[dict] = []
+
+
+def _require_manual_trade_pin(pin: str | None) -> None:
+    configured = settings.manual_trade_pin.strip()
+    if len(configured) < 16 or not pin or not secrets.compare_digest(pin, configured):
+        raise HTTPException(status_code=401, detail="Manual trading is not configured or the security PIN is invalid.")
 
 
 class RiskCheckRequest(BaseModel):
@@ -3201,6 +3218,76 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
         "setup_score": setup_score,
         "setup_max_score": setup_max,
     }
+
+
+@app.post("/api/v1/manual/demo/request")
+def request_manual_demo_trade(
+    request: ManualDemoTradeRequest,
+    x_manual_trade_pin: str | None = Header(default=None),
+) -> dict:
+    """Queue a user-confirmed DEMO order; the MT5 EA remains the only executor."""
+    _require_manual_trade_pin(x_manual_trade_pin)
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper":
+        raise HTTPException(status_code=503, detail="Manual trading is locked unless the global account mode is DEMO/PAPER.")
+    if not settings.demo_execution_enabled:
+        raise HTTPException(status_code=503, detail="DEMO execution is disabled on the server.")
+    if request.direction == Direction.WAIT:
+        raise HTTPException(status_code=422, detail="Choose BUY or SELL.")
+    quote = _fresh_mt5_quote()
+    required = ("tick_size", "tick_value_loss", "volume_min", "volume_max", "volume_step", "account_equity")
+    if any(quote.get(key) is None for key in required):
+        raise HTTPException(status_code=503, detail="Waiting for complete MT5 contract/account metadata.")
+    step = Decimal(str(quote["volume_step"]))
+    normalized_steps = (Decimal(str(request.lots)) / step).to_integral_value(rounding=ROUND_DOWN)
+    lots = float(normalized_steps * step)
+    if lots < quote["volume_min"] or lots > quote["volume_max"] or abs(lots - request.lots) > 1e-8:
+        raise HTTPException(status_code=422, detail="Lot size must match XM minimum, maximum and volume step.")
+    stop_price_distance = request.stop_loss_points * quote["point"]
+    loss_per_lot = (stop_price_distance / quote["tick_size"]) * quote["tick_value_loss"]
+    risk_amount = lots * loss_per_lot
+    equity = float(quote["account_equity"])
+    risk_percent = risk_amount / equity * 100 if equity > 0 else float("inf")
+    if not math.isfinite(risk_percent) or risk_percent > settings.demo_risk_per_trade_percent + 1e-9:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Requested lot/stop risks {risk_percent:.3f}% which exceeds the {settings.demo_risk_per_trade_percent:.2f}% DEMO limit. Reduce lots or widen the stop.",
+        )
+    if len(_manual_trade_queue) >= 5:
+        raise HTTPException(status_code=429, detail="Manual order queue is full; wait for MT5 to collect pending requests.")
+    command_id = secrets.token_urlsafe(12)
+    command = {
+        "id": command_id,
+        "symbol": settings.broker_gold_symbol.upper(),
+        "direction": request.direction.value,
+        "lots": lots,
+        "stop_loss_points": request.stop_loss_points,
+        "take_profit_points": request.take_profit_points,
+        "risk_percent": round(risk_percent, 4),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _manual_trade_queue.append(command)
+    return {
+        "accepted": True, "queued": True, "command_id": command_id,
+        "direction": command["direction"], "lots": lots,
+        "estimated_risk_percent": round(risk_percent, 4),
+        "message": "Manual DEMO request queued. The MT5 EA must collect and accept it before an order exists.",
+    }
+
+
+@app.get("/api/v1/mt5/manual/next")
+def get_next_manual_demo_trade(authorization: str | None = Header(default=None)) -> dict:
+    """Deliver one queued manual command to the authenticated MT5 bridge."""
+    expected = settings.mt5_bridge_token
+    if not expected or not authorization or not secrets.compare_digest(
+        authorization.removeprefix("Bearer ").strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.demo_execution_enabled:
+        return {"available": False, "reason": "DEMO execution is locked."}
+    if not _manual_trade_queue:
+        return {"available": False}
+    command = _manual_trade_queue.pop(0)
+    return {"available": True, **command}
 
 
 @app.get("/api/v1/mt5/demo/signal")
