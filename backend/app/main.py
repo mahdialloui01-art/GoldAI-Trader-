@@ -2583,6 +2583,10 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         rsi = float(indicators.get("rsi14_wilder", 50.0))
         histogram = float(indicators.get("macd_histogram", 0.0))
         adx = float(regime["indicators"]["adx14_wilder"])
+        atr_value = float(regime["indicators"]["atr14_wilder"])
+        last_close = float(candles[-1].close)
+        ema20_value = float(indicators.get("ema20", last_close))
+        extension_atr = abs(last_close - ema20_value) / atr_value if atr_value > 0 else 0.0
         frame_score = 0.0
         evidence: list[str] = []
 
@@ -2655,7 +2659,12 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "market_regime": regime["market_regime"],
             "adx14": regime["indicators"]["adx14_wilder"],
             "atr14": regime["indicators"]["atr14_wilder"],
+            "atr_vs_recent_median": regime["indicators"]["atr_vs_recent_median"],
             "rsi14": round(rsi, 2),
+            "ema20": round(ema20_value, 5),
+            "ema50": round(float(indicators.get("ema50", last_close)), 5),
+            "price_extension_from_ema20_atr": round(extension_atr, 3),
+            "extension_state": "OVEREXTENDED" if extension_atr > 1.5 else "EXTENDED" if extension_atr > 1.0 else "NORMAL",
             "macd_histogram": round(histogram, 6),
             "market_structure": structure["market_structure"],
             "confirmed_events": structure["events"],
@@ -2686,6 +2695,37 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         blockers.append("SPREAD_TOO_HIGH_FOR_M5_VOLATILITY")
         reasons.append("السبريد مرتفع مقارنة بتذبذب M5؛ تم منع إعداد الدخول.")
         decision = "WAIT"
+
+    # Entry-quality controls: avoid chasing an extended M5 move or entering
+    # when the trigger candle is already statistically stretched from EMA20.
+    m5_report = frame_reports["M5"]
+    m5_extension = float(m5_report["price_extension_from_ema20_atr"])
+    if m5_extension > 1.5:
+        blockers.append("M5_PRICE_OVEREXTENDED")
+        reasons.append("السعر مبتعد أكثر من 1.5 ATR عن EMA20 على M5؛ لا نطارد الحركة وننتظر إعادة اختبار.")
+        decision = "WAIT"
+    elif m5_extension > 1.0:
+        reasons.append("تحذير: السعر ممتد عن EMA20 على M5؛ جودة الدخول أقل ويُفضّل انتظار إعادة الاختبار.")
+
+    if m5_report["market_regime"] == "HIGH_VOLATILITY":
+        blockers.append("M5_EXTREME_VOLATILITY")
+        reasons.append("تقلب M5 مرتفع مقارنة بمتوسطه؛ تم إيقاف الدخول حتى تهدأ الحركة.")
+        decision = "WAIT"
+
+    m5_rsi = float(m5_report["rsi14"])
+    if decision == "BUY" and m5_rsi >= 72:
+        blockers.append("M5_BUY_CHASING_OVERBOUGHT")
+        reasons.append("RSI على M5 وصل لمنطقة تشبع شرائي؛ لا نطارد الشراء.")
+        decision = "WAIT"
+    elif decision == "SELL" and m5_rsi <= 28:
+        blockers.append("M5_SELL_CHASING_OVERSOLD")
+        reasons.append("RSI على M5 وصل لمنطقة تشبع بيعي؛ لا نطارد البيع.")
+        decision = "WAIT"
+
+    # Quantify directional agreement independently from the confluence score.
+    directional_frames = [frame_reports[name]["direction"] for name in ("M5", "M15", "H1", "H4")]
+    agreement_count = sum(value == expert_direction for value in directional_frames) if expert_direction != "WAIT" else 0
+    agreement_percent = round(agreement_count / len(directional_frames) * 100, 1)
 
     setup_plan = None
     if decision in ("BUY", "SELL"):
@@ -2740,6 +2780,18 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "dominant_technical_direction": expert_direction,
             "timeframes": frame_reports,
             "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4),
+            "directional_timeframe_agreement_percent": agreement_percent,
+            "entry_quality": {
+                "m5_price_extension_from_ema20_atr": round(m5_extension, 3),
+                "m5_extension_limit_atr": 1.5,
+                "m5_rsi14": round(m5_rsi, 2),
+                "m5_volatility_regime": m5_report["market_regime"],
+                "spread_to_atr_ratio": round(spread_atr_ratio, 4),
+                "anti_chasing_passed": m5_extension <= 1.5 and not (
+                    (decision == "BUY" and m5_rsi >= 72) or
+                    (decision == "SELL" and m5_rsi <= 28)
+                ),
+            },
             "methodology": [
                 "EMA/RSI/MACD technical direction",
                 "Wilder ADX and ATR market regime",
@@ -2747,12 +2799,16 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
                 "equal highs/lows, FVG and heuristic order-block candidates",
                 "closed-candle impulse, EMA slope/separation and optional tick-volume confirmation",
                 "weighted M5/M15/H1/H4 confluence",
-                "broker spread and existing macro/news fail-closed gates",
+                "broker spread normalized by M5 ATR",
+                "anti-chasing entry filter using M5 EMA20 extension, ATR and RSI extremes",
+                "separate timeframe agreement and confluence diagnostics",
+                "macro context and news advisory/risk gates",
             ],
             "limitations": [
                 "Order blocks and liquidity events are rule-based chart candidates, not verified institutional order flow.",
                 "Confluence score is not a win probability and has not been calibrated against out-of-sample XM GOLD returns.",
                 "Only the supplied closed broker candles are analyzed; this endpoint does not create an independent candle feed.",
+                "The anti-chasing thresholds are deterministic heuristics and require walk-forward validation; they are not calibrated probabilities.",
             ],
         },
         "setup_plan": setup_plan,
