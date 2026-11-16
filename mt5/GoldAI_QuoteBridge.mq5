@@ -19,6 +19,13 @@ input double DemoMaxRiskPerTradePercent = 0.25;
 input ulong DemoMagicNumber = 26111601;
 input int DemoMaxDeviationPoints = 30;
 input double DemoMaxSpreadPoints = 1000.0;
+input bool EnableDemoPositionManagement = true;
+input double BreakEvenTriggerR = 1.0;
+input double BreakEvenLockR = 0.05;
+input double PartialCloseTriggerR = 1.5;
+input double PartialClosePercent = 50.0;
+input double AtrTrailStartR = 2.0;
+input double AtrTrailMultiple = 1.5;
 
 datetime lastCandleSend = 0;
 ulong lastQuoteSendMs = 0;
@@ -368,6 +375,108 @@ void TryDemoTrade()
             " ", trade.ResultRetcodeDescription());
 }
 
+double PositionRMultiple(ulong ticket, double entry, double current, double initialRisk, long positionType)
+{
+   if(initialRisk <= 0) return 0.0;
+   double favorable = positionType == POSITION_TYPE_BUY ? current - entry : entry - current;
+   return favorable / initialRisk;
+}
+
+string TicketGlobalKey(ulong ticket, string suffix)
+{
+   return "GoldAI_" + IntegerToString((long)ticket) + "_" + suffix;
+}
+
+void ManageDemoPositions()
+{
+   if(!EnableDemoPositionManagement || !IsDemoAccount() || _Symbol != RequiredSymbol) return;
+   int atrHandle = iATR(RequiredSymbol, PERIOD_M5, 14);
+   if(atrHandle == INVALID_HANDLE) return;
+   double atrBuffer[];
+   ArraySetAsSeries(atrBuffer, true);
+   bool atrReady = CopyBuffer(atrHandle, 0, 1, 1, atrBuffer) == 1 && atrBuffer[0] > 0;
+   IndicatorRelease(atrHandle);
+   double atr = atrReady ? atrBuffer[0] : 0.0;
+   double point = SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
+   int digits = (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS);
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if(PositionGetString(POSITION_SYMBOL) != RequiredSymbol) continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != DemoMagicNumber) continue;
+
+      long type = PositionGetInteger(POSITION_TYPE);
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double stop = PositionGetDouble(POSITION_SL);
+      double target = PositionGetDouble(POSITION_TP);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double current = type == POSITION_TYPE_BUY ?
+         SymbolInfoDouble(RequiredSymbol, SYMBOL_BID) : SymbolInfoDouble(RequiredSymbol, SYMBOL_ASK);
+      if(current <= 0 || entry <= 0 || stop <= 0 || volume <= 0) continue;
+
+      string riskKey = TicketGlobalKey(ticket, "RISK");
+      string partialKey = TicketGlobalKey(ticket, "PARTIAL");
+      double initialRisk = GlobalVariableCheck(riskKey) ? GlobalVariableGet(riskKey) : MathAbs(entry - stop);
+      if(initialRisk <= point) continue;
+      if(!GlobalVariableCheck(riskKey)) GlobalVariableSet(riskKey, initialRisk);
+      double r = PositionRMultiple(ticket, entry, current, initialRisk, type);
+      double newStop = stop;
+
+      // Break-even: only tighten risk, never widen the original stop.
+      if(r >= BreakEvenTriggerR)
+      {
+         double be = type == POSITION_TYPE_BUY ?
+            entry + initialRisk * BreakEvenLockR : entry - initialRisk * BreakEvenLockR;
+         if(type == POSITION_TYPE_BUY && be > newStop && be < current)
+            newStop = be;
+         if(type == POSITION_TYPE_SELL && be < newStop && be > current)
+            newStop = be;
+      }
+
+      // Partial close once per ticket. Respect the broker's volume step and minimum.
+      if(r >= PartialCloseTriggerR &&
+         (!GlobalVariableCheck(partialKey) || GlobalVariableGet(partialKey) < 1.0))
+      {
+         double step = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
+         double minVolume = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
+         double closeVolume = step > 0 ? MathFloor((volume * PartialClosePercent / 100.0) / step) * step : 0.0;
+         closeVolume = NormalizeDouble(closeVolume, 8);
+         if(closeVolume >= minVolume && volume - closeVolume >= minVolume)
+         {
+            if(trade.PositionClosePartial(ticket, closeVolume))
+            {
+               GlobalVariableSet(partialKey, 1.0);
+               Print("GoldAI DEMO partial close: ticket=", ticket, " volume=", DoubleToString(closeVolume, 2));
+            }
+         }
+         else
+            GlobalVariableSet(partialKey, 1.0); // Too small to split safely; do not retry every timer tick.
+      }
+
+      // ATR trailing starts only after the trade has moved at least 2R in favor.
+      if(atr > 0 && r >= AtrTrailStartR)
+      {
+         double trail = type == POSITION_TYPE_BUY ? current - atr * AtrTrailMultiple : current + atr * AtrTrailMultiple;
+         if(type == POSITION_TYPE_BUY && trail > newStop && trail < current)
+            newStop = trail;
+         if(type == POSITION_TYPE_SELL && trail < newStop && trail > current)
+            newStop = trail;
+      }
+
+      newStop = NormalizeDouble(newStop, digits);
+      if(MathAbs(newStop - stop) >= point &&
+         ((type == POSITION_TYPE_BUY && newStop > stop && newStop < current) ||
+          (type == POSITION_TYPE_SELL && newStop < stop && newStop > current)))
+      {
+         if(trade.PositionModify(ticket, newStop, target))
+            Print("GoldAI DEMO managed stop: ticket=", ticket, " SL=", DoubleToString(newStop, digits),
+                  " R=", DoubleToString(r, 2));
+      }
+   }
+}
+
 void OnTick()
 {
    if(_Symbol != RequiredSymbol) return;
@@ -388,5 +497,6 @@ void OnTimer()
       SendCandleBatch();
       lastCandleSend = now;
    }
+   ManageDemoPositions();
    TryDemoTrade();
 }
