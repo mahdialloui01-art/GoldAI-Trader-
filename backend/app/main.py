@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
     max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
     demo_execution_enabled: bool = False
+    manual_demo_execution_enabled: bool = False
     demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only
     auto_demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
@@ -252,6 +253,7 @@ def get_config() -> dict:
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "demo_execution_enabled": settings.demo_execution_enabled,
+        "manual_demo_execution_enabled": settings.manual_demo_execution_enabled,
         "demo_risk_per_trade_percent": settings.auto_demo_risk_per_trade_percent,
         "manual_demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
@@ -3244,7 +3246,7 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
 @app.get("/api/v1/manual/demo/defaults")
 def manual_demo_trade_defaults() -> dict:
     """Build a manual DEMO trade plan from fresh XM quotes and closed M5 ATR."""
-    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.demo_execution_enabled:
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.manual_demo_execution_enabled:
         raise HTTPException(status_code=503, detail="Manual DEMO trading is locked.")
     quote = _fresh_mt5_quote()
     required = ("tick_size", "tick_value_loss", "volume_min", "volume_max", "volume_step", "account_equity")
@@ -3308,7 +3310,7 @@ def request_manual_demo_trade(
     _require_manual_trade_pin(x_manual_trade_pin)
     if settings.live_trading_enabled or settings.trading_mode.lower() != "paper":
         raise HTTPException(status_code=503, detail="Manual trading is locked unless the global account mode is DEMO/PAPER.")
-    if not settings.demo_execution_enabled:
+    if not settings.manual_demo_execution_enabled:
         raise HTTPException(status_code=503, detail="DEMO execution is disabled on the server.")
     if request.direction == Direction.WAIT:
         raise HTTPException(status_code=422, detail="Choose BUY or SELL.")
@@ -3361,7 +3363,7 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
         authorization.removeprefix("Bearer ").strip(), expected
     ):
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
-    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.demo_execution_enabled:
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.manual_demo_execution_enabled:
         return {"available": False, "reason": "DEMO execution is locked."}
     if not _manual_trade_queue:
         return {"available": False}
