@@ -631,7 +631,7 @@ bool SendClosedDealToLearning(ulong deal)
       (int)HistoryDealGetInteger(deal, DEAL_REASON));
    char data[];
    char result[];
-   string headers = "Content-Type: application/json\\r\\nAuthorization: Bearer " + BridgeToken + "\\r\\n";
+   string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + BridgeToken + "\r\n";
    StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
    ArrayResize(data, ArraySize(data) - 1);
    string responseHeaders;
