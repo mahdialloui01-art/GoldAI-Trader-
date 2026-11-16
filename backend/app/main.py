@@ -3514,4 +3514,5 @@ async def live_expert_technical_analysis() -> dict:
         "feed_age_seconds": max(0, int((now - _latest_mt5_candles["received_at"]).total_seconds())),
         "closed_candles_only": True,
     }
-    save_opportunity(result)\n    return result
+    save_opportunity(result)
+    return result
