@@ -25,7 +25,9 @@ services:
       - key: MT5_BRIDGE_TOKEN
         generateValue: true
       - key: DATABASE_URL
-        sync: false
+        fromDatabase:
+          name: goldai-trader-memory
+          property: connectionString
       - key: FRED_API_KEY
         sync: false
       - key: XOOMAR_API_KEY
