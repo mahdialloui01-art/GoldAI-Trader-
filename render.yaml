@@ -18,6 +18,8 @@ services:
         value: paper
       - key: LIVE_TRADING_ENABLED
         value: "false"
+      - key: DEMO_EXECUTION_ENABLED
+        value: "false"
       - key: MT5_BRIDGE_TOKEN
         generateValue: true
       - key: FRED_API_KEY
@@ -25,8 +27,8 @@ services:
       - key: XOOMAR_API_KEY
         sync: false
       - key: MAX_RISK_PER_TRADE_PERCENT
-        value: "0.5"
+        value: "0.25"
       - key: MAX_DAILY_LOSS_PERCENT
-        value: "2.0"
+        value: "10.0"
       - key: BROKER_GOLD_SYMBOL
         value: GOLD
