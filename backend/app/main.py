@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
     max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
     demo_execution_enabled: bool = False
-    demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
+    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
@@ -3236,6 +3236,57 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
         "setup_score": setup_score,
         "setup_max_score": setup_max,
         "threshold_profile": "STRUCTURAL_FULL_CONFIRMATION" if structural_full_score else "STANDARD",
+    }
+
+
+@app.get("/api/v1/manual/demo/defaults")
+def manual_demo_trade_defaults() -> dict:
+    """Build a manual DEMO trade plan from fresh XM quotes and closed M5 ATR."""
+    if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.demo_execution_enabled:
+        raise HTTPException(status_code=503, detail="Manual DEMO trading is locked.")
+    quote = _fresh_mt5_quote()
+    required = ("tick_size", "tick_value_loss", "volume_min", "volume_max", "volume_step", "account_equity")
+    if any(quote.get(key) is None for key in required):
+        raise HTTPException(status_code=503, detail="Waiting for complete MT5 contract/account metadata.")
+    if _latest_mt5_candles is None:
+        raise HTTPException(status_code=503, detail="Waiting for fresh closed M5 candles from MT5.")
+    candles = _latest_mt5_candles["timeframes"].get("M5", [])
+    if len(candles) < 15:
+        raise HTTPException(status_code=503, detail="At least 15 closed M5 candles are required to calculate manual SL/TP.")
+    true_ranges = []
+    previous_close = None
+    for candle in candles[-15:]:
+        high, low, close = float(candle.high), float(candle.low), float(candle.close)
+        tr = high - low if previous_close is None else max(high - low, abs(high - previous_close), abs(low - previous_close))
+        true_ranges.append(tr)
+        previous_close = close
+    atr = sum(true_ranges[-14:]) / 14.0
+    point = float(quote["point"])
+    if not math.isfinite(atr) or atr <= 0 or point <= 0:
+        raise HTTPException(status_code=503, detail="M5 ATR or broker point metadata is invalid.")
+    stop_points = max(1, math.ceil((1.5 * atr) / point))
+    target_points = max(1, math.ceil((3.0 * atr) / point))
+    loss_per_lot = ((stop_points * point) / float(quote["tick_size"])) * float(quote["tick_value_loss"])
+    equity = float(quote["account_equity"])
+    if not math.isfinite(loss_per_lot) or loss_per_lot <= 0 or equity <= 0:
+        raise HTTPException(status_code=503, detail="Broker risk metadata is invalid; manual sizing is paused.")
+    risk_amount = equity * settings.demo_risk_per_trade_percent / 100.0
+    raw_lots = risk_amount / loss_per_lot
+    step = Decimal(str(quote["volume_step"]))
+    lots = float((Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN) * step)
+    if lots < float(quote["volume_min"]):
+        raise HTTPException(status_code=422, detail="XM minimum lot would exceed the 2% manual risk cap; no safe lot size is available.")
+    max_steps = (Decimal(str(quote["volume_max"])) / step).to_integral_value(rounding=ROUND_DOWN)
+    lots = min(lots, float(max_steps * step))
+    estimated_risk = lots * loss_per_lot / equity * 100.0
+    return {
+        "ready": True, "symbol": quote["symbol"], "direction_required": True,
+        "recommended_lots": lots, "stop_loss_points": stop_points,
+        "take_profit_points": target_points, "risk_limit_percent": settings.demo_risk_per_trade_percent,
+        "estimated_risk_percent": round(estimated_risk, 4),
+        "risk_amount": round(lots * loss_per_lot, 2), "account_currency": quote.get("account_currency"),
+        "m5_atr": round(atr, int(quote["digits"])), "quote_age_seconds": quote["age_seconds"],
+        "method": "SL=1.5×M5 ATR; TP=3×M5 ATR; lot rounded down to XM volume step.",
     }
 
 
