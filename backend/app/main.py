@@ -399,7 +399,8 @@ async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Head
         "contract_size": quote.contract_size, "account_equity": quote.account_equity,
         "account_currency": quote.account_currency,
     }
-    live_candles = _update_live_quote_candles(timestamp, _latest_mt5_quote["mid"])
+    # MT5 chart OHLC candles are Bid-based; keep the live chart on Bid, not midpoint.
+    live_candles = _update_live_quote_candles(timestamp, quote.bid)
     stream_payload = {
         "type": "quote",
         "symbol": settings.broker_gold_symbol.upper(),
