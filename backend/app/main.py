@@ -18,7 +18,7 @@ from urllib.parse import quote
 import httpx
 import jwt
 import secrets
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -103,6 +103,39 @@ class BrokerQuote(BaseModel):
 
 _latest_mt5_quote: dict | None = None
 _ALLOW_H4_SESSION_GAP: ContextVar[bool] = ContextVar("allow_h4_session_gap", default=False)
+
+
+class MarketStream:
+    """Read-only fanout for the latest broker quote; slow clients are dropped, not queued."""
+    def __init__(self) -> None:
+        self.clients: set[WebSocket] = set()
+        self.lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        async with self.lock:
+            self.clients.add(websocket)
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        async with self.lock:
+            self.clients.discard(websocket)
+
+    async def publish(self, payload: dict) -> None:
+        async with self.lock:
+            clients = list(self.clients)
+        stale: list[WebSocket] = []
+        for client in clients:
+            try:
+                await asyncio.wait_for(client.send_json(payload), timeout=0.35)
+            except Exception:
+                stale.append(client)
+        if stale:
+            async with self.lock:
+                for client in stale:
+                    self.clients.discard(client)
+
+
+_market_stream = MarketStream()
 
 
 class SignalRequest(BaseModel):
@@ -339,7 +372,47 @@ def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(def
         "contract_size": quote.contract_size, "account_equity": quote.account_equity,
         "account_currency": quote.account_currency,
     }
+    stream_payload = {
+        "type": "quote",
+        "symbol": settings.broker_gold_symbol.upper(),
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "last": quote.last,
+        "mid": _latest_mt5_quote["mid"],
+        "spread_points": quote.spread_points,
+        "digits": quote.digits,
+        "point": quote.point,
+        "source_timestamp": timestamp.isoformat(),
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "age_ms": max(0, int(age * 1000)),
+    }
+    await _market_stream.publish(stream_payload)
     return {"accepted": True, "symbol": settings.broker_gold_symbol.upper(), "source": "MT5"}
+
+
+@app.websocket("/api/v1/market/stream")
+async def market_stream(websocket: WebSocket) -> None:
+    await _market_stream.connect(websocket)
+    try:
+        if _latest_mt5_quote is not None:
+            q = _fresh_mt5_quote()
+            await websocket.send_json({
+                "type": "quote", "symbol": q["symbol"], "bid": q["bid"],
+                "ask": q["ask"], "last": q["last"], "mid": q["mid"],
+                "spread_points": q["spread_points"], "digits": q["digits"],
+                "point": q["point"], "source_timestamp": q["source_updated_at"].isoformat(),
+                "received_at": datetime.now(timezone.utc).isoformat(),
+                "age_ms": q["age_seconds"] * 1000,
+            })
+        while True:
+            # Keep the connection alive; the server does not accept client commands.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except HTTPException:
+        await websocket.close(code=1013, reason="MT5 quote is stale")
+    finally:
+        await _market_stream.disconnect(websocket)
 
 
 def _fresh_mt5_quote() -> dict:
