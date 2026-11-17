@@ -30,6 +30,8 @@ input double AtrTrailStartR = 2.0;
 input double AtrTrailMultiple = 1.5;
 
 datetime lastCandleSend = 0;
+datetime lastCandleAttempt = 0;
+datetime lastCandleBarSent = 0;
 ulong lastQuoteSendMs = 0;
 ulong lastDemoSignalAttemptMs = 0;
 datetime lastDemoDecisionBar = 0;
@@ -219,7 +221,7 @@ string BuildCandleArray(ENUM_TIMEFRAMES timeframe, int requestedBars, int server
    return json;
 }
 
-void SendCandleBatch()
+bool SendCandleBatch()
 {
    datetime serverNow = TimeTradeServer();
    if(serverNow <= 0) serverNow = TimeCurrent();
@@ -232,14 +234,18 @@ void SendCandleBatch()
    if(m5 == "" || m15 == "" || h1 == "" || h4 == "")
    {
       Print("GoldAI candle batch not sent: one or more timeframes have insufficient history.");
-      return;
+      return false;
    }
 
    string body = StringFormat(
       "{\"symbol\":\"%s\",\"m5\":%s,\"m15\":%s,\"h1\":%s,\"h4\":%s}",
       RequiredSymbol, m5, m15, h1, h4);
    if(PostJson(CandleDataUrl, body))
+   {
       Print("GoldAI closed candle batch sent. Bars per timeframe: ", CandleBarsPerTimeframe);
+      return true;
+   }
+   return false;
 }
 
 
@@ -824,10 +830,23 @@ void OnTimer()
 {
    if(_Symbol != RequiredSymbol) return;
    datetime now = TimeCurrent();
-   if(lastCandleSend == 0 || now - lastCandleSend >= MathMax(30, CandleRefreshSeconds))
+   datetime closedBarTimes[];
+   ArrayResize(closedBarTimes, 1);
+   int closedBarCopied = CopyTime(RequiredSymbol, PERIOD_M5, 1, 1, closedBarTimes);
+   datetime latestClosedM5 = (closedBarCopied == 1 ? closedBarTimes[0] : 0);
+   bool newClosedM5 = (latestClosedM5 > 0 && latestClosedM5 > lastCandleBarSent);
+   bool refreshDue = (lastCandleSend == 0 ||
+                      now - lastCandleSend >= MathMax(30, CandleRefreshSeconds));
+   bool retryDue = (lastCandleAttempt == 0 || now - lastCandleAttempt >= 5);
+   if((newClosedM5 || refreshDue) && retryDue)
    {
-      SendCandleBatch();
-      lastCandleSend = now;
+      lastCandleAttempt = now;
+      if(SendCandleBatch())
+      {
+         lastCandleSend = now;
+         if(latestClosedM5 > 0)
+            lastCandleBarSent = latestClosedM5;
+      }
    }
    ManageDemoPositions();
    if(lastJournalSync == 0 || now - lastJournalSync >= 60)
