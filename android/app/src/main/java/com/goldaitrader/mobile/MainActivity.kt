@@ -29,6 +29,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.util.concurrent.TimeUnit
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
@@ -57,6 +63,11 @@ class MainActivity : ComponentActivity() {
     private var quoteStatus by mutableStateOf("في انتظار بيانات الوسيط")
     private var quoteReceived by mutableStateOf(false)
     private var quoteLoading = false
+    private val quoteStreamClient = OkHttpClient.Builder()
+        .pingInterval(20, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
+    private var quoteWebSocket: WebSocket? = null
     private var macroSummary by mutableStateOf("لم يتم جلب البيانات الاقتصادية")
     private var calendarSummary by mutableStateOf("لم يتم فحص الأخبار")
     private var newsEngineSummary by mutableStateOf("في انتظار أول تحديث آلي")
@@ -115,6 +126,49 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+        startQuoteStream()
+    }
+
+    override fun onDestroy() {
+        quoteWebSocket?.close(1000, "Activity destroyed")
+        quoteStreamClient.dispatcher.executorService.shutdown()
+        super.onDestroy()
+    }
+
+    private fun startQuoteStream() {
+        if (!backendConfigured || quoteWebSocket != null) return
+        val base = BuildConfig.API_BASE_URL
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val request = Request.Builder().url("$base/api/v1/market/stream").build()
+        quoteWebSocket = quoteStreamClient.newWebSocket(request, object : WebSocketListener() {
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    val j = JSONObject(text)
+                    if (j.optString("type") != "quote") return
+                    val bid = j.getDouble("bid")
+                    val ask = j.getDouble("ask")
+                    val midValue = j.getDouble("mid")
+                    val spread = j.optDouble("spread_points", 0.0) * j.optDouble("point", 0.0)
+                    val mid = "$" + String.format(Locale.US, "%,.2f", midValue)
+                    val details = "Bid ${String.format(Locale.US, "%.2f", bid)}  •  Ask ${String.format(Locale.US, "%.2f", ask)}  •  Spread ${String.format(Locale.US, "%.2f", spread)}  •  بث مباشر"
+                    runOnUiThread {
+                        goldPrice = mid
+                        quoteReceived = true
+                        quoteStatus = details
+                    }
+                } catch (_: Exception) { }
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                runOnUiThread { quoteStatus = "انقطع البث المباشر؛ إعادة المحاولة عبر تحديث السعر" }
+                quoteWebSocket = null
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                quoteWebSocket = null
+            }
+        })
     }
 
     private fun checkBackend() {
