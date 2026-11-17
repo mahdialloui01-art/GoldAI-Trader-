@@ -269,3 +269,45 @@ def test_strategy_scan_never_selects_when_direction_is_wait():
     result = main._classify_entry_setups("WAIT", frames, {}, 0.01)
     assert result["selected"] is None
     assert result["candidates"] == []
+
+
+def test_wait_scan_exposes_diagnostic_sell_bias_without_selecting_trade():
+    candles = [main.Candle(
+        time=datetime.now(timezone.utc) - timedelta(minutes=500 - i * 5),
+        open=100, high=101, low=99, close=100,
+    ) for i in range(100)]
+    frames = {"M5": candles, "M15": candles, "H1": candles, "H4": candles}
+    reports = {
+        frame: {"direction": "SELL", "market_structure": "DOWNTREND"}
+        for frame in ("M5", "M15", "H1", "H4")
+    }
+    result = main._classify_entry_setups("WAIT", frames, reports, 0.01)
+    assert result["direction"] == "WAIT"
+    assert result["diagnostic_direction"] == "SELL"
+    assert result["selected"] is None
+    assert result["diagnostic_selected"] is None
+
+
+def test_pullback_uses_confirmation_from_recent_closed_m5_candles(monkeypatch):
+    candles = [main.Candle(
+        time=datetime.now(timezone.utc) - timedelta(minutes=500 - i * 5),
+        open=100.0, high=100.2, low=99.8, close=100.0,
+    ) for i in range(100)]
+    original = main._candle_microstructure_analysis
+
+    def fake_microstructure(window):
+        if len(window) == 99:
+            return {"closed_candle_pattern": "BEARISH_REJECTION", "impulse_direction": "NONE"}
+        return {"closed_candle_pattern": "NONE", "impulse_direction": "NONE"}
+
+    monkeypatch.setattr(main, "_candle_microstructure_analysis", fake_microstructure)
+    frames = {"M5": candles, "M15": candles, "H1": candles, "H4": candles}
+    reports = {"M5": {
+        "microstructure": {"closed_candle_pattern": "NONE", "impulse_direction": "NONE"},
+        "market_structure": "DOWNTREND", "market_regime": "NORMAL",
+        "atr14": 1.0, "ema20": 100.0,
+    }}
+    result = main._classify_entry_setups("SELL", frames, reports, 0.01)
+    pullback = next(item for item in result["candidates"] if item["strategy"] == "PULLBACK")
+    assert pullback["score"] == 5
+    assert any("آخر 1 شمعة" in item for item in pullback["evidence"])
