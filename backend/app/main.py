@@ -134,6 +134,23 @@ class ManualDemoTradeRequest(BaseModel):
 _manual_trade_queue: list[dict] = []
 
 
+def _prune_expired_manual_trade_queue() -> None:
+    """Discard stale manual commands so an unpolled order cannot block the queue forever."""
+    now = datetime.now(timezone.utc)
+    fresh: list[dict] = []
+    for command in _manual_trade_queue:
+        try:
+            created_at = datetime.fromisoformat(command["created_at"])
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            age_seconds = (now - created_at.astimezone(timezone.utc)).total_seconds()
+            if -5 <= age_seconds <= 30:
+                fresh.append(command)
+        except (KeyError, TypeError, ValueError):
+            continue
+    _manual_trade_queue[:] = fresh
+
+
 def _require_manual_trade_pin(pin: str | None) -> None:
     configured = settings.manual_trade_pin.strip()
     if len(configured) < 16 or not pin or not secrets.compare_digest(pin, configured):
@@ -3342,6 +3359,7 @@ def request_manual_demo_trade(
             status_code=422,
             detail=f"Requested lot/stop risks {risk_percent:.3f}% which exceeds the {settings.demo_risk_per_trade_percent:.2f}% DEMO limit. Reduce lots or widen the stop.",
         )
+    _prune_expired_manual_trade_queue()
     if _manual_trade_queue:
         raise HTTPException(status_code=429, detail="A manual order is already waiting for MT5; avoid duplicate requests.")
     command_id = secrets.token_urlsafe(12)
@@ -3374,6 +3392,7 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
     if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.manual_demo_execution_enabled:
         return {"available": False, "reason": "DEMO execution is locked."}
+    _prune_expired_manual_trade_queue()
     if not _manual_trade_queue:
         return {"available": False}
     command = _manual_trade_queue.pop(0)
