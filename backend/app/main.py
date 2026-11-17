@@ -136,6 +136,29 @@ class MarketStream:
 
 
 _market_stream = MarketStream()
+_live_quote_candles: dict[str, dict] = {}
+
+
+def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
+    ts = timestamp.astimezone(timezone.utc).timestamp()
+    frames = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400}
+    updated: list[dict] = []
+    for frame, seconds in frames.items():
+        bucket = int(ts // seconds) * seconds
+        current = _live_quote_candles.get(frame)
+        if current is None or current["bucket"] != bucket:
+            current = {
+                "time": datetime.fromtimestamp(bucket, timezone.utc).isoformat(),
+                "open": price, "high": price, "low": price, "close": price,
+                "bucket": bucket, "live": True,
+            }
+            _live_quote_candles[frame] = current
+        else:
+            current["high"] = max(current["high"], price)
+            current["low"] = min(current["low"], price)
+            current["close"] = price
+        updated.append({k: v for k, v in current.items() if k != "bucket"})
+    return updated
 
 
 class SignalRequest(BaseModel):
@@ -372,9 +395,11 @@ def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(def
         "contract_size": quote.contract_size, "account_equity": quote.account_equity,
         "account_currency": quote.account_currency,
     }
+    live_candles = _update_live_quote_candles(timestamp, _latest_mt5_quote["mid"])
     stream_payload = {
         "type": "quote",
         "symbol": settings.broker_gold_symbol.upper(),
+        "live_candles": live_candles,
         "bid": quote.bid,
         "ask": quote.ask,
         "last": quote.last,
