@@ -185,12 +185,20 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                runOnUiThread { quoteStatus = "انقطع البث المباشر؛ إعادة المحاولة عبر تحديث السعر" }
                 quoteWebSocket = null
+                runOnUiThread { quoteStatus = "انقطع البث المباشر؛ إعادة الاتصال..." }
+                lifecycleScope.launch {
+                    delay(2_000)
+                    startQuoteStream()
+                }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 quoteWebSocket = null
+                if (!isFinishing) lifecycleScope.launch {
+                    delay(2_000)
+                    startQuoteStream()
+                }
             }
         })
     }
