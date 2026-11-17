@@ -48,7 +48,13 @@ private val Green = Color(0xFF39D6A0)
 private val Red = Color(0xFFFF7373)
 private val Blue = Color(0xFF69B7FF)
 
-private data class ChartCandle(val open: Double, val high: Double, val low: Double, val close: Double)
+private data class ChartCandle(val time: String, val open: Double, val high: Double, val low: Double, val close: Double)
+
+private fun mergeChartCandles(base: List<ChartCandle>, updates: List<ChartCandle>): List<ChartCandle> {
+    val byTime = linkedMapOf<String, ChartCandle>()
+    (base + updates).forEach { candle -> if (candle.time.isNotBlank()) byTime[candle.time] = candle }
+    return byTime.values.sortedBy { it.time }.takeLast(500)
+}
 
 private enum class AppTab(val title: String, val symbol: String) {
     HOME("الرئيسية", "⌂"),
@@ -76,7 +82,6 @@ class MainActivity : ComponentActivity() {
     private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
     private var candlesReceived by mutableStateOf(false)
     private var chartRowsByFrame by mutableStateOf<Map<String, List<ChartCandle>>>(emptyMap())
-    private val liveCandleBuckets = mutableMapOf<String, String>()
     private var chartReportsByFrame by mutableStateOf<Map<String, String>>(emptyMap())
     private var chartMeta by mutableStateOf("بانتظار بيانات التحليل")
     private var selectedChartFrame by mutableStateOf("M5")
@@ -166,17 +171,10 @@ class MainActivity : ComponentActivity() {
                                 val time = item.optString("time", "")
                                 if (frame.isBlank() || time.isBlank()) continue
                                 val candle = ChartCandle(
-                                    item.optDouble("open"), item.optDouble("high"),
+                                    time, item.optDouble("open"), item.optDouble("high"),
                                     item.optDouble("low"), item.optDouble("close")
                                 )
-                                val rows = nextRows[frame].orEmpty().toMutableList()
-                                if (liveCandleBuckets[frame] == time && rows.isNotEmpty()) {
-                                    rows[rows.lastIndex] = candle
-                                } else {
-                                    rows.add(candle)
-                                    liveCandleBuckets[frame] = time
-                                }
-                                nextRows[frame] = rows.takeLast(500)
+                                nextRows[frame] = mergeChartCandles(nextRows[frame].orEmpty(), listOf(candle))
                             }
                             chartRowsByFrame = nextRows
                         }
@@ -358,7 +356,7 @@ class MainActivity : ComponentActivity() {
                     val rows = candleObject?.optJSONArray(frame)
                     if (rows != null) parsedRows[frame] = (0 until rows.length()).mapNotNull { i ->
                         val item = rows.optJSONObject(i) ?: return@mapNotNull null
-                        ChartCandle(item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
+                        ChartCandle(item.optString("time", ""), item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
                     }
                     val report = reportObject?.optJSONObject(frame)
                     if (report != null) {
@@ -386,7 +384,10 @@ class MainActivity : ComponentActivity() {
                         ).joinToString("\n")
                     }
                 }
-                chartRowsByFrame = parsedRows
+                chartRowsByFrame = parsedRows.mapValues { (frame, closedRows) ->
+                    // Closed MT5 bars from REST take precedence over the live provisional bar at the same timestamp.
+                    mergeChartCandles(chartRowsByFrame[frame].orEmpty(), closedRows)
+                }
                 chartReportsByFrame = parsedReports
                 val decision = chart.optString("decision", "WAIT")
                 val score = chart.optString("confluence_score", "—")
