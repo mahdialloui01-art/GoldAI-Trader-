@@ -3419,7 +3419,23 @@ async def mt5_demo_signal(
             "execution_enabled": False,
         }
 
-    analysis = await live_expert_technical_analysis()
+    # Signal polling must be fail-closed but non-fatal while MT5 data is
+    # warming up or temporarily stale. Return an explicit WAIT payload rather
+    # than HTTP 503; the EA must never interpret missing data as permission to trade.
+    try:
+        analysis = await live_expert_technical_analysis()
+    except HTTPException as exc:
+        if exc.status_code != 503:
+            raise
+        return {
+            "enabled": True,
+            "decision": "WAIT",
+            "reason": str(exc.detail),
+            "data_ready": False,
+            "candidate_ready": False,
+            "execution_enabled": False,
+            "retry_after_seconds": 15,
+        }
     quality_ok, quality_reason, quality_details = _demo_candidate_quality_gate(analysis)
     if not quality_ok:
         return {
