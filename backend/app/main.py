@@ -157,7 +157,7 @@ def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
             current["high"] = max(current["high"], price)
             current["low"] = min(current["low"], price)
             current["close"] = price
-        updated.append({k: v for k, v in current.items() if k != "bucket"})
+        updated.append({"timeframe": frame, **{k: v for k, v in current.items() if k != "bucket"}})
     return updated
 
 
