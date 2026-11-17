@@ -2670,13 +2670,30 @@ def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], repo
     if selected is not None:
         selected = {**selected, "direction": direction}
     blockers = list(selected_scan.get("blockers", [])) if selected_scan else []
+    # Keep a diagnostic technical bias visible even when a separate gate (news,
+    # macro, or base confluence) forces the final decision to WAIT. This is never
+    # an execution authorization.
+    directional_points = 0.0
+    for timeframe, weight in (("M5", 1.0), ("M15", 1.5), ("H1", 2.0), ("H4", 2.5)):
+        report = reports.get(timeframe, {})
+        side = report.get("direction", "WAIT")
+        directional_points += weight * (1 if side == "BUY" else -1 if side == "SELL" else 0)
+        structure = report.get("market_structure")
+        directional_points += weight * 0.25 * (1 if structure == "UPTREND" else -1 if structure == "DOWNTREND" else 0)
+    diagnostic_direction = "BUY" if directional_points > 0 else "SELL" if directional_points < 0 else "WAIT"
+    diagnostic_scan = directional_scans.get(diagnostic_direction) if diagnostic_direction in ("BUY", "SELL") else None
+    diagnostic_selected = diagnostic_scan.get("selected") if diagnostic_scan else None
+    if diagnostic_selected is not None:
+        diagnostic_selected = {**diagnostic_selected, "direction": diagnostic_direction, "research_only": True}
     return {
         "selected": selected,
         "candidates": all_candidates,
         "direction": direction if direction in ("BUY", "SELL") else "WAIT",
+        "diagnostic_direction": diagnostic_direction,
+        "diagnostic_selected": diagnostic_selected,
         "directional_scans": directional_scans,
         "blockers": blockers,
-        "scan_policy": "BUY and SELL are evaluated independently on closed candles; only a selected overall BUY/SELL bias can authorize the existing quality gates. WAIT remains non-executable.",
+        "scan_policy": "BUY and SELL are evaluated independently on closed candles. diagnostic_selected is research-only; WAIT and all existing execution gates remain non-executable.",
         "score_note": "Rule-based setup quality points, not win probability; requires walk-forward backtesting.",
     }
 
@@ -2696,6 +2713,16 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     events = set(structure.get("events", []))
     pattern = micro.get("closed_candle_pattern", "NONE")
     impulse = micro.get("impulse_direction", "NONE")
+    # A confirmation can occur on either of the last three closed M5 bars.
+    # The current bar must still be near EMA20, so this does not chase an old move.
+    recent_confirmations = []
+    for offset in range(1, min(3, len(m5) - 25) + 1):
+        recent_micro = _candle_microstructure_analysis(m5[:-offset + 1] if offset > 1 else m5)
+        recent_confirmations.append({
+            "pattern": recent_micro.get("closed_candle_pattern", "NONE"),
+            "impulse": recent_micro.get("impulse_direction", "NONE"),
+            "bars_ago": offset - 1,
+        })
     bullish = direction == "BUY"
     wanted_bos = "BULLISH_BREAK_OF_STRUCTURE" if bullish else "BEARISH_BREAK_OF_STRUCTURE"
     wanted_sweep = "SELL_SIDE_LIQUIDITY_SWEEP" if bullish else "BUY_SIDE_LIQUIDITY_SWEEP"
@@ -2708,14 +2735,18 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         pullback_score += 2
     elif extension <= 0.85:
         pullback_score += 1
-    if pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH"):
+    matching_confirmation = next((
+        item for item in recent_confirmations
+        if item["pattern"] in wanted_pattern or item["impulse"] == ("BULLISH" if bullish else "BEARISH")
+    ), None)
+    if matching_confirmation:
         pullback_score += 2
     if report.get("market_structure") == ("UPTREND" if bullish else "DOWNTREND"):
         pullback_score += 1
     if pullback_score:
         candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
                            "evidence": ["إعادة اختبار قريبة من EMA20" if extension <= 0.60 else "السعر في الطرف الخارجي لمنطقة إعادة الاختبار" if extension <= 0.85 else "السعر بعيد عن منطقة إعادة الاختبار",
-                                        "شمعة/اندفاع مؤيد" if pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH") else "تأكيد الشمعة غير مكتمل"]})
+                                        f"تأكيد شمعة مؤيد خلال آخر {matching_confirmation['bars_ago']} شمعة" if matching_confirmation else "تأكيد الشمعة غير مكتمل"]})
 
     # Breakout: only a confirmed close through a previously confirmed swing level.
     if wanted_bos in events:
@@ -2723,7 +2754,7 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
                            "evidence": ["كسر هيكل مؤكد بإغلاق شمعة مكتملة"]})
 
     # Liquidity sweep: wick takes the opposing pool then closes back through the level.
-    if wanted_sweep in events and (pattern in wanted_pattern or impulse == ("BULLISH" if bullish else "BEARISH")):
+    if wanted_sweep in events and matching_confirmation:
         candidates.append({"strategy": "LIQUIDITY_SWEEP", "score": 5, "max_score": 5,
                            "evidence": ["سحب سيولة معاكس ثم إغلاق/اندفاع مؤيد"]})
 
