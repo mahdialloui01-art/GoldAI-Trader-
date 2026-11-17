@@ -378,6 +378,11 @@ async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Head
     age = (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds()
     if age < -30 or age > settings.market_quote_max_age_seconds:
         raise HTTPException(status_code=422, detail="MT5 quote timestamp is outside the accepted freshness window.")
+    # Never let delayed/replayed ticks move the live Bid candle backwards in time.
+    if _latest_mt5_quote is not None:
+        previous_timestamp = _latest_mt5_quote["source_updated_at"].astimezone(timezone.utc)
+        if timestamp.astimezone(timezone.utc) <= previous_timestamp:
+            raise HTTPException(status_code=409, detail="Out-of-order MT5 quote rejected; a newer broker tick is already cached.")
     spec_fields = (
         quote.tick_size, quote.tick_value_loss, quote.volume_min, quote.volume_max,
         quote.volume_step, quote.contract_size, quote.account_equity, quote.account_currency,
