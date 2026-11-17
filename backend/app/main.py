@@ -356,7 +356,7 @@ def get_config() -> dict:
 
 
 @app.post("/api/v1/mt5/quote")
-def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(default=None)) -> dict:
+async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(default=None)) -> dict:
     """Receive the broker's live GOLD quote from the authenticated MT5 EA."""
     global _latest_mt5_quote
     expected = settings.mt5_bridge_token
