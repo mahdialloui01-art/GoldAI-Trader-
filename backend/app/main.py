@@ -428,6 +428,10 @@ async def market_stream(websocket: WebSocket) -> None:
                 "point": q["point"], "source_timestamp": q["source_updated_at"].isoformat(),
                 "received_at": datetime.now(timezone.utc).isoformat(),
                 "age_ms": q["age_seconds"] * 1000,
+                "live_candles": [
+                    {"timeframe": frame, **{k: v for k, v in candle.items() if k != "bucket"}}
+                    for frame, candle in _live_quote_candles.items()
+                ],
             })
         while True:
             # Keep the connection alive; the server does not accept client commands.
