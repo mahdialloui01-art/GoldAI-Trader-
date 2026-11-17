@@ -74,20 +74,60 @@ string UtcStamp(datetime value)
       utc.year, utc.mon, utc.day, utc.hour, utc.min, utc.sec);
 }
 
+// Convert JSON to an exact-size UTF-8 byte array for WebRequest.
+// StringToCharArray includes a trailing zero; WebRequest receives payload bytes only.
+bool EncodeUtf8Payload(const string body, char &data[])
+{
+   ArrayResize(data, 0);
+   ResetLastError();
+   int copied = StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+   int convertError = GetLastError();
+   if(copied <= 1 || ArraySize(data) != copied)
+   {
+      Print("GoldAI UTF-8 encode failed. copied=", copied,
+            " array_size=", ArraySize(data), " error=", convertError);
+      ArrayResize(data, 0);
+      return false;
+   }
+
+   int payloadSize = copied - 1;
+   ResetLastError();
+   int resized = ArrayResize(data, payloadSize);
+   int resizeError = GetLastError();
+   if(resized != payloadSize || ArraySize(data) != payloadSize || payloadSize <= 0)
+   {
+      Print("GoldAI payload resize failed. copied=", copied,
+            " requested=", payloadSize, " resized=", resized,
+            " array_size=", ArraySize(data), " error=", resizeError);
+      ArrayResize(data, 0);
+      return false;
+   }
+   return true;
+}
+
 bool PostJson(string url, string body)
 {
    char data[], result[];
-   StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
-   ArrayResize(data, ArraySize(data) - 1);
+   if(!EncodeUtf8Payload(body, data))
+   {
+      Print("GoldAI POST cancelled before WebRequest: invalid UTF-8 payload. url=", url);
+      return false;
+   }
+
+   ArrayResize(result, 0);
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + BridgeToken + "\r\n";
    string responseHeaders;
    ResetLastError();
    int status = WebRequest("POST", url, headers, 8000, data, result, responseHeaders);
+   int requestError = GetLastError();
    if(status != 200)
    {
-      string responseBody = CharArrayToString(result, 0, -1, CP_UTF8);
-      Print("GoldAI bridge HTTP status=", status, " error=", GetLastError(),
-            " url=", url, " response=", responseBody);
+      string responseBody = "";
+      if(ArraySize(result) > 0)
+         responseBody = CharArrayToString(result, 0, -1, CP_UTF8);
+      Print("GoldAI bridge HTTP status=", status, " error=", requestError,
+            " payload_bytes=", ArraySize(data), " url=", url,
+            " response_headers=", responseHeaders, " response=", responseBody);
       return false;
    }
    return true;
@@ -690,17 +730,26 @@ bool SendClosedDealToLearning(ulong deal)
       (int)HistoryDealGetInteger(deal, DEAL_REASON));
    char data[];
    char result[];
+   if(!EncodeUtf8Payload(payload, data))
+   {
+      Print("GoldAI learning journal upload cancelled: invalid UTF-8 payload. deal=", (long)deal);
+      return false;
+   }
+   ArrayResize(result, 0);
    string headers = "Content-Type: application/json\r\nAuthorization: Bearer " + BridgeToken + "\r\n";
-   StringToCharArray(payload, data, 0, WHOLE_ARRAY, CP_UTF8);
-   ArrayResize(data, ArraySize(data) - 1);
    string responseHeaders;
    ResetLastError();
    int status = WebRequest("POST", "https://goldai-trader-api.onrender.com/api/v1/learning/trades/journal",
                            headers, 10000, data, result, responseHeaders);
+   int requestError = GetLastError();
    if(status != 200)
    {
-      Print("GoldAI learning journal upload failed: HTTP=", status, " error=", GetLastError(),
-            " deal=", (long)deal, " response=", CharArrayToString(result, 0, -1, CP_UTF8));
+      string responseBody = "";
+      if(ArraySize(result) > 0)
+         responseBody = CharArrayToString(result, 0, -1, CP_UTF8);
+      Print("GoldAI learning journal upload failed: HTTP=", status, " error=", requestError,
+            " payload_bytes=", ArraySize(data), " deal=", (long)deal,
+            " response_headers=", responseHeaders, " response=", responseBody);
       return false;
    }
    return true;
