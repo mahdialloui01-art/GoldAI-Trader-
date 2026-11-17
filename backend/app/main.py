@@ -190,10 +190,11 @@ class ManualDemoTradeRequest(BaseModel):
 _manual_trade_queue: list[dict] = []
 
 
-def _prune_expired_manual_trade_queue() -> None:
-    """Discard stale manual commands so an unpolled order cannot block the queue forever."""
+def _prune_expired_manual_trade_queue() -> bool:
+    """Discard stale manual commands and report whether any expired item was removed."""
     now = datetime.now(timezone.utc)
     fresh: list[dict] = []
+    expired = False
     for command in _manual_trade_queue:
         try:
             created_at = datetime.fromisoformat(command["created_at"])
@@ -202,9 +203,12 @@ def _prune_expired_manual_trade_queue() -> None:
             age_seconds = (now - created_at.astimezone(timezone.utc)).total_seconds()
             if -5 <= age_seconds <= 30:
                 fresh.append(command)
+            else:
+                expired = True
         except (KeyError, TypeError, ValueError):
-            continue
+            expired = True
     _manual_trade_queue[:] = fresh
+    return expired
 
 
 def _require_manual_trade_pin(pin: str | None) -> None:
@@ -2805,7 +2809,7 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     if direction not in ("BUY", "SELL"):
         return {"selected": None, "candidates": [], "note": "No directional bias; setup scan is diagnostic only."}
     m5 = frames["M5"]
-    report = reports["M5"]
+    report = reports.get("M5", {})
     structure = _price_action_analysis(m5, 3, 3, 0.12)
     micro = report.get("microstructure", {})
     atr = float(report.get("atr14") or 0.0)
@@ -3558,9 +3562,9 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
     if settings.live_trading_enabled or settings.trading_mode.lower() != "paper" or not settings.manual_demo_execution_enabled:
         return {"available": False, "reason": "DEMO execution is locked."}
-    _prune_expired_manual_trade_queue()
+    expired = _prune_expired_manual_trade_queue()
     if not _manual_trade_queue:
-        return {"available": False}
+        return {"available": False, "expired": expired}
     command = _manual_trade_queue.pop(0)
     try:
         created_at = datetime.fromisoformat(command["created_at"])
