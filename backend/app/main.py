@@ -2717,7 +2717,7 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     # The current bar must still be near EMA20, so this does not chase an old move.
     recent_confirmations = []
     for offset in range(1, min(3, len(m5) - 25) + 1):
-        recent_micro = _candle_microstructure_analysis(m5[:-offset + 1] if offset > 1 else m5)
+        recent_micro = _candle_microstructure_analysis(m5[:len(m5) - offset + 1])
         recent_confirmations.append({
             "pattern": recent_micro.get("closed_candle_pattern", "NONE"),
             "impulse": recent_micro.get("impulse_direction", "NONE"),
