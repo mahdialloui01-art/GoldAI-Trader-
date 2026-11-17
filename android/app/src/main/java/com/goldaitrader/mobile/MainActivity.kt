@@ -58,7 +58,7 @@ private fun mergeChartCandles(base: List<ChartCandle>, updates: List<ChartCandle
             catch (_: Exception) { return@forEach }
         byTime[instant] = candle
     }
-    return byTime.values.takeLast(500)
+    return byTime.values.toList().takeLast(500)
 }
 
 private enum class AppTab(val title: String, val symbol: String) {
