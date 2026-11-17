@@ -51,9 +51,14 @@ private val Blue = Color(0xFF69B7FF)
 private data class ChartCandle(val time: String, val open: Double, val high: Double, val low: Double, val close: Double)
 
 private fun mergeChartCandles(base: List<ChartCandle>, updates: List<ChartCandle>): List<ChartCandle> {
-    val byTime = linkedMapOf<String, ChartCandle>()
-    (base + updates).forEach { candle -> if (candle.time.isNotBlank()) byTime[candle.time] = candle }
-    return byTime.values.sortedBy { it.time }.takeLast(500)
+    // Compare instants, not raw ISO strings: MT5/REST and the live stream may encode UTC differently.
+    val byTime = sortedMapOf<Long, ChartCandle>()
+    (base + updates).forEach { candle ->
+        val instant = try { java.time.OffsetDateTime.parse(candle.time).toInstant().toEpochMilli() }
+            catch (_: Exception) { return@forEach }
+        byTime[instant] = candle
+    }
+    return byTime.values.takeLast(500)
 }
 
 private enum class AppTab(val title: String, val symbol: String) {
