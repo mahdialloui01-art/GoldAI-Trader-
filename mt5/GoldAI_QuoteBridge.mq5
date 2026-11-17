@@ -31,6 +31,7 @@ input double AtrTrailMultiple = 1.5;
 
 datetime lastCandleSend = 0;
 ulong lastQuoteSendMs = 0;
+ulong lastDemoSignalAttemptMs = 0;
 datetime lastDemoDecisionBar = 0;
 datetime lastJournalSync = 0;
 
@@ -415,10 +416,21 @@ void TryDemoTrade()
    }
    if(_Symbol != RequiredSymbol || !TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) ||
       !MQLInfoInteger(MQL_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)) return;
+
    datetime bar = iTime(RequiredSymbol, PERIOD_M5, 0);
    if(bar <= 0 || bar == lastDemoDecisionBar) return;
-   lastDemoDecisionBar = bar;
-   if(CountOurOpenPositions() > 0) return;
+
+   // Retry WAIT/data-not-ready responses during the same M5 candle.
+   // Once a valid candidate is received, lock this candle before any order attempt.
+   ulong nowMs = GetTickCount64();
+   if(lastDemoSignalAttemptMs != 0 && nowMs - lastDemoSignalAttemptMs < 15000) return;
+   lastDemoSignalAttemptMs = nowMs;
+
+   if(CountOurOpenPositions() > 0)
+   {
+      Print("GoldAI auto DEMO skipped: one GOLD position is already open.");
+      return;
+   }
    double dailyLoss = TodayAccountLossPercent();
    if(dailyLoss >= DemoDailyLossLimitPercent)
    {
@@ -426,25 +438,62 @@ void TryDemoTrade()
       return;
    }
    MqlTick tick;
-   if(!SymbolInfoTick(RequiredSymbol, tick) || tick.bid <= 0 || tick.ask < tick.bid) return;
+   if(!SymbolInfoTick(RequiredSymbol, tick) || tick.bid <= 0 || tick.ask < tick.bid)
+   {
+      Print("GoldAI auto DEMO waiting: broker quote is unavailable.");
+      return;
+   }
    double point = SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
-   if(point <= 0 || (tick.ask - tick.bid) / point > DemoMaxSpreadPoints) return;
+   if(point <= 0 || (tick.ask - tick.bid) / point > DemoMaxSpreadPoints)
+   {
+      Print("GoldAI auto DEMO waiting: invalid point or spread above limit.");
+      return;
+   }
+
    string payload;
    if(!FetchDemoSignal(dailyLoss, payload)) return;
-   if(JsonValue(payload, "candidate_ready") != "true") return;
-   if(JsonValue(payload, "symbol") != RequiredSymbol) return;
+   if(JsonValue(payload, "enabled") != "true")
+   {
+      Print("GoldAI auto DEMO disabled by server: ", JsonValue(payload, "reason"));
+      return;
+   }
+   if(JsonValue(payload, "candidate_ready") != "true")
+   {
+      Print("GoldAI auto DEMO WAIT: ", JsonValue(payload, "reason"));
+      return; // Retry in 15 seconds while this M5 candle is still active.
+   }
+
+   // A confirmed candidate is evaluated at most once per M5 candle.
+   lastDemoDecisionBar = bar;
+   if(JsonValue(payload, "symbol") != RequiredSymbol)
+   {
+      Print("GoldAI auto DEMO rejected: signal symbol does not match chart symbol.");
+      return;
+   }
    string direction = JsonValue(payload, "decision");
    double lots = JsonNumber(payload, "recommended_lots");
    double stop = JsonNumber(payload, "stop_loss");
    double target = JsonNumber(payload, "take_profit");
    double signalRisk = JsonNumber(payload, "risk_percent");
-   if(signalRisk <= 0 || signalRisk > DemoMaxRiskPerTradePercent) return;
+   if(signalRisk <= 0 || signalRisk > DemoMaxRiskPerTradePercent)
+   {
+      Print("GoldAI auto DEMO rejected: signal risk exceeds local 0.25% cap.");
+      return;
+   }
    double vmin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MAX);
    double step = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_STEP);
-   if(lots <= 0 || stop <= 0 || target <= 0 || step <= 0) return;
+   if(lots <= 0 || stop <= 0 || target <= 0 || step <= 0)
+   {
+      Print("GoldAI auto DEMO rejected: invalid lot/SL/TP values.");
+      return;
+   }
    lots = NormalizeDouble(MathFloor((lots + 1e-10) / step) * step, 8);
-   if(lots < vmin || lots > vmax) return;
+   if(lots < vmin || lots > vmax)
+   {
+      Print("GoldAI auto DEMO rejected: lot is outside broker volume limits.");
+      return;
+   }
    int digits = (int)SymbolInfoInteger(RequiredSymbol, SYMBOL_DIGITS);
    long stopsLevel = SymbolInfoInteger(RequiredSymbol, SYMBOL_TRADE_STOPS_LEVEL);
    double minimumStopDistance = (double)stopsLevel * SymbolInfoDouble(RequiredSymbol, SYMBOL_POINT);
@@ -456,7 +505,11 @@ void TryDemoTrade()
    double estimatedEntry = 0.0;
    if(direction == "BUY") { orderType = ORDER_TYPE_BUY; estimatedEntry = tick.ask; }
    else if(direction == "SELL") { orderType = ORDER_TYPE_SELL; estimatedEntry = tick.bid; }
-   else return;
+   else
+   {
+      Print("GoldAI auto DEMO rejected: invalid direction.");
+      return;
+   }
    double estimatedStopPnl = 0.0;
    if(!OrderCalcProfit(orderType, RequiredSymbol, lots, estimatedEntry, stop, estimatedStopPnl))
    {
@@ -484,7 +537,11 @@ void TryDemoTrade()
    else if(direction == "SELL" && stop > tick.ask && target < tick.bid &&
       stop - tick.ask >= minimumStopDistance && tick.bid - target >= minimumStopDistance)
       sent = trade.Sell(lots, RequiredSymbol, 0.0, stop, target, "GoldAI DEMO SELL");
-   else return;
+   else
+   {
+      Print("GoldAI auto DEMO rejected: SL/TP direction or broker stop-distance check failed.");
+      return;
+   }
    if(sent && (trade.ResultRetcode() == TRADE_RETCODE_DONE ||
                trade.ResultRetcode() == TRADE_RETCODE_PLACED))
       Print("GoldAI DEMO order accepted: ", direction, " lots=", DoubleToString(lots, 2),
