@@ -76,6 +76,7 @@ class MainActivity : ComponentActivity() {
     private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
     private var candlesReceived by mutableStateOf(false)
     private var chartRowsByFrame by mutableStateOf<Map<String, List<ChartCandle>>>(emptyMap())
+    private val liveCandleBuckets = mutableMapOf<String, String>()
     private var chartReportsByFrame by mutableStateOf<Map<String, String>>(emptyMap())
     private var chartMeta by mutableStateOf("بانتظار بيانات التحليل")
     private var selectedChartFrame by mutableStateOf("M5")
@@ -152,10 +153,33 @@ class MainActivity : ComponentActivity() {
                     val spread = j.optDouble("spread_points", 0.0) * j.optDouble("point", 0.0)
                     val mid = "$" + String.format(Locale.US, "%,.2f", midValue)
                     val details = "Bid ${String.format(Locale.US, "%.2f", bid)}  •  Ask ${String.format(Locale.US, "%.2f", ask)}  •  Spread ${String.format(Locale.US, "%.2f", spread)}  •  بث مباشر"
+                    val liveCandles = j.optJSONArray("live_candles")
                     runOnUiThread {
                         goldPrice = mid
                         quoteReceived = true
                         quoteStatus = details
+                        if (liveCandles != null) {
+                            val nextRows = chartRowsByFrame.toMutableMap()
+                            for (index in 0 until liveCandles.length()) {
+                                val item = liveCandles.optJSONObject(index) ?: continue
+                                val frame = item.optString("timeframe", "")
+                                val time = item.optString("time", "")
+                                if (frame.isBlank() || time.isBlank()) continue
+                                val candle = ChartCandle(
+                                    item.optDouble("open"), item.optDouble("high"),
+                                    item.optDouble("low"), item.optDouble("close")
+                                )
+                                val rows = nextRows[frame].orEmpty().toMutableList()
+                                if (liveCandleBuckets[frame] == time && rows.isNotEmpty()) {
+                                    rows[rows.lastIndex] = candle
+                                } else {
+                                    rows.add(candle)
+                                    liveCandleBuckets[frame] = time
+                                }
+                                nextRows[frame] = rows.takeLast(500)
+                            }
+                            chartRowsByFrame = nextRows
+                        }
                     }
                 } catch (_: Exception) { }
             }
