@@ -2649,6 +2649,39 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
 
 
 def _classify_entry_setups(direction: str, frames: dict[str, list[Candle]], reports: dict[str, dict], spread_atr_ratio: float) -> dict:
+    """Scan BUY and SELL independently; only the confirmed overall bias may be selected for execution."""
+    directional_scans = {
+        side: _classify_entry_setups_for_direction(side, frames, reports, spread_atr_ratio)
+        for side in ("BUY", "SELL")
+    }
+    all_candidates = []
+    for side, scan in directional_scans.items():
+        for candidate in scan.get("candidates", []):
+            all_candidates.append({**candidate, "direction": side})
+    all_candidates.sort(
+        key=lambda item: (item.get("score", 0), item.get("strategy") == "BREAKOUT"),
+        reverse=True,
+    )
+
+    # A setup found on the opposite side is research information, never an
+    # authorization to trade against the multi-timeframe decision.
+    selected_scan = directional_scans.get(direction) if direction in ("BUY", "SELL") else None
+    selected = selected_scan.get("selected") if selected_scan else None
+    if selected is not None:
+        selected = {**selected, "direction": direction}
+    blockers = list(selected_scan.get("blockers", [])) if selected_scan else []
+    return {
+        "selected": selected,
+        "candidates": all_candidates,
+        "direction": direction if direction in ("BUY", "SELL") else "WAIT",
+        "directional_scans": directional_scans,
+        "blockers": blockers,
+        "scan_policy": "BUY and SELL are evaluated independently on closed candles; only a selected overall BUY/SELL bias can authorize the existing quality gates. WAIT remains non-executable.",
+        "score_note": "Rule-based setup quality points, not win probability; requires walk-forward backtesting.",
+    }
+
+
+def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[Candle]], reports: dict[str, dict], spread_atr_ratio: float) -> dict:
     """Rank deterministic closed-candle setup candidates; scores are not probabilities."""
     if direction not in ("BUY", "SELL"):
         return {"selected": None, "candidates": [], "note": "No directional bias; setup scan is diagnostic only."}
