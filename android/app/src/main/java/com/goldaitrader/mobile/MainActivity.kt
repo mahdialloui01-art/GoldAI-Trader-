@@ -398,18 +398,27 @@ class MainActivity : ComponentActivity() {
                     mergeChartCandles(chartRowsByFrame[frame].orEmpty(), closedRows)
                 }
                 chartReportsByFrame = parsedReports
-                val decision = chart.optString("decision", "WAIT")
-                val score = chart.optString("confluence_score", "—")
-                val grade = chart.optString("confluence_grade", "غير محدد")
-                val scan = chart.optJSONObject("strategy_scan")
-                val selected = scan?.optJSONObject("selected")
-                val strategyName = selected?.optString("strategy", "لا توجد فرصة مكتملة") ?: "لا توجد فرصة مكتملة"
-                val strategyScore = if (selected != null) "${selected.optInt("score")}/${selected.optInt("max_score")}" else "—"
-                val scanBlockers = scan?.optJSONArray("blockers")
-                val blockerText = if (scanBlockers != null && scanBlockers.length() > 0)
-                    (0 until scanBlockers.length()).joinToString("، ") { scanBlockers.optString(it) }
-                else "لا توجد موانع إضافية"
-                chartMeta = "القرار: $decision  •  التوافق: $score/100  •  $grade\nأفضل إعداد: $strategyName ($strategyScore)\nموانع الإعداد: $blockerText"
+                val generalScore = chart.optString("confluence_score", "—")
+                val generalGrade = chart.optString("confluence_grade", "غير محدد")
+                val entryResponse = request("/api/v1/analysis/expert/live")
+                val entry = entryResponse.optJSONObject("entry_engine")
+                if (entry == null) {
+                    chartMeta = "محرك الدخول غير متاح حالياً؛ لا نخلط درجة توافق الاتجاه العام ($generalScore/100 — $generalGrade) مع درجة الدخول. أعد المحاولة بعد وصول دفعة شموع MT5 مكتملة."
+                } else {
+                    val decision = entry.optString("direction", "WAIT")
+                    val score = entry.optInt("entry_quality_score_0_to_100", -1)
+                    val threshold = entry.optInt("score_threshold", -1)
+                    val strategyName = entry.optString("selected_strategy").takeIf { it.isNotBlank() && it != "null" } ?: "لا توجد استراتيجية مؤكدة"
+                    val blockers = entry.optJSONArray("blockers")
+                    val blockerText = if (blockers != null && blockers.length() > 0)
+                        (0 until minOf(5, blockers.length())).joinToString("، ") { blockers.optString(it) }
+                    else "لا توجد موانع مسجلة"
+                    val setup = entry.optJSONObject("setup")
+                    val entryText = if (setup != null) {
+                        "دخول ${setup.optString("entry_reference")} — وقف ${setup.optString("stop_loss")} — هدف 2R ${setup.optJSONObject("take_profit")?.optString("TP2_2R") ?: "—"}"
+                    } else "لا يوجد دخول مؤكد"
+                    chartMeta = "القرار: $decision  •  جودة الدخول: ${if (score >= 0) "$score/100" else "غير متاحة"} (الحد $threshold)\nالاستراتيجية: $strategyName — $entryText\nسبب الانتظار/الموانع: $blockerText\nتوافق الاتجاه العام: $generalScore/100 — $generalGrade"
+                }
             } catch (_: Exception) {
                 chartRowsByFrame = emptyMap()
                 chartReportsByFrame = emptyMap()
