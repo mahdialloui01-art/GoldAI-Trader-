@@ -25,7 +25,9 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.3"
+    assert body["analysis_engine_version"] == "0.6.4"
+    assert body["adaptive_risk_policy"]["enabled"] is True
+    assert body["adaptive_risk_policy"]["live_trading_enabled"] is False
     assert "closed_candle_microstructure" in body["analysis_layers"]
     assert "optional_tick_volume_participation" in body["analysis_layers"]
     assert "password" not in body
@@ -1324,3 +1326,52 @@ def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
     assert body["execution_enabled"] is False
     assert any("محفز دخول مكتمل" in reason for reason in body["blockers"])
     assert any("M15" in reason for reason in body["blockers"])
+
+
+def test_adaptive_demo_risk_scales_with_setup_quality_and_caps(monkeypatch):
+    monkeypatch.setattr(main.settings, "auto_demo_risk_per_trade_percent", 0.5)
+    monkeypatch.setattr(main.settings, "max_risk_per_trade_percent", 0.5)
+    monkeypatch.setattr(main.settings, "max_daily_loss_percent", 10.0)
+
+    def analysis(score):
+        return {
+            "technical_dossier": {"confluence_score": score},
+            "entry_engine": {"entry_quality_score_0_to_100": score},
+        }
+
+    exceptional = main._adaptive_demo_risk_policy(analysis(97), 0.0)
+    strong = main._adaptive_demo_risk_policy(analysis(88), 0.0)
+    assert exceptional["approved"] is True
+    assert exceptional["risk_percent"] == 0.5
+    assert exceptional["quality_band"] == "EXCEPTIONAL"
+    assert strong["risk_percent"] == 0.3
+    assert strong["quality_band"] == "STRONG"
+
+
+def test_adaptive_demo_risk_reduces_after_daily_loss_and_respects_server_cap(monkeypatch):
+    monkeypatch.setattr(main.settings, "auto_demo_risk_per_trade_percent", 0.5)
+    monkeypatch.setattr(main.settings, "max_risk_per_trade_percent", 0.5)
+    monkeypatch.setattr(main.settings, "max_daily_loss_percent", 10.0)
+    analysis = {
+        "technical_dossier": {"confluence_score": 93},
+        "entry_engine": {"entry_quality_score_0_to_100": 93},
+    }
+    reduced = main._adaptive_demo_risk_policy(analysis, 5.0)
+    assert reduced["risk_percent"] == 0.2
+    assert reduced["daily_loss_headroom"] == "REDUCED"
+
+    monkeypatch.setattr(main.settings, "auto_demo_risk_per_trade_percent", 0.25)
+    capped = main._adaptive_demo_risk_policy(analysis, 0.0)
+    assert capped["risk_percent"] == 0.25
+    assert capped["configured_cap_percent"] == 0.25
+
+
+def test_adaptive_demo_risk_locks_at_daily_loss_limit(monkeypatch):
+    monkeypatch.setattr(main.settings, "max_daily_loss_percent", 2.0)
+    analysis = {
+        "technical_dossier": {"confluence_score": 99},
+        "entry_engine": {"entry_quality_score_0_to_100": 99},
+    }
+    result = main._adaptive_demo_risk_policy(analysis, 2.0)
+    assert result["approved"] is False
+    assert result["risk_percent"] == 0.0
