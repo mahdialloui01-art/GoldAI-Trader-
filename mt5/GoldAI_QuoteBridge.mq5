@@ -2,7 +2,7 @@
 #property strict
 #include <Trade/Trade.mqh>
 CTrade trade;
-#property version   "2.1"
+#property version   "2.2"
 #property description "Streams XM GOLD Bid/Ask and closed M5/M15/H1/H4 candles to GoldAI Trader."
 
 input string BackendUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/quote";
@@ -16,7 +16,7 @@ input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
 input bool EnableDemoExecution = true;
 input double DemoDailyLossLimitPercent = 10.0;
-input double DemoMaxRiskPerTradePercent = 0.25;
+input double DemoMaxRiskPerTradePercent = 0.5;
 input double ManualMaxRiskPerTradePercent = 2.0;
 input ulong DemoMagicNumber = 26111601;
 input int DemoMaxDeviationPoints = 30;
@@ -523,7 +523,7 @@ void TryDemoTrade()
    double signalRisk = JsonNumber(payload, "risk_percent");
    if(signalRisk <= 0 || signalRisk > DemoMaxRiskPerTradePercent)
    {
-      Print("GoldAI auto DEMO rejected: signal risk exceeds local 0.25% cap.");
+      Print("GoldAI auto DEMO rejected: signal risk exceeds local cap ", DoubleToString(DemoMaxRiskPerTradePercent, 2), "%.");
       return;
    }
    double vmin = SymbolInfoDouble(RequiredSymbol, SYMBOL_VOLUME_MIN);
