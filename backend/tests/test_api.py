@@ -1448,3 +1448,31 @@ def test_demo_quality_gate_accepts_new_strategies_only_with_strong_setup_score()
     approved, _, details = main._demo_candidate_quality_gate(analysis)
     assert approved is True
     assert details["selected_strategy"] == "EMA_RECLAIM"
+
+
+def test_entry_scanner_keeps_recent_closed_bos_as_candidate(monkeypatch):
+    raw = _technical_payload("M5", count=100)["candles"]
+    candles = [main.Candle(**item) for item in raw]
+    candles[-1] = candles[-1].model_copy(update={
+        "open": 2319.7, "high": 2320.1, "low": 2319.6, "close": 2320.0,
+    })
+    def structure_with_recent_bos(values, *args, **kwargs):
+        return {
+            "market_structure": "UPTREND",
+            "events": ["BULLISH_BREAK_OF_STRUCTURE"] if len(values) == len(candles) - 1 else [],
+        }
+    monkeypatch.setattr(main, "_ema_series", lambda values, period: [2319.8] * len(values))
+    monkeypatch.setattr(main, "_price_action_analysis", structure_with_recent_bos)
+    monkeypatch.setattr(main, "_candle_microstructure_analysis", lambda values: {
+        "closed_candle_pattern": "BULLISH_ENGULFING",
+        "impulse_direction": "BULLISH",
+    })
+    report = {
+        "market_structure": "UPTREND",
+        "microstructure": {"closed_candle_pattern": "BULLISH_ENGULFING", "impulse_direction": "BULLISH"},
+        "atr14": 1.0, "ema20": 2319.8, "market_regime": "TRENDING_UP",
+    }
+    scan = main._classify_entry_setups_for_direction(
+        "BUY", {"M5": candles}, {"M5": report}, 0.05,
+    )
+    assert any(item["strategy"] == "BREAKOUT" for item in scan["candidates"])
