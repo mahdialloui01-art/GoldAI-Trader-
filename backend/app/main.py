@@ -357,7 +357,7 @@ def get_config() -> dict:
             "explainable_entry_setup_engine_sweep_breakout_pullback",
             "closed_candle_entry_confirmation_and_anti_chasing",
             "news_and_macro_context_advisory_not_technical_entry_veto",
-            "macro_and_high_impact_news_fail_closed_gates",
+            "legacy_signal_fusion_macro_news_fail_closed_gate",
         ],
     }
 
@@ -3927,6 +3927,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         blockers.append("التذبذب على H1 مرتفع بشكل غير مناسب للدخول الآمن.")
 
     score = sum(components.values())
+    minimum_score = 82 if selected_strategy in ("BREAKOUT", "LIQUIDITY_SWEEP") else 85
     entry_reference = float(quote["ask"] if bias == Direction.BUY else quote["bid"])
     quote_distance_atr = abs(entry_reference - last.close) / m5_atr if m5_atr > 0 else float("inf")
     m5_extension_atr = abs(last.close - m5_ema20) / m5_atr if m5_atr > 0 else float("inf")
@@ -3943,9 +3944,9 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         final_direction = Direction.WAIT
     elif spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50 or m5_extension_atr > 1.50:
         final_direction = Direction.WAIT
-    elif score < 78:
+    elif score < minimum_score:
         final_direction = Direction.WAIT
-        blockers.append("درجة توافق الدخول أقل من حد الجودة 78/100.")
+        blockers.append(f"درجة توافق الدخول أقل من حد الجودة {minimum_score}/100.")
     else:
         final_direction = bias
 
@@ -4003,7 +4004,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         "direction": final_direction,
         "selected_strategy": selected_strategy,
         "entry_quality_score_0_to_100": score,
-        "score_threshold": 78,
+        "score_threshold": minimum_score,
         "score_note": "درجة توافق قواعد داخلية غير معايرة؛ ليست احتمال ربح أو نسبة نجاح.",
         "score_components": components,
         "higher_timeframe": {
