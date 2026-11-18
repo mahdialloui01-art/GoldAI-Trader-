@@ -338,9 +338,9 @@ class MainActivity : ComponentActivity() {
                     } else "لا توجد موانع مسجلة"
                     val setup = entryEngine?.optJSONObject("setup")
                     val entryText = if (setup != null) {
-                        "دخول \${setup.optString("entry_reference")} — وقف \${setup.optString("stop_loss")} — TP2 \${setup.optJSONObject("take_profit")?.optString("TP2_2R") ?: "—"}"
+                        "دخول ${setup.optString("entry_reference")} — وقف ${setup.optString("stop_loss")} — TP2 ${setup.optJSONObject("take_profit")?.optString("TP2_2R") ?: "—"}"
                     } else "لا يوجد دخول مؤكد حالياً"
-                    "محرك الدخول: $decision — جودة: \${score.toInt()}/100 — الاستراتيجية: $strategy — $entryText — الموانع: $blockText"
+                    "محرك الدخول: $decision — جودة: ${score.toInt()}/100 — الاستراتيجية: $strategy — $entryText — الموانع: $blockText"
                 } catch (e: Exception) {
                     candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
