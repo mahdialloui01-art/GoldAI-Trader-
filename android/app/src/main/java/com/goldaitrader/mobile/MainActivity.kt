@@ -346,7 +346,8 @@ class MainActivity : ComponentActivity() {
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
                 }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
-                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString(), chartPayload)
+                val entryPayload = try { request("/api/v1/analysis/expert/live").toString() } catch (_: Exception) { "{}" }
+                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString(), chartPayload, entryPayload)
             }
             macroSummary = result[0]
             calendarSummary = result[1]
@@ -400,7 +401,7 @@ class MainActivity : ComponentActivity() {
                 chartReportsByFrame = parsedReports
                 val generalScore = chart.optString("confluence_score", "—")
                 val generalGrade = chart.optString("confluence_grade", "غير محدد")
-                val entryResponse = request("/api/v1/analysis/expert/live")
+                val entryResponse = JSONObject(result[8])
                 val entry = entryResponse.optJSONObject("entry_engine")
                 if (entry == null) {
                     chartMeta = "محرك الدخول غير متاح حالياً؛ لا نخلط درجة توافق الاتجاه العام ($generalScore/100 — $generalGrade) مع درجة الدخول. أعد المحاولة بعد وصول دفعة شموع MT5 مكتملة."
