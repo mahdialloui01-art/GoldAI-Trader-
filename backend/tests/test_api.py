@@ -1294,13 +1294,18 @@ def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
         main, "_market_regime_analysis",
         lambda candles: {"market_regime": "TRENDING_UP", "indicators": {"atr_vs_recent_median": 1.0}},
     )
-    monkeypatch.setattr(
-        main, "_price_action_analysis",
-        lambda candles, left, right, tolerance: {
+    def conflicting_m15_structure(candles, left, right, tolerance):
+        timeframe_seconds = (candles[1].time - candles[0].time).total_seconds()
+        return {
             "market_structure": "UPTREND",
-            "events": ["NO_CONFIRMED_STRUCTURE_EVENT"],
-        },
-    )
+            "events": (
+                ["BEARISH_BREAK_OF_STRUCTURE"]
+                if timeframe_seconds >= 900
+                else ["NO_CONFIRMED_STRUCTURE_EVENT"]
+            ),
+        }
+
+    monkeypatch.setattr(main, "_price_action_analysis", conflicting_m15_structure)
     monkeypatch.setattr(
         main, "_candle_microstructure_analysis",
         lambda candles: {
@@ -1318,3 +1323,4 @@ def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
     assert body["setup"] is None
     assert body["execution_enabled"] is False
     assert any("محفز دخول مكتمل" in reason for reason in body["blockers"])
+    assert any("M15" in reason for reason in body["blockers"])
