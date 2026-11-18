@@ -323,20 +323,24 @@ class MainActivity : ComponentActivity() {
                         if (hasCandles) candles = "وصلت الشموع بنجاح — $candles"
                         else candles = "بيانات الشموع غير مكتملة أو قديمة — $candles"
                     }
-                    val decision = j.optString("decision", "WAIT")
                     val dossier = j.optJSONObject("technical_dossier")
-                    val blockers = j.optJSONArray("blockers")
+                    val entryEngine = j.optJSONObject("entry_engine")
+                    val decision = entryEngine?.optString("direction", j.optString("decision", "WAIT"))
+                        ?: j.optString("decision", "WAIT")
+                    val score = entryEngine?.optInt("entry_quality_score_0_to_100", -1)
+                        ?.takeIf { it >= 0 }?.toDouble()
+                        ?: (dossier?.optDouble("confluence_score", 0.0) ?: 0.0)
+                    val strategy = entryEngine?.optString("selected_strategy", "لا توجد استراتيجية")
+                        ?: "لا توجد استراتيجية"
+                    val blockers = entryEngine?.optJSONArray("blockers") ?: j.optJSONArray("blockers")
                     val blockText = if (blockers != null && blockers.length() > 0) {
                         (0 until minOf(4, blockers.length())).joinToString("، ") { blockers.optString(it) }
                     } else "لا توجد موانع مسجلة"
-                    if (dossier == null) {
-                        "القرار: $decision — لم يرجع الخادم ملف التحليل الفني. $blockText"
-                    } else {
-                        val score = dossier.optDouble("confluence_score", 0.0)
-                        val grade = dossier.optString("confluence_grade", "غير محدد")
-                        val dominant = dossier.optString("dominant_technical_direction", "WAIT")
-                        "القرار: $decision — توافق: ${score.toInt()}/100 ($grade) — الاتجاه الفني: $dominant — الموانع: $blockText"
-                    }
+                    val setup = entryEngine?.optJSONObject("setup")
+                    val entryText = if (setup != null) {
+                        "دخول \${setup.optString("entry_reference")} — وقف \${setup.optString("stop_loss")} — TP2 \${setup.optJSONObject("take_profit")?.optString("TP2_2R") ?: "—"}"
+                    } else "لا يوجد دخول مؤكد حالياً"
+                    "محرك الدخول: $decision — جودة: \${score.toInt()}/100 — الاستراتيجية: $strategy — $entryText — الموانع: $blockText"
                 } catch (e: Exception) {
                     candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
