@@ -1289,7 +1289,7 @@ def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
             "candle_count": len(request.candles),
         },
     )
-    monkeypatch.setattr(main, "_ema_series", lambda values, period: [2301.0] if period == 20 else [2300.0])
+    monkeypatch.setattr(main, "_ema_series", lambda values, period: [2299.9] if period == 20 else [2299.5])
     monkeypatch.setattr(main, "_adx_wilder", lambda candles: (28.0, 30.0, 10.0))
     monkeypatch.setattr(main, "_atr_wilder", lambda candles: 1.0)
     monkeypatch.setattr(
