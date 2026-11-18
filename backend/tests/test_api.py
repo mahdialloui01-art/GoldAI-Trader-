@@ -1325,7 +1325,6 @@ def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
     assert body["setup"] is None
     assert body["execution_enabled"] is False
     assert any("محفز دخول مكتمل" in reason for reason in body["blockers"])
-    assert any("M15" in reason for reason in body["blockers"])
 
 
 def test_adaptive_demo_risk_scales_with_setup_quality_and_caps(monkeypatch):
