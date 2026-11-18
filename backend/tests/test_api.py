@@ -25,7 +25,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.2"
+    assert body["analysis_engine_version"] == "0.6.3"
     assert "closed_candle_microstructure" in body["analysis_layers"]
     assert "optional_tick_volume_participation" in body["analysis_layers"]
     assert "password" not in body
@@ -1176,3 +1176,145 @@ def test_microstructure_does_not_invent_volume_confirmation_when_tick_volume_is_
     assert result["tick_volume"]["state"] == "UNAVAILABLE"
     assert result["tick_volume"]["ratio_to_median"] is None
     assert result["tick_volume"]["directional_confirmation"] == "NONE"
+
+
+
+def test_entry_plan_requires_confirmed_multitimeframe_trigger_and_returns_explainable_plan(monkeypatch):
+    _set_fresh_quote()
+    main._latest_mt5_quote.update({
+        "bid": 2300.0, "ask": 2300.1, "spread_points": 2,
+        "point": 0.01, "digits": 2,
+    })
+
+    def stable_candles(timeframe):
+        candles = _technical_payload(timeframe, count=100)["candles"]
+        for index, candle in enumerate(candles):
+            close = 2299.0 + index * 0.001
+            candle.update({
+                "open": close - 0.05,
+                "high": close + 0.10,
+                "low": close - 0.10,
+                "close": close,
+                "tick_volume": 200,
+            })
+        candles[-1].update({
+            "open": 2299.70, "high": 2300.20,
+            "low": 2299.50, "close": 2300.00,
+            "tick_volume": 300,
+        })
+        return candles
+
+    payload = {
+        "symbol": "GOLD",
+        "m5": stable_candles("M5"),
+        "m15": stable_candles("M15"),
+        "h1": stable_candles("H1"),
+        "h4": stable_candles("H4"),
+    }
+
+    monkeypatch.setattr(main, "_fresh_mt5_quote", lambda: main._latest_mt5_quote)
+    monkeypatch.setattr(
+        main, "technical_analysis",
+        lambda request: {
+            "direction": "BUY",
+            "confidence_score": 90,
+            "candle_count": len(request.candles),
+        },
+    )
+    monkeypatch.setattr(
+        main, "_ema_series",
+        lambda values, period: [2299.9] if period == 20 else [2299.5],
+    )
+    monkeypatch.setattr(main, "_adx_wilder", lambda candles: (28.0, 30.0, 10.0))
+    monkeypatch.setattr(main, "_atr_wilder", lambda candles: 1.0)
+    monkeypatch.setattr(
+        main, "_market_regime_analysis",
+        lambda candles: {
+            "market_regime": "TRENDING_UP",
+            "indicators": {"atr_vs_recent_median": 1.0},
+        },
+    )
+
+    def price_action(candles, left, right, tolerance):
+        if candles is payload["m15"]:
+            return {"market_structure": "UPTREND", "events": []}
+        return {
+            "market_structure": "UPTREND",
+            "events": ["BULLISH_BREAK_OF_STRUCTURE"],
+        }
+
+    monkeypatch.setattr(main, "_price_action_analysis", price_action)
+    monkeypatch.setattr(
+        main, "_candle_microstructure_analysis",
+        lambda candles: {
+            "candle_direction": "BULLISH",
+            "close_location_0_to_1": 0.9,
+            "closed_candle_pattern": "BULLISH_ENGULFING",
+            "tick_volume": {
+                "state": "EXPANSION",
+                "directional_confirmation": "BULLISH",
+            },
+        },
+    )
+
+    response = client.post("/api/v1/analysis/entry-plan", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["direction"] == "BUY"
+    assert body["selected_strategy"] == "BREAKOUT"
+    assert body["entry_quality_score_0_to_100"] >= 82
+    assert body["score_threshold"] == 82
+    assert body["setup"]["stop_loss"] < body["setup"]["entry_reference"]
+    assert body["setup"]["take_profit"]["TP2_2R"] > body["setup"]["entry_reference"]
+    assert body["execution_enabled"] is False
+
+
+def test_entry_plan_waits_without_confirmed_m5_trigger(monkeypatch):
+    _set_fresh_quote()
+    payload = {
+        "symbol": "GOLD",
+        "m5": _technical_payload("M5")["candles"],
+        "m15": _technical_payload("M15")["candles"],
+        "h1": _technical_payload("H1")["candles"],
+        "h4": _technical_payload("H4")["candles"],
+    }
+    monkeypatch.setattr(main, "_fresh_mt5_quote", lambda: main._latest_mt5_quote)
+    monkeypatch.setattr(
+        main, "technical_analysis",
+        lambda request: {
+            "direction": "BUY",
+            "confidence_score": 90,
+            "candle_count": len(request.candles),
+        },
+    )
+    monkeypatch.setattr(main, "_ema_series", lambda values, period: [2301.0] if period == 20 else [2300.0])
+    monkeypatch.setattr(main, "_adx_wilder", lambda candles: (28.0, 30.0, 10.0))
+    monkeypatch.setattr(main, "_atr_wilder", lambda candles: 1.0)
+    monkeypatch.setattr(
+        main, "_market_regime_analysis",
+        lambda candles: {"market_regime": "TRENDING_UP", "indicators": {"atr_vs_recent_median": 1.0}},
+    )
+    monkeypatch.setattr(
+        main, "_price_action_analysis",
+        lambda candles, left, right, tolerance: {
+            "market_structure": "UPTREND",
+            "events": ["NO_CONFIRMED_STRUCTURE_EVENT"],
+        },
+    )
+    monkeypatch.setattr(
+        main, "_candle_microstructure_analysis",
+        lambda candles: {
+            "candle_direction": "NEUTRAL",
+            "close_location_0_to_1": 0.5,
+            "closed_candle_pattern": "NONE",
+            "tick_volume": {"state": "UNAVAILABLE", "directional_confirmation": "NONE"},
+        },
+    )
+    response = client.post("/api/v1/analysis/entry-plan", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["direction"] == "WAIT"
+    assert body["selected_strategy"] is None
+    assert body["setup"] is None
+    assert body["execution_enabled"] is False
+    assert any("محفز دخول مكتمل" in reason for reason in body["blockers"])
