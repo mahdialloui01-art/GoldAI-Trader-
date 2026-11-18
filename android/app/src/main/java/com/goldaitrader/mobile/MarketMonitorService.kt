@@ -143,8 +143,8 @@ class MarketMonitorService : Service() {
         val strategy = entryEngine?.optString("selected_strategy", "—") ?: "—"
         val market = json.optJSONObject("market_data")
         val age = market?.optInt("feed_age_seconds", -1) ?: -1
-        val scoreText = if (score.isFinite()) "\${score.toInt()}/100" else "—"
-        val freshness = if (age >= 0) "\${age}ث" else "؟"
+        val scoreText = if (score.isFinite()) "${score.toInt()}/100" else "—"
+        val freshness = if (age >= 0) "${age}ث" else "؟"
         val blockers = entryEngine?.optJSONArray("blockers")
         val blockerText = if (blockers != null && blockers.length() > 0) {
             (0 until minOf(2, blockers.length())).joinToString("، ") { blockers.optString(it) }
