@@ -1375,3 +1375,77 @@ def test_adaptive_demo_risk_locks_at_daily_loss_limit(monkeypatch):
     result = main._adaptive_demo_risk_policy(analysis, 2.0)
     assert result["approved"] is False
     assert result["risk_percent"] == 0.0
+
+
+def test_entry_scanner_finds_momentum_continuation_without_waiting_for_swing_bos(monkeypatch):
+    raw = _technical_payload("M5", count=100)["candles"]
+    candles = [main.Candle(**item) for item in raw]
+    candles[-2] = candles[-2].model_copy(update={
+        "open": 2299.8, "high": 2300.5, "low": 2299.7, "close": 2300.1,
+    })
+    candles[-1] = candles[-1].model_copy(update={
+        "open": 2300.1, "high": 2301.2, "low": 2300.0, "close": 2301.0,
+    })
+    monkeypatch.setattr(main, "_ema_series", lambda values, period: [2300.0] * len(values))
+    monkeypatch.setattr(main, "_price_action_analysis", lambda *args, **kwargs: {
+        "market_structure": "UPTREND", "events": [],
+    })
+    monkeypatch.setattr(main, "_candle_microstructure_analysis", lambda values: {
+        "closed_candle_pattern": "NONE", "impulse_direction": "BULLISH",
+    })
+    report = {
+        "market_structure": "UPTREND",
+        "microstructure": {"closed_candle_pattern": "NONE", "impulse_direction": "BULLISH"},
+        "atr14": 1.0, "ema20": 2300.0, "market_regime": "TRENDING_UP",
+    }
+    scan = main._classify_entry_setups_for_direction(
+        "BUY", {"M5": candles}, {"M5": report}, 0.05,
+    )
+    assert any(item["strategy"] == "MOMENTUM_CONTINUATION" for item in scan["candidates"])
+    assert scan["selected"]["strategy"] == "MOMENTUM_CONTINUATION"
+
+
+def test_entry_scanner_detects_closed_ema20_reclaim(monkeypatch):
+    raw = _technical_payload("M5", count=100)["candles"]
+    candles = [main.Candle(**item) for item in raw]
+    candles[-2] = candles[-2].model_copy(update={
+        "open": 2300.1, "high": 2300.3, "low": 2299.8, "close": 2300.0,
+    })
+    candles[-1] = candles[-1].model_copy(update={
+        "open": 2300.0, "high": 2300.9, "low": 2299.95, "close": 2300.8,
+    })
+    def controlled_ema(values, period):
+        return [2300.5 if len(values) == len(candles) else 2300.2] * len(values)
+    monkeypatch.setattr(main, "_ema_series", controlled_ema)
+    monkeypatch.setattr(main, "_price_action_analysis", lambda *args, **kwargs: {
+        "market_structure": "UPTREND", "events": [],
+    })
+    monkeypatch.setattr(main, "_candle_microstructure_analysis", lambda values: {
+        "closed_candle_pattern": "NONE", "impulse_direction": "BULLISH",
+    })
+    report = {
+        "market_structure": "UPTREND",
+        "microstructure": {"closed_candle_pattern": "NONE", "impulse_direction": "BULLISH"},
+        "atr14": 1.0, "ema20": 2300.5, "market_regime": "TRENDING_UP",
+    }
+    scan = main._classify_entry_setups_for_direction(
+        "BUY", {"M5": candles}, {"M5": report}, 0.05,
+    )
+    assert any(item["strategy"] == "EMA_RECLAIM" for item in scan["candidates"])
+
+
+def test_demo_quality_gate_accepts_new_strategies_only_with_strong_setup_score():
+    analysis = {
+        "technical_dossier": {
+            "confluence_score": 86,
+            "strategy_scan": {
+                "blockers": [],
+                "selected": {
+                    "strategy": "EMA_RECLAIM", "score": 5, "max_score": 5,
+                },
+            },
+        },
+    }
+    approved, _, details = main._demo_candidate_quality_gate(analysis)
+    assert approved is True
+    assert details["selected_strategy"] == "EMA_RECLAIM"
