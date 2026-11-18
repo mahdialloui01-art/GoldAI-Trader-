@@ -3789,6 +3789,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     spread_price = float(quote["spread_points"]) * float(quote["point"])
     spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else float("inf")
     h1_regime = _market_regime_analysis(request.h1)
+    m5_regime = _market_regime_analysis(request.m5)
     volatility_ratio = float(h1_regime["indicators"]["atr_vs_recent_median"])
 
     reasons: list[str] = []
@@ -3822,9 +3823,16 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         (bias == Direction.BUY and m15_structure == "UPTREND")
         or (bias == Direction.SELL and m15_structure == "DOWNTREND")
     )
+    m15_events = set(m15_pa["events"])
     m15_opposes = (
-        (bias == Direction.BUY and m15_structure == "DOWNTREND")
-        or (bias == Direction.SELL and m15_structure == "UPTREND")
+        (bias == Direction.BUY and (
+            m15_structure == "DOWNTREND"
+            or "BEARISH_BREAK_OF_STRUCTURE" in m15_events
+        ))
+        or (bias == Direction.SELL and (
+            m15_structure == "UPTREND"
+            or "BULLISH_BREAK_OF_STRUCTURE" in m15_events
+        ))
     )
     if m15_matches:
         components["M15_MARKET_STRUCTURE"] = 15
@@ -3836,51 +3844,35 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         components["M15_MARKET_STRUCTURE"] = 7
         reasons.append("بنية M15 انتقالية؛ لا تمنح تأكيداً كاملاً ولا تعاكس الاتجاه.")
 
-    events = set(m5_pa["events"])
-    direction_text = bias.value if bias in (Direction.BUY, Direction.SELL) else "WAIT"
-    selected_strategy = None
-    trigger_direction = Direction.WAIT
-
-    # A sweep of sell-side liquidity followed by a reclaim is a bullish candidate;
-    # a sweep of buy-side liquidity followed by rejection is a bearish candidate.
-    if bias == Direction.BUY and "SELL_SIDE_LIQUIDITY_SWEEP" in events:
-        selected_strategy = "LIQUIDITY_SWEEP"
-        trigger_direction = Direction.BUY
-        reasons.append("تم رصد سحب سيولة أسفل قاع مؤكد ثم إغلاق رجوعي صاعد.")
-    elif bias == Direction.SELL and "BUY_SIDE_LIQUIDITY_SWEEP" in events:
-        selected_strategy = "LIQUIDITY_SWEEP"
-        trigger_direction = Direction.SELL
-        reasons.append("تم رصد سحب سيولة أعلى قمة مؤكدة ثم إغلاق رجوعي هابط.")
-    elif bias == Direction.BUY and "BULLISH_BREAK_OF_STRUCTURE" in events:
-        selected_strategy = "BREAKOUT"
-        trigger_direction = Direction.BUY
-        reasons.append("إغلاق M5 أكد اختراق بنية صاعدة.")
-    elif bias == Direction.SELL and "BEARISH_BREAK_OF_STRUCTURE" in events:
-        selected_strategy = "BREAKOUT"
-        trigger_direction = Direction.SELL
-        reasons.append("إغلاق M5 أكد كسر بنية هابطة.")
-    elif bias in (Direction.BUY, Direction.SELL) and m5_atr > 0:
-        extension_atr = abs(last.close - m5_ema20) / m5_atr
-        near_ema = extension_atr <= 0.35
-        bullish_candle = (
-            m5_micro["candle_direction"] == "BULLISH"
-            and (m5_micro["close_location_0_to_1"] >= 0.60
-                 or m5_micro["closed_candle_pattern"] in ("BULLISH_ENGULFING", "BULLISH_REJECTION"))
-        )
-        bearish_candle = (
-            m5_micro["candle_direction"] == "BEARISH"
-            and (m5_micro["close_location_0_to_1"] <= 0.40
-                 or m5_micro["closed_candle_pattern"] in ("BEARISH_ENGULFING", "BEARISH_REJECTION"))
-        )
-        if near_ema and bias == Direction.BUY and bullish_candle:
-            selected_strategy = "PULLBACK"
-            trigger_direction = Direction.BUY
-            reasons.append("السعر أعاد اختبار EMA20 على M5 مع شمعة تأكيد صاعدة.")
-        elif near_ema and bias == Direction.SELL and bearish_candle:
-            selected_strategy = "PULLBACK"
-            trigger_direction = Direction.SELL
-            reasons.append("السعر أعاد اختبار EMA20 على M5 مع شمعة تأكيد هابطة.")
-
+    m5_frames = {"M5": request.m5}
+    m5_report = {
+        "market_structure": m5_pa["market_structure"],
+        "microstructure": m5_micro,
+        "atr14": m5_atr,
+        "ema20": m5_ema20,
+        "market_regime": m5_regime["market_regime"],
+    }
+    setup_scan = _classify_entry_setups_for_direction(
+        bias.value if bias in (Direction.BUY, Direction.SELL) else "WAIT",
+        m5_frames,
+        {"M5": m5_report},
+        spread_atr_ratio,
+    )
+    selected_candidate = setup_scan.get("selected")
+    selected_strategy = (
+        selected_candidate.get("strategy")
+        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP")
+        else None
+    )
+    trigger_direction = bias if selected_strategy else Direction.WAIT
+    if selected_strategy:
+        reasons.extend(selected_candidate.get("evidence", []))
+        reasons.append(f"محرك إعدادات M5 اختار {selected_strategy} بعد فحص الشموع المغلقة الأخيرة.")
+    elif selected_candidate and selected_candidate.get("strategy") == "REVERSAL_WATCH":
+        blockers.append("REVERSAL_WATCH_IS_NOT_AN_ENTRY")
+        reasons.append("تم رصد احتمال انعكاس عكسي؛ يبقى للمراقبة ولا يُستخدم للدخول ضد اتجاه H4/H1.")
+    else:
+        blockers.append("لا يوجد محفز دخول مكتمل على شمعة M5 المغلقة أو في آخر شمعتين مغلقتين.")
     if selected_strategy:
         components["M5_ENTRY_TRIGGER"] = 25
     else:
@@ -4013,6 +4005,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         },
         "market_structure": {"M15": m15_pa, "M5": m5_pa},
         "entry_microstructure": m5_micro,
+        "entry_setup_scan": setup_scan,
         "market_regime_H1": h1_regime,
         "spread_atr_ratio_M5": round(spread_atr_ratio, 4),
         "quote_distance_from_signal_close_atr": round(quote_distance_atr, 3),
