@@ -344,7 +344,16 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.3",
+        "analysis_engine_version": "0.6.4",
+        "adaptive_risk_policy": {
+            "enabled": True,
+            "mode": "QUALITY_AND_DAILY_DRAWDOWN",
+            "auto_demo_risk_bands_percent": [0.15, 0.25, 0.30, 0.40, 0.50],
+            "absolute_auto_demo_cap_percent": min(auto_demo_risk_per_trade_percent, max_risk_per_trade_percent) if False else 0.5,
+            "sizing_inputs": ["MT5 account equity", "XM tick size/value", "broker volume min/max/step", "entry stop distance", "setup quality", "daily loss utilization"],
+            "minimum_lot_uplift": False,
+            "live_trading_enabled": False,
+        },
         "analysis_layers": [
             "multi_timeframe_m5_m15_h1_h4",
             "wilder_rsi_macd_adx_atr",
@@ -3587,6 +3596,83 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
     return {"available": True, **command}
 
 
+def _adaptive_demo_risk_policy(analysis: dict, daily_loss_percent: float) -> dict:
+    """Choose a bounded DEMO risk budget from setup quality and remaining daily-loss headroom."""
+    dossier = analysis.get("technical_dossier") or {}
+    entry_engine = analysis.get("entry_engine") or {}
+    raw_scores = [
+        dossier.get("confluence_score"),
+        entry_engine.get("entry_quality_score_0_to_100"),
+    ]
+    scores = []
+    for raw in raw_scores:
+        try:
+            value = float(raw)
+            if math.isfinite(value) and 0 <= value <= 100:
+                scores.append(value)
+        except (TypeError, ValueError):
+            continue
+    # Use the weaker available score; missing/invalid scores never increase risk.
+    quality = min(scores) if scores else 82.0
+    if quality >= 95:
+        quality_risk = 0.50
+        quality_band = "EXCEPTIONAL"
+    elif quality >= 90:
+        quality_risk = 0.40
+        quality_band = "VERY_STRONG"
+    elif quality >= 87:
+        quality_risk = 0.30
+        quality_band = "STRONG"
+    elif quality >= 85:
+        quality_risk = 0.25
+        quality_band = "GOOD"
+    else:
+        quality_risk = 0.15
+        quality_band = "MINIMUM_QUALIFIED"
+
+    daily_limit = float(settings.max_daily_loss_percent)
+    if daily_limit <= 0 or daily_loss_percent >= daily_limit:
+        return {
+            "approved": False, "risk_percent": 0.0, "quality_score": round(quality, 2),
+            "quality_band": quality_band, "daily_loss_scale": 0.0,
+            "reason": "Daily loss limit reached; all new entries are locked.",
+        }
+    utilization = daily_loss_percent / daily_limit
+    if utilization >= 0.75:
+        scale, headroom = 0.25, "LOW"
+    elif utilization >= 0.50:
+        scale, headroom = 0.50, "REDUCED"
+    elif utilization >= 0.25:
+        scale, headroom = 0.75, "CAUTIOUS"
+    else:
+        scale, headroom = 1.0, "NORMAL"
+
+    configured_cap = min(
+        float(settings.auto_demo_risk_per_trade_percent),
+        float(settings.max_risk_per_trade_percent),
+        0.5,
+    )
+    selected = min(quality_risk * scale, configured_cap)
+    if not math.isfinite(selected) or selected <= 0:
+        return {
+            "approved": False, "risk_percent": 0.0, "quality_score": round(quality, 2),
+            "quality_band": quality_band, "daily_loss_scale": scale,
+            "reason": "Risk configuration is invalid; position sizing is paused.",
+        }
+    return {
+        "approved": True,
+        "risk_percent": round(selected, 4),
+        "uncapped_quality_risk_percent": quality_risk,
+        "configured_cap_percent": configured_cap,
+        "quality_score": round(quality, 2),
+        "quality_band": quality_band,
+        "daily_loss_scale": scale,
+        "daily_loss_headroom": headroom,
+        "daily_loss_utilization_percent": round(utilization * 100, 2),
+        "reason": "Risk selected from the weaker confirmed quality score, then reduced for daily-loss utilization and capped by server policy.",
+    }
+
+
 @app.get("/api/v1/mt5/demo/signal")
 async def mt5_demo_signal(
     daily_loss_percent: float = 0.0,
@@ -3642,6 +3728,14 @@ async def mt5_demo_signal(
             "quality_gate": quality_details,
             "execution_enabled": False,
         }
+    risk_policy = _adaptive_demo_risk_policy(analysis, daily_loss_percent)
+    if not risk_policy.get("approved"):
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": risk_policy.get("reason", "Adaptive risk policy denied the trade."),
+            "risk_policy": risk_policy,
+            "execution_enabled": False,
+        }
     plan = analysis.get("setup_plan")
     if analysis.get("decision") not in ("BUY", "SELL") or not isinstance(plan, dict):
         return {
@@ -3658,7 +3752,7 @@ async def mt5_demo_signal(
     stop_points = abs(entry - stop) / point
     sizing = calculate_position_size(PositionSizeRequest(
         stop_distance_points=stop_points,
-        risk_percent=settings.auto_demo_risk_per_trade_percent,
+        risk_percent=float(risk_policy["risk_percent"]),
         account_equity=float(quote["account_equity"]),
         daily_loss_percent=daily_loss_percent,
     ))
@@ -3680,7 +3774,12 @@ async def mt5_demo_signal(
         "take_profit": plan["targets"]["target_2R"],
         "risk_reward": "1:2",
         "recommended_lots": sizing["recommended_lots"],
-        "risk_percent": settings.auto_demo_risk_per_trade_percent,
+        "risk_percent": risk_policy["risk_percent"],
+        "risk_amount": sizing.get("estimated_stop_loss_amount"),
+        "account_equity": quote.get("account_equity"),
+        "account_currency": quote.get("account_currency"),
+        "risk_policy": risk_policy,
+        "position_sizing": sizing,
         "daily_loss_percent": daily_loss_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
         "blockers": [],
