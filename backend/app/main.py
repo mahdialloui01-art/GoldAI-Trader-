@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     demo_execution_enabled: bool = False
     manual_demo_execution_enabled: bool = False
     demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only
-    auto_demo_risk_per_trade_percent: float = Field(default=0.25, gt=0, le=0.5)
+    auto_demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=0.5)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
@@ -58,7 +58,7 @@ settings = Settings()
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
-    version="0.6.3",
+    version="0.6.4",
 )
 
 from .news_reaction import router as news_reaction_router
@@ -349,7 +349,7 @@ def get_config() -> dict:
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN",
             "auto_demo_risk_bands_percent": [0.15, 0.25, 0.30, 0.40, 0.50],
-            "absolute_auto_demo_cap_percent": min(auto_demo_risk_per_trade_percent, max_risk_per_trade_percent) if False else 0.5,
+            "absolute_auto_demo_cap_percent": 0.5,
             "sizing_inputs": ["MT5 account equity", "XM tick size/value", "broker volume min/max/step", "entry stop distance", "setup quality", "daily loss utilization"],
             "minimum_lot_uplift": False,
             "live_trading_enabled": False,
