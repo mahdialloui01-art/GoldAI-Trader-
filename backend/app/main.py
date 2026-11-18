@@ -2953,14 +2953,41 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
                 "events": sorted(recent_events.intersection({wanted_bos, wanted_sweep})),
             })
     if recent_structure_events:
+        recent_trigger = recent_structure_events[0]
+        recent_trigger_events = set(recent_trigger["events"])
+        bars_ago = int(recent_trigger["bars_ago"])
+        if wanted_bos in recent_trigger_events and not any(
+            item.get("strategy") == "BREAKOUT" for item in candidates
+        ) and extension <= 1.20:
+            candidates.append({
+                "strategy": "BREAKOUT",
+                "score": 5 if bars_ago == 0 and matching_confirmation else 4,
+                "max_score": 5,
+                "evidence": [
+                    f"كسر هيكل مؤكد بإغلاق شمعة ضمن آخر {bars_ago} شمعة مغلقة",
+                    "السعر ما زال قريباً من EMA20 ولم يتجاوز حد مطاردة الحركة",
+                ],
+            })
+        if wanted_sweep in recent_trigger_events and matching_confirmation and not any(
+            item.get("strategy") == "LIQUIDITY_SWEEP" for item in candidates
+        ) and extension <= 1.20:
+            candidates.append({
+                "strategy": "LIQUIDITY_SWEEP",
+                "score": 5 if bars_ago == 0 else 4,
+                "max_score": 5,
+                "evidence": [
+                    f"سحب سيولة مؤكد ضمن آخر {bars_ago} شمعة مغلقة",
+                    "تأكيد اتجاهي لاحق للسحب مع بقاء السعر قرب EMA20",
+                ],
+            })
         for candidate in candidates:
             if candidate.get("strategy") == "BREAKOUT":
                 candidate["evidence"].append(
-                    f"تأكيد كسر هيكل ضمن آخر {recent_structure_events[0]['bars_ago']} شمعة مغلقة"
+                    f"تأكيد كسر هيكل ضمن آخر {bars_ago} شمعة مغلقة"
                 )
             elif candidate.get("strategy") == "LIQUIDITY_SWEEP":
                 candidate["evidence"].append(
-                    f"تأكيد سحب سيولة ضمن آخر {recent_structure_events[0]['bars_ago']} شمعة مغلقة"
+                    f"تأكيد سحب سيولة ضمن آخر {bars_ago} شمعة مغلقة"
                 )
 
     # Reversal is deliberately informational only; it cannot override H4/H1 trend bias.
