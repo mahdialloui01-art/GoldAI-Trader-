@@ -3717,6 +3717,19 @@ async def live_expert_technical_analysis() -> dict:
     context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
     try:
         result = await expert_technical_analysis(request)
+        try:
+            # The dedicated entry engine is technical-first. Calendar and macro
+            # remain visible as context but cannot veto a strong closed-candle setup.
+            result["entry_engine"] = analyze_entry_plan(request)
+        except HTTPException as entry_error:
+            result["entry_engine"] = {
+                "direction": Direction.WAIT,
+                "selected_strategy": None,
+                "entry_quality_score_0_to_100": 0,
+                "setup": None,
+                "blockers": [f"ENTRY_ENGINE_UNAVAILABLE: {entry_error.detail}"],
+                "execution_enabled": False,
+            }
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result["market_data"] = {
@@ -3750,7 +3763,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     }
     quote = _fresh_mt5_quote()
 
-    def trend_bias(candles: list[Candle]) -> tuple[Direction, float, float, float, float]:
+    def trend_bias(candles: list[Candle]) -> tuple[Direction, float, float, float, float, float]:
         closes = [item.close for item in candles]
         ema20_value = _ema_series(closes, 20)[-1]
         ema50_value = _ema_series(closes, 50)[-1]
@@ -3761,12 +3774,10 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
             bias = Direction.SELL
         else:
             bias = Direction.WAIT
-        return bias, ema20_value, ema50_value, adx_value, (
-            plus_di_value if bias == Direction.BUY else minus_di_value
-        )
+        return bias, ema20_value, ema50_value, adx_value, plus_di_value, minus_di_value
 
-    h4_bias, h4_ema20, h4_ema50, h4_adx, h4_directional_di = trend_bias(request.h4)
-    h1_bias, h1_ema20, h1_ema50, h1_adx, h1_directional_di = trend_bias(request.h1)
+    h4_bias, h4_ema20, h4_ema50, h4_adx, h4_plus_di, h4_minus_di = trend_bias(request.h4)
+    h1_bias, h1_ema20, h1_ema50, h1_adx, h1_plus_di, h1_minus_di = trend_bias(request.h1)
     bias = h4_bias
     m15_pa = _price_action_analysis(request.m15, 3, 3, 0.12)
     m5_pa = _price_action_analysis(request.m5, 3, 3, 0.12)
@@ -3793,8 +3804,8 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         blockers.append("اتجاه H4 وH1 غير متوافق أو غير واضح.")
 
     h1_di_aligned = (
-        (bias == Direction.BUY and h1_directional_di > 0 and h1_directional_di >= 20)
-        or (bias == Direction.SELL and h1_directional_di > 0 and h1_directional_di >= 20)
+        (bias == Direction.BUY and h1_plus_di > h1_minus_di)
+        or (bias == Direction.SELL and h1_minus_di > h1_plus_di)
     )
     if h1_adx >= 20 and h1_di_aligned:
         components["H1_TREND_STRENGTH"] = 10
@@ -3918,8 +3929,11 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     score = sum(components.values())
     entry_reference = float(quote["ask"] if bias == Direction.BUY else quote["bid"])
     quote_distance_atr = abs(entry_reference - last.close) / m5_atr if m5_atr > 0 else float("inf")
+    m5_extension_atr = abs(last.close - m5_ema20) / m5_atr if m5_atr > 0 else float("inf")
     if quote_distance_atr > 0.50:
         blockers.append("السعر الحالي ابتعد عن إغلاق شمعة الإشارة؛ خطر مطاردة الحركة مرتفع.")
+    if m5_extension_atr > 1.50:
+        blockers.append("شمعة M5 ممتدة بأكثر من 1.5 ATR عن EMA20؛ ننتظر إعادة الاختبار بدل مطاردة السعر.")
 
     if not higher_aligned:
         final_direction = Direction.WAIT
@@ -3927,7 +3941,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         final_direction = Direction.WAIT
     elif trigger_direction != bias:
         final_direction = Direction.WAIT
-    elif spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50:
+    elif spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50 or m5_extension_atr > 1.50:
         final_direction = Direction.WAIT
     elif score < 78:
         final_direction = Direction.WAIT
