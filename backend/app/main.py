@@ -58,7 +58,7 @@ settings = Settings()
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
-    version="0.6.2",
+    version="0.6.3",
 )
 
 from .news_reaction import router as news_reaction_router
@@ -344,7 +344,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.2",
+        "analysis_engine_version": "0.6.3",
         "analysis_layers": [
             "multi_timeframe_m5_m15_h1_h4",
             "wilder_rsi_macd_adx_atr",
@@ -354,6 +354,9 @@ def get_config() -> dict:
             "optional_tick_volume_participation",
             "explainable_weighted_signal_fusion",
             "freshness_adjusted_macro_pressure_gate",
+            "explainable_entry_setup_engine_sweep_breakout_pullback",
+            "closed_candle_entry_confirmation_and_anti_chasing",
+            "news_and_macro_context_advisory_not_technical_entry_veto",
             "macro_and_high_impact_news_fail_closed_gates",
         ],
     }
@@ -3727,3 +3730,294 @@ async def live_expert_technical_analysis() -> dict:
     }
     save_opportunity(result)
     return result
+
+
+@app.post("/api/v1/analysis/entry-plan")
+def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
+    """Build an explainable, closed-candle GOLD entry plan; never authorizes execution."""
+    if request.symbol.upper() != settings.broker_gold_symbol.upper():
+        raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
+
+    # Reuse the same quote and candle-integrity checks as the existing technical API.
+    frame_requests = {
+        "M5": request.m5, "M15": request.m15, "H1": request.h1, "H4": request.h4,
+    }
+    timeframe_diagnostics = {
+        frame: technical_analysis(TechnicalAnalysisRequest(
+            symbol=request.symbol, timeframe=frame, candles=candles
+        ))
+        for frame, candles in frame_requests.items()
+    }
+    quote = _fresh_mt5_quote()
+
+    def trend_bias(candles: list[Candle]) -> tuple[Direction, float, float, float, float]:
+        closes = [item.close for item in candles]
+        ema20_value = _ema_series(closes, 20)[-1]
+        ema50_value = _ema_series(closes, 50)[-1]
+        adx_value, plus_di_value, minus_di_value = _adx_wilder(candles)
+        if ema20_value > ema50_value and closes[-1] > ema20_value:
+            bias = Direction.BUY
+        elif ema20_value < ema50_value and closes[-1] < ema20_value:
+            bias = Direction.SELL
+        else:
+            bias = Direction.WAIT
+        return bias, ema20_value, ema50_value, adx_value, (
+            plus_di_value if bias == Direction.BUY else minus_di_value
+        )
+
+    h4_bias, h4_ema20, h4_ema50, h4_adx, h4_directional_di = trend_bias(request.h4)
+    h1_bias, h1_ema20, h1_ema50, h1_adx, h1_directional_di = trend_bias(request.h1)
+    bias = h4_bias
+    m15_pa = _price_action_analysis(request.m15, 3, 3, 0.12)
+    m5_pa = _price_action_analysis(request.m5, 3, 3, 0.12)
+    m5_micro = _candle_microstructure_analysis(request.m5)
+    m5_atr = _atr_wilder(request.m5)
+    m5_closes = [item.close for item in request.m5]
+    m5_ema20 = _ema_series(m5_closes, 20)[-1]
+    last = request.m5[-1]
+    spread_price = float(quote["spread_points"]) * float(quote["point"])
+    spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else float("inf")
+    h1_regime = _market_regime_analysis(request.h1)
+    volatility_ratio = float(h1_regime["indicators"]["atr_vs_recent_median"])
+
+    reasons: list[str] = []
+    blockers: list[str] = []
+    components: dict[str, int] = {}
+
+    higher_aligned = bias in (Direction.BUY, Direction.SELL) and h1_bias == bias
+    if higher_aligned:
+        components["H4_H1_DIRECTIONAL_ALIGNMENT"] = 20
+        reasons.append("اتجاه H4 وH1 متوافق؛ الإطاران الأعلى يحددان نفس الأفضلية.")
+    else:
+        components["H4_H1_DIRECTIONAL_ALIGNMENT"] = 0
+        blockers.append("اتجاه H4 وH1 غير متوافق أو غير واضح.")
+
+    h1_di_aligned = (
+        (bias == Direction.BUY and h1_directional_di > 0 and h1_directional_di >= 20)
+        or (bias == Direction.SELL and h1_directional_di > 0 and h1_directional_di >= 20)
+    )
+    if h1_adx >= 20 and h1_di_aligned:
+        components["H1_TREND_STRENGTH"] = 10
+        reasons.append("قوة الاتجاه على H1 مدعومة بقياس ADX وDI.")
+    elif h1_adx >= 15:
+        components["H1_TREND_STRENGTH"] = 5
+        reasons.append("قوة اتجاه H1 متوسطة؛ يلزم تأكيد أدق على إطار الدخول.")
+    else:
+        components["H1_TREND_STRENGTH"] = 0
+        reasons.append("قوة الاتجاه على H1 ضعيفة أو غير حاسمة.")
+
+    m15_structure = m15_pa["market_structure"]
+    m15_matches = (
+        (bias == Direction.BUY and m15_structure == "UPTREND")
+        or (bias == Direction.SELL and m15_structure == "DOWNTREND")
+    )
+    m15_opposes = (
+        (bias == Direction.BUY and m15_structure == "DOWNTREND")
+        or (bias == Direction.SELL and m15_structure == "UPTREND")
+    )
+    if m15_matches:
+        components["M15_MARKET_STRUCTURE"] = 15
+        reasons.append("بنية M15 تؤكد اتجاه الإطار الأعلى.")
+    elif m15_opposes:
+        components["M15_MARKET_STRUCTURE"] = 0
+        blockers.append("بنية M15 تعاكس اتجاه H4/H1.")
+    else:
+        components["M15_MARKET_STRUCTURE"] = 7
+        reasons.append("بنية M15 انتقالية؛ لا تمنح تأكيداً كاملاً ولا تعاكس الاتجاه.")
+
+    events = set(m5_pa["events"])
+    direction_text = bias.value if bias in (Direction.BUY, Direction.SELL) else "WAIT"
+    selected_strategy = None
+    trigger_direction = Direction.WAIT
+
+    # A sweep of sell-side liquidity followed by a reclaim is a bullish candidate;
+    # a sweep of buy-side liquidity followed by rejection is a bearish candidate.
+    if bias == Direction.BUY and "SELL_SIDE_LIQUIDITY_SWEEP" in events:
+        selected_strategy = "LIQUIDITY_SWEEP"
+        trigger_direction = Direction.BUY
+        reasons.append("تم رصد سحب سيولة أسفل قاع مؤكد ثم إغلاق رجوعي صاعد.")
+    elif bias == Direction.SELL and "BUY_SIDE_LIQUIDITY_SWEEP" in events:
+        selected_strategy = "LIQUIDITY_SWEEP"
+        trigger_direction = Direction.SELL
+        reasons.append("تم رصد سحب سيولة أعلى قمة مؤكدة ثم إغلاق رجوعي هابط.")
+    elif bias == Direction.BUY and "BULLISH_BREAK_OF_STRUCTURE" in events:
+        selected_strategy = "BREAKOUT"
+        trigger_direction = Direction.BUY
+        reasons.append("إغلاق M5 أكد اختراق بنية صاعدة.")
+    elif bias == Direction.SELL and "BEARISH_BREAK_OF_STRUCTURE" in events:
+        selected_strategy = "BREAKOUT"
+        trigger_direction = Direction.SELL
+        reasons.append("إغلاق M5 أكد كسر بنية هابطة.")
+    elif bias in (Direction.BUY, Direction.SELL) and m5_atr > 0:
+        extension_atr = abs(last.close - m5_ema20) / m5_atr
+        near_ema = extension_atr <= 0.35
+        bullish_candle = (
+            m5_micro["candle_direction"] == "BULLISH"
+            and (m5_micro["close_location_0_to_1"] >= 0.60
+                 or m5_micro["closed_candle_pattern"] in ("BULLISH_ENGULFING", "BULLISH_REJECTION"))
+        )
+        bearish_candle = (
+            m5_micro["candle_direction"] == "BEARISH"
+            and (m5_micro["close_location_0_to_1"] <= 0.40
+                 or m5_micro["closed_candle_pattern"] in ("BEARISH_ENGULFING", "BEARISH_REJECTION"))
+        )
+        if near_ema and bias == Direction.BUY and bullish_candle:
+            selected_strategy = "PULLBACK"
+            trigger_direction = Direction.BUY
+            reasons.append("السعر أعاد اختبار EMA20 على M5 مع شمعة تأكيد صاعدة.")
+        elif near_ema and bias == Direction.SELL and bearish_candle:
+            selected_strategy = "PULLBACK"
+            trigger_direction = Direction.SELL
+            reasons.append("السعر أعاد اختبار EMA20 على M5 مع شمعة تأكيد هابطة.")
+
+    if selected_strategy:
+        components["M5_ENTRY_TRIGGER"] = 25
+    else:
+        components["M5_ENTRY_TRIGGER"] = 0
+        blockers.append("لا يوجد محفز دخول مكتمل على شمعة M5 المغلقة.")
+
+    micro_matches = (
+        (bias == Direction.BUY and (
+            m5_micro["candle_direction"] == "BULLISH"
+            or m5_micro["closed_candle_pattern"] in ("BULLISH_ENGULFING", "BULLISH_REJECTION")
+        ))
+        or (bias == Direction.SELL and (
+            m5_micro["candle_direction"] == "BEARISH"
+            or m5_micro["closed_candle_pattern"] in ("BEARISH_ENGULFING", "BEARISH_REJECTION")
+        ))
+    )
+    components["M5_CANDLE_CONFIRMATION"] = 10 if micro_matches else 3
+    if micro_matches:
+        reasons.append("شكل الشمعة وموقع الإغلاق يدعمان اتجاه الصفقة.")
+
+    volume_state = m5_micro["tick_volume"]["state"]
+    volume_bias = m5_micro["tick_volume"]["directional_confirmation"]
+    expected_volume_bias = "BULLISH" if bias == Direction.BUY else "BEARISH"
+    components["TICK_VOLUME_PARTICIPATION"] = (
+        5 if volume_bias == expected_volume_bias else 3 if volume_state == "UNAVAILABLE" else 0
+    )
+
+    if spread_atr_ratio <= 0.08:
+        components["SPREAD_COST"] = 10
+    elif spread_atr_ratio <= 0.15:
+        components["SPREAD_COST"] = 7
+        reasons.append("السبريد مقبول لكنه أعلى من المستوى المثالي.")
+    else:
+        components["SPREAD_COST"] = 0
+        blockers.append("السبريد مرتفع مقارنة بـ ATR على M5.")
+
+    if volatility_ratio <= 1.5:
+        components["VOLATILITY_CONDITION"] = 5
+    elif volatility_ratio <= 1.8:
+        components["VOLATILITY_CONDITION"] = 2
+        reasons.append("التذبذب مرتفع؛ يلزم الحذر من اتساع الحركة.")
+    else:
+        components["VOLATILITY_CONDITION"] = 0
+        blockers.append("التذبذب على H1 مرتفع بشكل غير مناسب للدخول الآمن.")
+
+    score = sum(components.values())
+    entry_reference = float(quote["ask"] if bias == Direction.BUY else quote["bid"])
+    quote_distance_atr = abs(entry_reference - last.close) / m5_atr if m5_atr > 0 else float("inf")
+    if quote_distance_atr > 0.50:
+        blockers.append("السعر الحالي ابتعد عن إغلاق شمعة الإشارة؛ خطر مطاردة الحركة مرتفع.")
+
+    if not higher_aligned:
+        final_direction = Direction.WAIT
+    elif m15_opposes:
+        final_direction = Direction.WAIT
+    elif trigger_direction != bias:
+        final_direction = Direction.WAIT
+    elif spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50:
+        final_direction = Direction.WAIT
+    elif score < 78:
+        final_direction = Direction.WAIT
+        blockers.append("درجة توافق الدخول أقل من حد الجودة 78/100.")
+    else:
+        final_direction = bias
+
+    setup = None
+    if final_direction in (Direction.BUY, Direction.SELL):
+        buffer = 0.15 * m5_atr
+        recent = request.m5[-5:]
+        if final_direction == Direction.BUY:
+            structural_stop = min(item.low for item in recent) - buffer
+            if selected_strategy == "LIQUIDITY_SWEEP":
+                structural_stop = min(structural_stop, last.low - buffer)
+            stop_loss = structural_stop
+            risk_distance = entry_reference - stop_loss
+            targets = {
+                "TP1_1R": entry_reference + risk_distance,
+                "TP2_2R": entry_reference + 2 * risk_distance,
+                "TP3_3R": entry_reference + 3 * risk_distance,
+            }
+        else:
+            structural_stop = max(item.high for item in recent) + buffer
+            if selected_strategy == "LIQUIDITY_SWEEP":
+                structural_stop = max(structural_stop, last.high + buffer)
+            stop_loss = structural_stop
+            risk_distance = stop_loss - entry_reference
+            targets = {
+                "TP1_1R": entry_reference - risk_distance,
+                "TP2_2R": entry_reference - 2 * risk_distance,
+                "TP3_3R": entry_reference - 3 * risk_distance,
+            }
+
+        if risk_distance <= 0 or risk_distance > 3.0 * m5_atr:
+            final_direction = Direction.WAIT
+            blockers.append("المسافة إلى وقف الخسارة الهيكلي غير مناسبة مقارنة بـ ATR؛ لا توجد صفقة.")
+        else:
+            digits = int(quote["digits"])
+            setup = {
+                "strategy": selected_strategy,
+                "entry_reference": round(entry_reference, digits),
+                "entry_side": "ASK" if final_direction == Direction.BUY else "BID",
+                "stop_loss": round(stop_loss, digits),
+                "take_profit": {key: round(value, digits) for key, value in targets.items()},
+                "risk_distance_price": round(risk_distance, digits),
+                "risk_distance_atr": round(risk_distance / m5_atr, 3),
+                "reward_risk_targets": [1, 2, 3],
+                "entry_model": "Closed M5 trigger; current broker Ask/Bid reference. Revalidate price and spread before any order.",
+            }
+
+    if final_direction == Direction.WAIT:
+        reasons.append("القرار WAIT: لا يتم إرسال أمر، ويعاد تقييم السوق بعد إغلاق شمعة جديدة.")
+    else:
+        reasons.insert(0, "تم تأكيد فرصة فنية وفق اتجاه H4/H1 وبنية M15 ومحفز M5.")
+
+    return {
+        "symbol": settings.broker_gold_symbol.upper(),
+        "direction": final_direction,
+        "selected_strategy": selected_strategy,
+        "entry_quality_score_0_to_100": score,
+        "score_threshold": 78,
+        "score_note": "درجة توافق قواعد داخلية غير معايرة؛ ليست احتمال ربح أو نسبة نجاح.",
+        "score_components": components,
+        "higher_timeframe": {
+            "H4": {"bias": h4_bias, "ema20": round(h4_ema20, 5), "ema50": round(h4_ema50, 5), "adx14": round(h4_adx, 2)},
+            "H1": {"bias": h1_bias, "ema20": round(h1_ema20, 5), "ema50": round(h1_ema50, 5), "adx14": round(h1_adx, 2)},
+        },
+        "market_structure": {"M15": m15_pa, "M5": m5_pa},
+        "entry_microstructure": m5_micro,
+        "market_regime_H1": h1_regime,
+        "spread_atr_ratio_M5": round(spread_atr_ratio, 4),
+        "quote_distance_from_signal_close_atr": round(quote_distance_atr, 3),
+        "timeframe_diagnostics": {
+            frame: {
+                "direction": result["direction"],
+                "confidence_score": result["confidence_score"],
+                "candle_count": result["candle_count"],
+            }
+            for frame, result in timeframe_diagnostics.items()
+        },
+        "setup": setup,
+        "blockers": blockers,
+        "reasons": reasons,
+        "context_policy": {
+            "economic_calendar": "ADVISORY_ONLY_NOT_A_TECHNICAL_ENTRY_VETO",
+            "macro_context": "ADVISORY_ONLY_NOT_A_TECHNICAL_ENTRY_VETO",
+            "note": "Review scheduled high-impact events and macro context before discretionary execution; unavailable calendar or macro data does not erase a technically confirmed setup.",
+        },
+        "execution_enabled": False,
+        "generated_at": datetime.now(timezone.utc),
+        "disclaimer": "Rule-based research output only. It does not guarantee profitable trades and does not place orders.",
+    }
