@@ -2882,13 +2882,95 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         candidates.append({"strategy": "LIQUIDITY_SWEEP", "score": 5, "max_score": 5,
                            "evidence": ["سحب سيولة معاكس ثم إغلاق/اندفاع مؤيد"]})
 
+    # EMA reclaim: detect a closed-candle reclaim after a shallow pullback.
+    # It supplements pullback/BOS logic without allowing an intrabar trigger.
+    if len(m5) >= 22 and atr > 0:
+        prior_ema20 = _ema_series([float(item.close) for item in m5[:-1]], 20)[-1]
+        current_ema20 = _ema_series([float(item.close) for item in m5], 20)[-1]
+        previous_close = float(m5[-2].close)
+        current = m5[-1]
+        candle_range = max(float(current.high) - float(current.low), 1e-12)
+        body_atr = abs(float(current.close) - float(current.open)) / atr
+        close_location = (float(current.close) - float(current.low)) / candle_range
+        if bullish:
+            reclaimed = previous_close <= prior_ema20 and float(current.close) > current_ema20
+            directional_close = float(current.close) > float(current.open) and close_location >= 0.65
+        else:
+            reclaimed = previous_close >= prior_ema20 and float(current.close) < current_ema20
+            directional_close = float(current.close) < float(current.open) and close_location <= 0.35
+        if reclaimed and directional_close and body_atr >= 0.25 and extension <= 0.90:
+            candidates.append({
+                "strategy": "EMA_RECLAIM", "score": 5, "max_score": 5,
+                "evidence": ["إغلاق M5 استعاد EMA20 بعد تصحيح قصير",
+                             "شمعة الاستعادة أغلقت في اتجاه الصفقة وبجسم معتبر",
+                             "السعر ما زال قريباً من EMA20 ولم يطارد امتداداً بعيداً"],
+            })
+
+    # Momentum continuation: accept a strong close through the immediately
+    # preceding candle extreme, even before a wider swing detector confirms BOS.
+    # This is a distinct early-continuation trigger, not an intrabar breakout.
+    if len(m5) >= 22 and atr > 0 and extension <= 1.20:
+        current = m5[-1]
+        previous = m5[-2]
+        candle_range = max(float(current.high) - float(current.low), 1e-12)
+        body_atr = abs(float(current.close) - float(current.open)) / atr
+        close_location = (float(current.close) - float(current.low)) / candle_range
+        if bullish:
+            directional = float(current.close) > float(current.open)
+            close_near_extreme = close_location >= 0.72
+            micro_break = float(current.close) > float(previous.high)
+        else:
+            directional = float(current.close) < float(current.open)
+            close_near_extreme = close_location <= 0.28
+            micro_break = float(current.close) < float(previous.low)
+        impulse_matches = impulse == ("BULLISH" if bullish else "BEARISH")
+        momentum_score = (
+            int(directional and body_atr >= 0.35)
+            + int(close_near_extreme)
+            + int(micro_break)
+            + int(impulse_matches)
+            + int(extension <= 0.90)
+        )
+        if momentum_score >= 4:
+            candidates.append({
+                "strategy": "MOMENTUM_CONTINUATION",
+                "score": momentum_score, "max_score": 5,
+                "evidence": ["شمعة M5 اندفاعية أغلقت في اتجاه الإطار الأعلى",
+                             "إغلاق يتجاوز قمة/قاع الشمعة السابقة" if micro_break else "اندفاع قوي قرب طرف الشمعة",
+                             "تم التحقق من عدم امتداد السعر أكثر من حد مطاردة الحركة"],
+            })
+
+    # Search the latest three closed bars for a confirmed structure event.
+    # Keep the current-price/EMA extension filters below to reject stale triggers.
+    recent_structure_events = []
+    for bars_ago in range(0, min(3, len(m5) - 25)):
+        prefix = m5[:len(m5) - bars_ago] if bars_ago else m5
+        recent_structure = _price_action_analysis(prefix, 3, 3, 0.12)
+        recent_events = set(recent_structure.get("events", []))
+        if wanted_bos in recent_events or wanted_sweep in recent_events:
+            recent_structure_events.append({
+                "bars_ago": bars_ago,
+                "events": sorted(recent_events.intersection({wanted_bos, wanted_sweep})),
+            })
+    if recent_structure_events:
+        for candidate in candidates:
+            if candidate.get("strategy") == "BREAKOUT":
+                candidate["evidence"].append(
+                    f"تأكيد كسر هيكل ضمن آخر {recent_structure_events[0]['bars_ago']} شمعة مغلقة"
+                )
+            elif candidate.get("strategy") == "LIQUIDITY_SWEEP":
+                candidate["evidence"].append(
+                    f"تأكيد سحب سيولة ضمن آخر {recent_structure_events[0]['bars_ago']} شمعة مغلقة"
+                )
+
     # Reversal is deliberately informational only; it cannot override H4/H1 trend bias.
     opposite_structure = "DOWNTREND" if bullish else "UPTREND"
     if report.get("market_structure") == opposite_structure and wanted_sweep in events:
         candidates.append({"strategy": "REVERSAL_WATCH", "score": 3, "max_score": 5,
                            "evidence": ["احتمال انعكاس بعد سحب سيولة؛ لا يدخل عكس اتجاه H4/H1"]})
 
-    candidates.sort(key=lambda item: (item["score"], item["strategy"] == "BREAKOUT"), reverse=True)
+    strategy_priority = {"BREAKOUT": 5, "LIQUIDITY_SWEEP": 4, "EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
+    candidates.sort(key=lambda item: (item["score"], strategy_priority.get(item["strategy"], 0)), reverse=True)
     selected = candidates[0] if candidates else None
     blockers = []
     if spread_atr_ratio > 0.15:
@@ -2909,6 +2991,8 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         "score_note": "Rule-based setup quality points, not win probability; requires walk-forward backtesting.",
         "strategy_policy": {
             "pullback": "trend-following retest near EMA20 with closed-candle confirmation",
+            "ema_reclaim": "closed M5 reclaim of EMA20 after a shallow pullback with directional candle confirmation",
+            "momentum_continuation": "strong closed M5 candle through the prior candle extreme with anti-chasing filter",
             "breakout": "confirmed BOS only; no intrabar breakout entries",
             "liquidity_sweep": "sweep of opposing liquidity followed by directional close/impulse",
             "reversal_watch": "watchlist only; cannot reverse H4/H1 bias",
@@ -3381,7 +3465,7 @@ def receive_mt5_candles(
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
 _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 82.0
-_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP"}
+_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION"}
 _DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 
 
@@ -3960,7 +4044,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     selected_candidate = setup_scan.get("selected")
     selected_strategy = (
         selected_candidate.get("strategy")
-        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP")
+        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION")
         else None
     )
     trigger_direction = bias if selected_strategy else Direction.WAIT
