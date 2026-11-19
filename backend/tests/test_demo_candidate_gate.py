@@ -88,3 +88,19 @@ def test_demo_gate_rejects_weak_setup_score():
     passed, reason, details = _demo_candidate_quality_gate(_analysis(setup_score=3))
     assert passed is False
     assert details["setup_score"] == 3.0
+
+
+def test_demo_gate_accepts_confirmed_vwap_reclaim():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=85.0, strategy="VWAP_RECLAIM", setup_score=5)
+    )
+    assert passed is True
+    assert details["selected_strategy"] == "VWAP_RECLAIM"
+
+
+def test_demo_gate_rejects_research_only_range_mean_reversion():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=90.0, strategy="RANGE_MEAN_REVERSION", setup_score=5)
+    )
+    assert passed is False
+    assert details["selected_strategy"] == "RANGE_MEAN_REVERSION"
