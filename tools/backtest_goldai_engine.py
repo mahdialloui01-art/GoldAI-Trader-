@@ -174,12 +174,12 @@ def research_entry_candidate_gate(analysis):
     This function is never imported by the production API.
     """
     dossier = analysis.get("technical_dossier") or {}
+    entry = analysis.get("entry_engine") or {}
     scan = entry.get("entry_setup_scan") or dossier.get("strategy_scan") or {}
     if not isinstance(dossier, dict) or not isinstance(scan, dict):
         return False, "MISSING_DOSSIER_OR_SCAN", {}
     if scan.get("blockers"):
         return False, "STRATEGY_SCAN_BLOCKED", {"strategy_blockers": scan.get("blockers")}
-    entry = analysis.get("entry_engine") or {}
     blockers = entry.get("blockers") or []
     if blockers:
         return False, "ENTRY_ENGINE_BLOCKED", {"entry_engine_blockers": blockers}
