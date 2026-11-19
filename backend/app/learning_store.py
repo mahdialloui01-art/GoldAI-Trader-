@@ -340,15 +340,16 @@ def save_mt5_candle_history(symbol: str, candles_by_timeframe: dict[str, list[An
         return 0
     try:
         with _connect() as conn:
-            conn.executemany("""
-                INSERT INTO mt5_closed_candles
-                    (symbol, timeframe, candle_time, open, high, low, close, tick_volume)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (symbol, timeframe, candle_time) DO UPDATE SET
-                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
-                    close = EXCLUDED.close, tick_volume = EXCLUDED.tick_volume,
-                    updated_at = NOW()
-            """, rows)
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO mt5_closed_candles
+                        (symbol, timeframe, candle_time, open, high, low, close, tick_volume)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (symbol, timeframe, candle_time) DO UPDATE SET
+                        open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                        close = EXCLUDED.close, tick_volume = EXCLUDED.tick_volume,
+                        updated_at = NOW()
+                """, row)
             conn.execute("DELETE FROM mt5_closed_candles WHERE candle_time < NOW() - INTERVAL '90 days'")
         return len(rows)
     except Exception:
