@@ -75,6 +75,19 @@ async def run():
     e.economic_news_filter=news
     e.save_opportunity=lambda *a,**k:None
     trades=[]; blocked=defaultdict(int); blocked_details=defaultdict(int); engine_errors=defaultdict(int); signals=0; stale_skipped=0; pos=None
+    diag = {
+        "expert_decisions": defaultdict(int), "entry_directions": defaultdict(int),
+        "selected_strategies": defaultdict(int), "candidate_strategies": defaultdict(int),
+        "higher_timeframe_bias_pairs": defaultdict(int), "m15_structures": defaultdict(int),
+        "spread_ratio_buckets": defaultdict(int), "confluence_buckets": defaultdict(int),
+        "entry_score_buckets": defaultdict(int), "score_components": defaultdict(int),
+        "samples": [],
+    }
+    def bucket(value, step=10):
+        try: return f"{int(float(value) // step) * step}-{int(float(value) // step) * step + step - 1}"
+        except (TypeError, ValueError): return "missing"
+    def sval(value):
+        return str(value.value if hasattr(value, "value") else value)
     slip_points=float(os.getenv("BACKTEST_SLIPPAGE_POINTS","2"))
 
     def close(exit_price,t,reason):
@@ -128,6 +141,40 @@ async def run():
         try:
             result=await e.live_expert_technical_analysis()
             ok,reason,details=e._demo_candidate_quality_gate(result)
+            dossier = result.get("technical_dossier") or {}
+            frames_report = dossier.get("timeframes") or {}
+            entry = result.get("entry_engine") or {}
+            scan = entry.get("entry_setup_scan") or {}
+            diag["expert_decisions"][sval(result.get("decision", "WAIT"))] += 1
+            diag["entry_directions"][sval(entry.get("direction", "WAIT"))] += 1
+            diag["selected_strategies"][str(entry.get("selected_strategy") or "NONE")] += 1
+            for candidate in (scan.get("candidates") or []):
+                diag["candidate_strategies"][str(candidate.get("strategy") or "UNKNOWN")] += 1
+            htf = entry.get("higher_timeframe") or {}
+            pair = f'H4:{sval((htf.get("H4") or {}).get("bias","?"))}|H1:{sval((htf.get("H1") or {}).get("bias","?"))}'
+            diag["higher_timeframe_bias_pairs"][pair] += 1
+            m15 = (entry.get("market_structure") or {}).get("M15") or {}
+            diag["m15_structures"][str(m15.get("market_structure") or "UNKNOWN")] += 1
+            diag["spread_ratio_buckets"][bucket(entry.get("spread_atr_ratio_M5"), 0.05)] += 1
+            diag["confluence_buckets"][bucket(dossier.get("confluence_score"), 10)] += 1
+            diag["entry_score_buckets"][bucket(entry.get("entry_quality_score_0_to_100"), 10)] += 1
+            for name, value in (entry.get("score_components") or {}).items():
+                diag["score_components"][f"{name}={value}"] += 1
+            if len(diag["samples"]) < 15 and (entry.get("selected_strategy") or entry.get("direction") in ("BUY","SELL")):
+                diag["samples"].append({
+                    "time": NOW[0].isoformat(), "expert_decision": sval(result.get("decision","WAIT")),
+                    "expert_confluence": dossier.get("confluence_score"),
+                    "entry_direction": sval(entry.get("direction","WAIT")),
+                    "entry_score": entry.get("entry_quality_score_0_to_100"),
+                    "entry_threshold": entry.get("score_threshold"),
+                    "selected_strategy": entry.get("selected_strategy"),
+                    "candidate_strategies": [x.get("strategy") for x in (scan.get("candidates") or [])],
+                    "higher_timeframe": htf,
+                    "m15_structure": m15.get("market_structure"),
+                    "spread_atr_ratio_M5": entry.get("spread_atr_ratio_M5"),
+                    "quote_distance_from_signal_close_atr": entry.get("quote_distance_from_signal_close_atr"),
+                    "entry_blockers": entry.get("blockers") or [],
+                })
         except Exception as ex:
             blocked["ENGINE_ERROR_"+type(ex).__name__]+=1
             detail = getattr(ex, "detail", None) or str(ex) or repr(ex)
@@ -176,7 +223,7 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"Production GoldAI live expert orchestration + dedicated entry engine + production DEMO gate","mode":"OFFLINE_RESEARCH_ONLY","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","standard_entry_threshold":85,"production_structural_BOS_sweep_threshold":82,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee."]}
+    report={"test":"Production GoldAI live expert orchestration + dedicated entry engine + production DEMO gate","mode":"OFFLINE_RESEARCH_ONLY","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","standard_entry_threshold":85,"production_structural_BOS_sweep_threshold":82,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
