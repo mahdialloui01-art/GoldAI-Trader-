@@ -94,13 +94,13 @@ def test_manual_demo_queue_rejects_duplicate_pending_request(monkeypatch):
     _ready_manual_demo(monkeypatch)
     main._manual_trade_queue.append({
         "id": "already-pending", "symbol": "GOLD", "direction": "BUY",
-        "lots": 0.01, "stop_loss_points": 100, "take_profit_points": 200,
+        "lots": 0.01, "stop_loss_points": 20, "take_profit_points": 40,
         "risk_percent": 0.1, "created_at": datetime.now(timezone.utc).isoformat(),
     })
     response = client.post(
         "/api/v1/manual/demo/request",
         headers={"X-Manual-Trade-Pin": "A" * 32},
-        json={"direction": "SELL", "lots": 0.01, "stop_loss_points": 100, "take_profit_points": 200},
+        json={"direction": "SELL", "lots": 0.01, "stop_loss_points": 20, "take_profit_points": 40},
     )
     assert response.status_code == 429
 
