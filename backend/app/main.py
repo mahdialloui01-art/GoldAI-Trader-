@@ -3526,6 +3526,45 @@ _DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EM
 _DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 
 
+def _reconcile_entry_engine_quality(analysis: dict) -> dict:
+    """Make the displayed/executable entry score respect the weakest analysis layer."""
+    dossier = analysis.get("technical_dossier") or {}
+    entry = analysis.get("entry_engine") or {}
+    try:
+        confluence = float(dossier.get("confluence_score"))
+        raw_entry_score = float(entry.get("entry_quality_score_0_to_100"))
+    except (TypeError, ValueError):
+        confluence = float("nan")
+        raw_entry_score = float("nan")
+
+    if not math.isfinite(confluence) or not math.isfinite(raw_entry_score):
+        entry["effective_entry_quality_score_0_to_100"] = 0
+        entry["score_reconciliation"] = "INVALID_OR_MISSING_LAYER_SCORE"
+        entry["direction"] = Direction.WAIT
+        entry["setup"] = None
+        entry.setdefault("blockers", []).append("CROSS_LAYER_SCORE_UNAVAILABLE")
+        analysis["entry_engine"] = entry
+        return analysis
+
+    effective = round(min(max(0.0, min(100.0, confluence)),
+                          max(0.0, min(100.0, raw_entry_score))), 1)
+    entry["raw_entry_quality_score_0_to_100"] = round(raw_entry_score, 1)
+    entry["cross_layer_confluence_score"] = round(confluence, 1)
+    entry["effective_entry_quality_score_0_to_100"] = effective
+    entry["entry_quality_score_0_to_100"] = effective
+    entry["score_reconciliation"] = "MINIMUM_OF_ENTRY_QUALITY_AND_MULTI_TIMEFRAME_CONFLUENCE"
+    threshold = float(entry.get("score_threshold") or 85.0)
+    if effective < threshold:
+        entry["direction"] = Direction.WAIT
+        entry["setup"] = None
+        entry.setdefault("blockers", []).append("CROSS_LAYER_CONFLUENCE_BELOW_ENTRY_THRESHOLD")
+        entry.setdefault("reasons", []).append(
+            "تم خفض تقييم الدخول الفعّال لأن توافق الأطر الزمنية أضعف من جودة محفز M5."
+        )
+    analysis["entry_engine"] = entry
+    return analysis
+
+
 def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
     """Allow a small DEMO-only threshold relief for fully confirmed structural triggers."""
     dossier = analysis.get("technical_dossier")
@@ -3972,6 +4011,7 @@ async def live_expert_technical_analysis() -> dict:
             }
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
+    result = _reconcile_entry_engine_quality(result)
     result["market_data"] = {
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
