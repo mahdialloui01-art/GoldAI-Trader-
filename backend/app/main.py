@@ -3191,6 +3191,9 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         elif candidate.get("strategy") == "LIQUIDITY_SWEEP":
             candidate["research_only"] = True
             candidate["research_status"] = "PAUSED_AFTER_NEGATIVE_WALK_FORWARD_REPLAY"
+        elif candidate.get("strategy") == "PULLBACK":
+            candidate["research_only"] = True
+            candidate["research_status"] = "PAUSED_AFTER_NEGATIVE_TRAINING_AND_WEAK_VALIDATION"
 
     strategy_priority = {"BREAKOUT": 7, "COMPRESSION_BREAKOUT": 6, "LIQUIDITY_SWEEP": 5, "EMA_RECLAIM": 4, "MOMENTUM_CONTINUATION": 3, "PULLBACK": 2, "VWAP_RECLAIM": 1}
     candidates.sort(
@@ -3698,7 +3701,7 @@ def receive_mt5_candles(
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
 _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 82.0
-_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT"}
+_DEMO_ALLOWED_ENTRY_STRATEGIES = {"BREAKOUT", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT"}
 _DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT"}
 
 
