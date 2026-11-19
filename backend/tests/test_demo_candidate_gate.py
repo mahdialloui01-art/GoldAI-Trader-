@@ -36,7 +36,7 @@ def test_demo_gate_accepts_high_confluence_confirmed_setup():
     passed, reason, details = _demo_candidate_quality_gate(_analysis())
     assert passed is True
     assert details["confluence_score"] == 85.0
-    assert details["selected_strategy"] == "PULLBACK"
+    assert details["selected_strategy"] == "EMA_RECLAIM"
 
 
 def test_demo_gate_rejects_ema_reclaim_below_85():
