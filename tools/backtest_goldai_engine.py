@@ -282,7 +282,11 @@ async def run():
         nonlocal pos
         d=pos["direction"]
         pnl=(exit_price-pos["entry"]) if d=="BUY" else (pos["entry"]-exit_price)
-        trades.append({"direction":d,"strategy":pos["strategy"],"entry_time":datetime.fromtimestamp(pos["entry_ts"],timezone.utc).isoformat(),"exit_time":datetime.fromtimestamp(t,timezone.utc).isoformat(),"entry_price":round(pos["entry"],2),"exit_price":round(exit_price,2),"stop":round(pos["stop"],2),"target_2R":round(pos["target"],2),"net_R":round(pnl/pos["risk"],4),"entry_score":pos["score"],"confluence":pos["confluence"],"exit_reason":reason})
+        gross_r = pnl / pos["risk"]
+        commission_per_lot = max(0.0, float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN", "0")))
+        contract_size = max(0.000001, float(os.getenv("BACKTEST_CONTRACT_SIZE", "100")))
+        commission_r = commission_per_lot / (contract_size * pos["risk"])
+        trades.append({"direction":d,"strategy":pos["strategy"],"entry_time":datetime.fromtimestamp(pos["entry_ts"],timezone.utc).isoformat(),"exit_time":datetime.fromtimestamp(t,timezone.utc).isoformat(),"entry_price":round(pos["entry"],2),"exit_price":round(exit_price,2),"stop":round(pos["stop"],2),"target_2R":round(pos["target"],2),"gross_R":round(gross_r,4),"commission_R":round(commission_r,5),"net_R":round(gross_r-commission_r,4),"entry_score":pos["score"],"confluence":pos["confluence"],"exit_reason":reason})
         pos=None
 
     for m5 in frames["M5"]:
@@ -412,12 +416,42 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"RESEARCH ONLY: isolated production-style VWAP_RECLAIM on closed M5 bars; quality filter confluence>=40, entry score>=85; both directions; chronological May-June train / July validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"85 final research quality floor (base candidate thresholds 65/72)","research_confluence_floor":40,"research_allowed_strategy":"VWAP_RECLAIM_ONLY_BOTH_DIRECTIONS","research_excluded_strategies":["EMA_RECLAIM","MOMENTUM_CONTINUATION","PULLBACK","RANGE_MEAN_REVERSION"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"production-style closed M5 20-bar broker tick-volume VWAP reclaim/loss with directional candle confirmation; EMA/pullback/momentum candidates are not executed","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
+    def summarize(rows):
+        wins_ = [x for x in rows if x["net_R"] > 0]
+        losses_ = [x for x in rows if x["net_R"] <= 0]
+        gross_profit_ = sum(x["net_R"] for x in wins_)
+        gross_loss_ = abs(sum(x["net_R"] for x in losses_))
+        eq_ = peak_ = dd_ = 0.0
+        for trade_ in rows:
+            eq_ += trade_["net_R"]
+            peak_ = max(peak_, eq_)
+            dd_ = max(dd_, peak_ - eq_)
+        return {
+            "trades": len(rows), "wins": len(wins_), "losses_or_breakeven": len(losses_),
+            "win_rate_percent": round(100 * len(wins_) / len(rows), 2) if rows else None,
+            "net_R": round(sum(x["net_R"] for x in rows), 3),
+            "expectancy_R": round(sum(x["net_R"] for x in rows) / len(rows), 4) if rows else None,
+            "profit_factor": round(gross_profit_ / gross_loss_, 3) if gross_loss_ else ("infinite" if gross_profit_ else None),
+            "max_drawdown_R": round(dd_, 3),
+        }
+    split_ts = int(datetime(2026, 7, 1, tzinfo=timezone.utc).timestamp())
+    train_trades = [x for x in trades if datetime.fromisoformat(x["entry_time"]).timestamp() < split_ts]
+    validation_trades = [x for x in trades if datetime.fromisoformat(x["entry_time"]).timestamp() >= split_ts]
+    strategy_metrics = {}
+    for strategy_name in sorted({x["strategy"] or "UNKNOWN" for x in trades}):
+        strategy_rows = [x for x in trades if (x["strategy"] or "UNKNOWN") == strategy_name]
+        strategy_metrics[strategy_name] = {
+            "all": summarize(strategy_rows),
+            "train_may_june": summarize([x for x in strategy_rows if x in train_trades]),
+            "validation_july": summarize([x for x in strategy_rows if x in validation_trades]),
+        }
+    report={"test":"RESEARCH ONLY: isolated production-style VWAP_RECLAIM on closed M5 bars; quality filter confluence>=40, entry score>=85; both directions; chronological May-June train / July untouched validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED",
+        "performance":{"all":summarize(trades),"train_may_june":summarize(train_trades),"validation_july":summarize(validation_trades),"by_strategy":strategy_metrics},"period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_usd_per_lot_round_turn":float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN","0")),"contract_size_oz_per_lot":float(os.getenv("BACKTEST_CONTRACT_SIZE","100")),"commission_swap":"commission configurable; swaps still excluded because historical broker schedule/holding-account data were not supplied","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"85 final research quality floor (base candidate thresholds 65/72)","research_confluence_floor":40,"research_allowed_strategy":"VWAP_RECLAIM_ONLY_BOTH_DIRECTIONS","research_excluded_strategies":["EMA_RECLAIM","MOMENTUM_CONTINUATION","PULLBACK","RANGE_MEAN_REVERSION"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"production-style closed M5 20-bar broker tick-volume VWAP reclaim/loss with directional candle confirmation; EMA/pullback/momentum candidates are not executed","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(trades[0]) if trades else ["no_trades"]); w.writeheader(); w.writerows(trades)
-    (OUT/"summary.md").write_text("# GoldAI Trader historical replay\n\n"+"\n".join(f"- {k}: {v}" for k,v in report.items() if k in ("period_utc","signals_evaluated","trades","wins","losses_or_breakeven","win_rate_percent","net_R","expectancy_R","profit_factor","max_drawdown_R"))+"\n\nSee summary.json and trades.csv. Offline research only; macro/news are neutralized and commissions/swaps are excluded.\n",encoding="utf-8")
+    (OUT/"summary.md").write_text("# GoldAI Trader historical replay\n\n"+"\n".join(f"- {k}: {v}" for k,v in report.items() if k in ("period_utc","signals_evaluated","historical_gap_windows_skipped"))+"\n\n## Performance\n\n"+"\n".join(f"- {period}: {metrics}" for period,metrics in report["performance"].items() if period != "by_strategy")+"\n\n## Strategy breakdown\n\n"+"\n".join(f"- {name}: {metrics}" for name,metrics in report["performance"]["by_strategy"].items())+"\n\nSee summary.json and trades.csv. Offline research only; macro/news are neutralized. BID/ASK spread and configured slippage are modeled; commission is configurable and swaps/latency/requotes are not modeled. July is held out chronologically from May-June filter selection.\n",encoding="utf-8")
     print(json.dumps(report,indent=2,ensure_ascii=False))
 
 if __name__=="__main__": asyncio.run(run())
