@@ -3756,20 +3756,20 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
     if not math.isfinite(confluence):
         return False, "Confluence score is missing or invalid.", {}
 
-    scan = dossier.get("strategy_scan")
-    if not isinstance(scan, dict):
-        return False, "Strategy scan is unavailable.", {"confluence_score": confluence}
-    scan_blockers = scan.get("blockers") or []
-    if scan_blockers:
-        return False, "Strategy scan has active safety blockers.", {
-            "confluence_score": confluence, "strategy_blockers": scan_blockers,
-        }
-
-    # The dedicated entry engine is authoritative for the trigger and its levels.
-    # Never authorize an order from the older dossier scan alone.
+    # The dedicated entry engine owns the trigger scan. The dossier scan is
+    # produced by the legacy expert-direction layer and can be empty or blocked
+    # when that separate layer says WAIT; do not mix its candidates with this setup.
     entry = analysis.get("entry_engine")
     if not isinstance(entry, dict):
         return False, "Dedicated entry engine is unavailable.", {"confluence_score": confluence}
+    scan = entry.get("entry_setup_scan")
+    if not isinstance(scan, dict):
+        return False, "Dedicated entry-engine strategy scan is unavailable.", {"confluence_score": confluence}
+    scan_blockers = scan.get("blockers") or []
+    if scan_blockers:
+        return False, "Dedicated entry-engine strategy scan has active safety blockers.", {
+            "confluence_score": confluence, "strategy_blockers": scan_blockers,
+        }
     try:
         entry_score = float(entry.get("effective_entry_quality_score_0_to_100",
                                        entry.get("entry_quality_score_0_to_100")))
