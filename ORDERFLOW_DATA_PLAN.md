@@ -31,7 +31,7 @@ GC and XM GOLD are different instruments/venues. Align UTC timestamps and compar
 - The table is indexed by symbol/time and startup cleanup retains the latest 90 days.
 - `GET /api/v1/learning/orderflow/xm-status` reports sample count, first/last timestamp and crossed quotes.
 - Persistence is best-effort: a database outage does not stop the market quote endpoint. Sampling attempts are throttled during outages.
-- This is sampled quote history, not every MT5 tick, not executed trade volume, and not Market Depth.
+- This is sampled quote history, not every MT5 tick, not executed trade volume, and not Market Depth.\n- An authenticated COMEX batch endpoint now accepts vendor-sourced GC trade prints and depth updates, stores raw event payloads with deduplication, and retains 90 days. It requires a separate Render secret named `COMEX_DATA_TOKEN`; no token or paid vendor feed has been configured.
 
 ## Current repository tooling
 Run the auditor from the repository root:
@@ -53,7 +53,7 @@ Each input is optional, but both are required before the combined-source researc
 
 ## Not yet implemented / required before live collection
 - MT5 EA tick/depth batch transport and durable server-side storage.
-- A licensed COMEX vendor/API credential and contract-month downloader.
+- A licensed COMEX vendor/API credential and contract-month downloader; the ingestion endpoint is ready but no market data provider is connected.
 - Durable raw-data retention and ingestion monitoring.
 - End-to-end reconciliation against XM terminal exports.
 
