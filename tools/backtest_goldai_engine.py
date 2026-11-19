@@ -114,7 +114,24 @@ def research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio):
         candidates.append({"strategy":"MOMENTUM_CONTINUATION","score":5,"max_score":5,"evidence":["إغلاق M5 تجاوز قمة/قاع الشمعة السابقة","جسم الشمعة وموقع الإغلاق يؤكدان الاتجاه"]})
     if touched and held and directional and close_strong and near_ema:
         candidates.append({"strategy":"PULLBACK","score":5,"max_score":5,"evidence":["إعادة اختبار منطقة EMA20 خلال آخر ثلاث شمعات","رفض سعري وإغلاق مؤيد للاتجاه"]})
-    priority={"EMA_RECLAIM":3,"MOMENTUM_CONTINUATION":2,"PULLBACK":1}
+
+    # Isolated replay of the production VWAP_RECLAIM rule using only closed M5 bars.
+    # Tick volume is broker-provided activity, not centralized XAUUSD volume.
+    vwap_window = m5[-20:]
+    vwap_volume = sum(int(getattr(item, "tick_volume", 0) or 0) for item in vwap_window)
+    previous_window = m5[-21:-1]
+    previous_volume = sum(int(getattr(item, "tick_volume", 0) or 0) for item in previous_window)
+    if len(vwap_window) == 20 and len(previous_window) == 20 and vwap_volume > 0 and previous_volume > 0:
+        current_vwap = sum(((float(item.high) + float(item.low) + float(item.close)) / 3.0) * int(getattr(item, "tick_volume", 0) or 0) for item in vwap_window) / vwap_volume
+        previous_vwap = sum(((float(item.high) + float(item.low) + float(item.close)) / 3.0) * int(getattr(item, "tick_volume", 0) or 0) for item in previous_window) / previous_volume
+        current_typical = (high + low + close) / 3.0
+        previous_typical = (float(prev.high) + float(prev.low) + float(prev.close)) / 3.0
+        confirmed = directional and (close_pos >= 0.65 if bullish else close_pos <= 0.35)
+        reclaimed = (previous_typical <= previous_vwap and current_typical > current_vwap) if bullish else (previous_typical >= previous_vwap and current_typical < current_vwap)
+        if reclaimed and confirmed and extension <= 1.0:
+            candidates.append({"strategy":"VWAP_RECLAIM","score":5,"max_score":5,"evidence":["Closed M5 reclaim/loss of 20-bar broker tick-volume VWAP","Directional candle confirmation","VWAP volume is broker tick-volume proxy"]})
+
+    priority={"VWAP_RECLAIM":4,"EMA_RECLAIM":3,"MOMENTUM_CONTINUATION":2,"PULLBACK":1}
     candidates.sort(key=lambda x:priority.get(x["strategy"],0),reverse=True)
     selected=candidates[0] if candidates else None
     blockers=[]
@@ -215,10 +232,8 @@ def research_entry_candidate_gate(analysis):
         return False, "RESEARCH_CONFLUENCE_BELOW_40", {"confluence": confluence_score}
     if entry_score < 85.0:
         return False, "RESEARCH_ENTRY_SCORE_BELOW_85", {"entry_score": entry_score}
-    if strategy != "PULLBACK":
-        return False, "RESEARCH_NON_PULLBACK_EXCLUDED", {"strategy": strategy}
-    if direction != "SELL":
-        return False, "RESEARCH_BUY_SIDE_EXCLUDED", {"direction": direction}
+    if strategy != "VWAP_RECLAIM":
+        return False, "RESEARCH_NON_VWAP_EXCLUDED", {"strategy": strategy}
     return True, "RESEARCH_ENTRY_ENGINE_CANDIDATE_ONLY", {
         "entry_direction": direction, "expert_direction": str(analysis.get("decision", "WAIT")),
         "entry_score": entry_score, "threshold": threshold, "strategy": strategy,
@@ -396,7 +411,7 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"RESEARCH ONLY: M5 EMA reclaim/pullback/momentum; quality filter confluence>=40, entry score>=85, PULLBACK SELL only; chronological May-June train / July validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"85 final research quality floor (base candidate thresholds 65/72)","research_confluence_floor":40,"research_allowed_strategy":"PULLBACK_SELL_ONLY","research_excluded_strategies":["EMA_RECLAIM","MOMENTUM_CONTINUATION","BUY"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"independent M5 EMA reclaim, pullback retest, momentum close","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
+    report={"test":"RESEARCH ONLY: isolated production-style VWAP_RECLAIM on closed M5 bars; quality filter confluence>=40, entry score>=85; both directions; chronological May-June train / July validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"85 final research quality floor (base candidate thresholds 65/72)","research_confluence_floor":40,"research_allowed_strategy":"VWAP_RECLAIM_ONLY_BOTH_DIRECTIONS","research_excluded_strategies":["EMA_RECLAIM","MOMENTUM_CONTINUATION","PULLBACK","RANGE_MEAN_REVERSION"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"production-style closed M5 20-bar broker tick-volume VWAP reclaim/loss with directional candle confirmation; EMA/pullback/momentum candidates are not executed","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
