@@ -422,12 +422,14 @@ async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Head
     sample_time = timestamp.astimezone(timezone.utc)
     if (_last_xm_orderflow_sample_at is None or
             (sample_time - _last_xm_orderflow_sample_at).total_seconds() >= 5):
-        if save_xm_quote_sample(
+        # Throttle attempts even if PostgreSQL is unavailable; otherwise every tick
+        # could trigger a connection attempt during a database outage.
+        _last_xm_orderflow_sample_at = sample_time
+        save_xm_quote_sample(
             symbol=settings.broker_gold_symbol, timestamp=sample_time,
             bid=quote.bid, ask=quote.ask, last=quote.last,
             spread_points=quote.spread_points, point=quote.point, digits=quote.digits,
-        ):
-            _last_xm_orderflow_sample_at = sample_time
+        )
 
     # MT5 chart OHLC candles are Bid-based; keep the live chart on Bid, not midpoint.
     live_candles = _update_live_quote_candles(timestamp, quote.bid)
