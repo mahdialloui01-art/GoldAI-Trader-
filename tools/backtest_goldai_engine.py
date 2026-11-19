@@ -74,7 +74,7 @@ async def run():
     e.gold_macro_analysis=macro
     e.economic_news_filter=news
     e.save_opportunity=lambda *a,**k:None
-    trades=[]; blocked=defaultdict(int); blocked_details=defaultdict(int); engine_errors=defaultdict(int); signals=0; pos=None
+    trades=[]; blocked=defaultdict(int); blocked_details=defaultdict(int); engine_errors=defaultdict(int); signals=0; stale_skipped=0; pos=None
     slip_points=float(os.getenv("BACKTEST_SLIPPAGE_POINTS","2"))
 
     def close(exit_price,t,reason):
@@ -112,6 +112,17 @@ async def run():
         QUOTE[0]={"symbol":"GOLD","bid":b["close"],"ask":a["close"],"last":(a["close"]+b["close"])/2,"mid":(a["close"]+b["close"])/2,"spread_points":spread,"digits":2,"point":POINT,"source":"Historical BID/ASK","source_updated_at":NOW[0],"age_seconds":0,"quote_type":"broker_bid_ask","tradable_quote":True}
         series={k:make_candles(frames[k],ends[k],end) for k in secs}
         if min(map(len,series.values()))<60: continue
+        # Match production freshness limits, but do not count genuine historical
+        # market closures/data gaps as engine failures or trading opportunities.
+        stale_frames = []
+        for frame, candles in series.items():
+            age = (NOW[0] - candles[-1].time).total_seconds()
+            if age > secs[frame] * 2 + 60:
+                stale_frames.append(frame)
+        if stale_frames:
+            stale_skipped += 1
+            blocked["HISTORICAL_GAP_SKIPPED_" + "_".join(stale_frames)] += 1
+            continue
         e._latest_mt5_candles={"symbol":"GOLD","timeframes":series,"received_at":NOW[0],"source":"Historical paired BID/ASK","data_quality":{"H4":{"h4_session_reopen_gap":True}}}
         signals+=1
         try:
@@ -165,7 +176,7 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"Production GoldAI live expert orchestration + dedicated entry engine + production DEMO gate","mode":"OFFLINE_RESEARCH_ONLY","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","standard_entry_threshold":85,"production_structural_BOS_sweep_threshold":82,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee."]}
+    report={"test":"Production GoldAI live expert orchestration + dedicated entry engine + production DEMO gate","mode":"OFFLINE_RESEARCH_ONLY","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","standard_entry_threshold":85,"production_structural_BOS_sweep_threshold":82,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
