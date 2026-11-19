@@ -482,7 +482,7 @@ def comex_orderflow_status() -> dict:
 def load_orderflow_snapshot(contract: str = "GC", window_seconds: int = 300) -> dict:
     """Load and normalize recent licensed COMEX events for analysis fusion."""
     normalized_contract = contract.strip().upper()
-    if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ]\\d{1,2})?", normalized_contract):
+    if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ][0-9]{1,2})?", normalized_contract):
         raise ValueError("Only COMEX Gold GC contracts are supported")
     with _connect() as conn:
         rows = conn.execute("""
