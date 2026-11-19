@@ -3604,6 +3604,54 @@ async def live_analysis_report() -> dict:
     max_points = float(dossier.get("maximum_absolute_points") or 0.0)
     directional_strength = round(min(100.0, abs(weighted_points) / max_points * 100), 1) if max_points > 0 else 0.0
     candidate = dominant if dominant in ("BUY", "SELL") and directional_strength > 0 else "NEUTRAL"
+    # If aggregate direction is neutral, use H4/H1 only when both independently agree.
+    entry_engine = analysis.get("entry_engine") or {}
+    higher = entry_engine.get("higher_timeframe") or {}
+    h4_bias = str((higher.get("H4") or {}).get("bias") or "WAIT")
+    h1_bias = str((higher.get("H1") or {}).get("bias") or "WAIT")
+    if candidate == "NEUTRAL" and h4_bias == h1_bias and h4_bias in ("BUY", "SELL"):
+        candidate = h4_bias
+
+    # Indicative ATR-based path, shown even if final execution decision is WAIT.
+    projection = {
+        "status": "UNAVAILABLE",
+        "direction": candidate,
+        "horizon": "M5-M15 indicative; refreshed with each live report",
+        "basis": "Current MT5 quote midpoint and closed M5 ATR; not a calibrated forecast.",
+    }
+    try:
+        m5_rows = (_latest_mt5_candles or {}).get("timeframes", {}).get("M5", [])
+        if candidate in ("BUY", "SELL") and len(m5_rows) >= 20:
+            m5_atr = float(_atr_wilder(m5_rows))
+            midpoint = (float(quote["bid"]) + float(quote["ask"])) / 2.0
+            recent = m5_rows[-12:]
+            digits = int(quote.get("digits") or 2)
+            if m5_atr > 0:
+                if candidate == "SELL":
+                    targets = [midpoint - m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
+                    invalidation = max(float(bar.high) for bar in recent) + 0.20 * m5_atr
+                    structure_basis = "recent_M5_swing_high_plus_ATR_buffer"
+                else:
+                    targets = [midpoint + m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
+                    invalidation = min(float(bar.low) for bar in recent) - 0.20 * m5_atr
+                    structure_basis = "recent_M5_swing_low_minus_ATR_buffer"
+                projection = {
+                    "status": "ESTIMATE",
+                    "direction": candidate,
+                    "reference_price": round(midpoint, digits),
+                    "target_1": round(targets[0], digits),
+                    "target_2": round(targets[1], digits),
+                    "target_3": round(targets[2], digits),
+                    "near_target_zone": [round(min(targets[0], targets[1]), digits), round(max(targets[0], targets[1]), digits)],
+                    "invalidation_level": round(invalidation, digits),
+                    "atr_m5": round(m5_atr, digits),
+                    "structure_basis": structure_basis,
+                    "horizon": "M5-M15 indicative; refreshed with each live report",
+                    "basis": "Current MT5 quote midpoint and closed M5 ATR; not a calibrated forecast.",
+                }
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        pass
+
     now = datetime.now(timezone.utc)
     live_candles = []
     for timeframe, candle in _live_quote_candles.items():
@@ -3622,6 +3670,7 @@ async def live_analysis_report() -> dict:
         "decision": analysis.get("decision", "WAIT"),
         "candidate_direction": candidate,
         "directional_strength_score_0_to_100": directional_strength,
+        "price_projection": projection,
         "score_semantics": "Directional evidence strength, not a calibrated win probability.",
         "decision_explanation": (
             "اتجاه مرشّح صاعد، لكن شروط الدخول غير مكتملة." if candidate == "BUY" and analysis.get("decision") == "WAIT" else
