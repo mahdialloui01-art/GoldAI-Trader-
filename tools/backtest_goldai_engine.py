@@ -16,6 +16,8 @@ QUOTE=[{}]
 REAL_DT=e.datetime
 
 # Research-only ablation profile. Production backend thresholds and code are untouched.
+# LIQUIDITY_SWEEP uses the same structural 72/100 research threshold as BREAKOUT.
+_RESEARCH_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 # Separate raw entry score from directional confluence. This second research
 # sweep tests 65/100 standard and 72/100 structural; all non-score safety blockers remain.
 _ORIGINAL_RECONCILE = e._reconcile_entry_engine_quality
@@ -31,7 +33,7 @@ def research_reconcile(analysis):
     except (TypeError, ValueError):
         return _ORIGINAL_RECONCILE(analysis)
     strategy = str(entry.get("selected_strategy") or "")
-    structural = strategy in e._DEMO_STRUCTURAL_ENTRY_STRATEGIES
+    structural = strategy in _RESEARCH_STRUCTURAL_ENTRY_STRATEGIES
     threshold = 72.0 if structural else 65.0
     entry["raw_entry_quality_score_0_to_100"] = round(raw, 1)
     entry["cross_layer_confluence_score"] = round(confluence, 1)
@@ -246,7 +248,7 @@ def research_entry_candidate_gate(analysis):
     except (TypeError, ValueError):
         return False, "MISSING_CONFLUENCE", {}
     structural_full_score = (
-        strategy in e._DEMO_STRUCTURAL_ENTRY_STRATEGIES
+        strategy in _RESEARCH_STRUCTURAL_ENTRY_STRATEGIES
         and setup_score >= setup_max and setup_max > 0
     )
     # Research-only ablation floor. Production remains 85/82 in app/main.py.
