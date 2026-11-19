@@ -3717,38 +3717,55 @@ async def live_analysis_report() -> dict:
 
 @app.get("/api/v1/analysis/chart")
 async def live_analysis_chart(timeframe: str = "ALL") -> dict:
-    """Return real, closed MT5 OHLC candles and their matching expert reports for charting."""
+    """Return cached MT5 history even when live analysis is paused by stale data."""
     requested = timeframe.upper().strip()
     allowed = {"M5", "M15", "H1", "H4", "ALL"}
     if requested not in allowed:
         raise HTTPException(status_code=400, detail="timeframe must be M5, M15, H1, H4 or ALL.")
-    # Reuse the same freshness and integrity checks as the live expert endpoint.
-    analysis = await live_expert_technical_analysis()
     if _latest_mt5_candles is None:
         raise HTTPException(status_code=503, detail="Waiting for authenticated MT5 candles.")
+
     series = _latest_mt5_candles["timeframes"]
-    dossier = analysis.get("technical_dossier") or {}
-    reports = dossier.get("timeframes") or {}
     frames = list(series.keys()) if requested == "ALL" else [requested]
     candles_by_timeframe = {
         frame: [bar.model_dump(mode="json") for bar in series[frame][-100:]]
         for frame in frames
     }
+    analysis: dict = {}
+    analysis_error: str | None = None
+    try:
+        analysis = await live_expert_technical_analysis()
+    except HTTPException as exc:
+        analysis_error = str(exc.detail)
+
+    dossier = analysis.get("technical_dossier") or {}
+    reports = dossier.get("timeframes") or {}
     reports_by_timeframe = {frame: reports.get(frame, {}) for frame in frames}
-    m5_atr = float((reports.get("M5") or {}).get("atr14") or 0.0)
-    quote = _fresh_mt5_quote()
-    spread_price = float(quote.get("spread_points") or 0.0) * float(quote.get("point") or 0.0)
-    spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else 1.0
-    strategy_scan = _classify_entry_setups(
-        str(analysis.get("decision", "WAIT")), series, reports, spread_atr_ratio
-    )
+    strategy_scan: dict = {"status": "UNAVAILABLE_STALE_OR_NO_LIVE_QUOTE", "execution_enabled": False}
+    if analysis and not analysis_error:
+        try:
+            m5_atr = float((reports.get("M5") or {}).get("atr14") or 0.0)
+            quote = _fresh_mt5_quote()
+            spread_price = float(quote.get("spread_points") or 0.0) * float(quote.get("point") or 0.0)
+            spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else 1.0
+            strategy_scan = _classify_entry_setups(
+                str(analysis.get("decision", "WAIT")), series, reports, spread_atr_ratio
+            )
+        except HTTPException as exc:
+            analysis_error = str(exc.detail)
+
     return {
         "symbol": _latest_mt5_candles["symbol"],
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
         "closed_candles_only": True,
+        "history_available": True,
+        "live_analysis_available": bool(analysis) and not bool(analysis_error),
+        "analysis_status": "LIVE" if analysis and not analysis_error else "PAUSED_STALE_DATA",
+        "analysis_unavailable_reason": analysis_error,
+        "data_quality": _latest_mt5_candles.get("data_quality", {}),
         "decision": analysis.get("decision", "WAIT"),
-        "blockers": analysis.get("blockers", []),
+        "blockers": analysis.get("blockers", []) or ([analysis_error] if analysis_error else []),
         "confluence_score": dossier.get("confluence_score"),
         "confluence_grade": dossier.get("confluence_grade"),
         "dominant_technical_direction": dossier.get("dominant_technical_direction"),
@@ -3816,17 +3833,10 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
             and all(frame in quality for frame in ("M5", "M15", "H1"))
             and age <= 7 * 24 * 60 * 60
         )
-        if age > interval * 2 + 60 and not h4_session_reopen_gap:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Latest {timeframe} candle is stale: "
-                    f"bar_time_utc={stamps[-1].isoformat()}, "
-                    f"age_seconds={int(age)}, "
-                    f"limit_seconds={interval * 2 + 60}, "
-                    f"server_now_utc={now.isoformat()}."
-                ),
-            )
+        # Historical OHLC bars remain valid chart data after a market close.
+        # Freshness is recorded here, but enforced separately by the live-analysis
+        # endpoint so stale history can never authorize a trade.
+        is_fresh = age <= interval * 2 + 60 or h4_session_reopen_gap
         # Longer gaps can be legitimate weekends, holidays, or broker session breaks.
         # Report them for visibility instead of rejecting valid market closures.
         gaps = [int(delta) for delta in deltas if delta > interval + 1]
@@ -3838,6 +3848,9 @@ def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
             "session_gaps_observed": len(gaps),
             "largest_gap_seconds": max(gaps, default=0),
             "h4_session_reopen_gap": h4_session_reopen_gap,
+            "is_fresh": is_fresh,
+            "freshness_status": "FRESH" if is_fresh else "STALE_HISTORICAL",
+            "freshness_limit_seconds": interval * 2 + 60,
             "strictly_increasing": True,
             "timeframe_spacing_valid": True,
         }
