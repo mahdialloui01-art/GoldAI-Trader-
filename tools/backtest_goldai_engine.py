@@ -40,7 +40,7 @@ def research_reconcile(analysis):
     entry["score_threshold"] = threshold
     entry["score_reconciliation"] = "RESEARCH_ABLATION_RAW_ENTRY_SCORE_WITH_SEPARATE_CONFLUENCE_FLOOR_70"
     if raw < threshold:
-        entry["direction"] = Direction.WAIT
+        entry["direction"] = e.Direction.WAIT
         entry["setup"] = None
         entry.setdefault("blockers", []).append("RESEARCH_ENTRY_SCORE_BELOW_ABLATION_THRESHOLD")
     analysis["entry_engine"] = entry
