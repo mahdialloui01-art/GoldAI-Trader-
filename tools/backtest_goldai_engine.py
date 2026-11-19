@@ -14,6 +14,39 @@ SLIP=float(os.getenv("BACKTEST_SLIPPAGE_POINTS","2"))*POINT
 NOW=[datetime(2026,1,1,tzinfo=timezone.utc)]
 QUOTE=[{}]
 REAL_DT=e.datetime
+
+# Research-only ablation profile. Production backend thresholds and code are untouched.
+# Separate the raw entry score from directional confluence, then test a cautious
+# lower score floor (75/100) with a distinct confluence floor (70/100).
+_ORIGINAL_RECONCILE = e._reconcile_entry_engine_quality
+e._DEMO_MIN_CONFLUENCE_SCORE = 70.0
+e._DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 70.0
+
+def research_reconcile(analysis):
+    dossier = analysis.get("technical_dossier") or {}
+    entry = analysis.get("entry_engine") or {}
+    try:
+        confluence = float(dossier.get("confluence_score"))
+        raw = float(entry.get("entry_quality_score_0_to_100"))
+    except (TypeError, ValueError):
+        return _ORIGINAL_RECONCILE(analysis)
+    strategy = str(entry.get("selected_strategy") or "")
+    structural = strategy in e._DEMO_STRUCTURAL_ENTRY_STRATEGIES
+    threshold = 82.0 if structural else 75.0
+    entry["raw_entry_quality_score_0_to_100"] = round(raw, 1)
+    entry["cross_layer_confluence_score"] = round(confluence, 1)
+    entry["effective_entry_quality_score_0_to_100"] = round(raw, 1)
+    entry["entry_quality_score_0_to_100"] = round(raw, 1)
+    entry["score_threshold"] = threshold
+    entry["score_reconciliation"] = "RESEARCH_ABLATION_RAW_ENTRY_SCORE_WITH_SEPARATE_CONFLUENCE_FLOOR_70"
+    if raw < threshold:
+        entry["direction"] = e.Direction.WAIT
+        entry["setup"] = None
+        entry.setdefault("blockers", []).append("RESEARCH_ENTRY_SCORE_BELOW_ABLATION_THRESHOLD")
+    analysis["entry_engine"] = entry
+    return analysis
+
+e._reconcile_entry_engine_quality = research_reconcile
 class SimDateTime(REAL_DT):
     @classmethod
     def now(cls,tz=None):
