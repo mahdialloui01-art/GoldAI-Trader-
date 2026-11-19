@@ -60,3 +60,34 @@ def test_comex_rejects_events_outside_retention_window():
             timestamp=old_timestamp, event_type="TRADE",
             price=2650.2, size=4, aggressor_side="BUY",
         )
+
+def test_generic_gc_snapshot_only_matches_valid_monthly_contracts(monkeypatch):
+    from app import learning_store
+
+    class FakeResult:
+        def fetchall(self):
+            return []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params):
+            assert "contract ~ '^GC[FGHJKMNQUVXZ][0-9]{1,2}$'" in query
+            assert params[:2] == ("GC", "GC")
+            return FakeResult()
+
+    monkeypatch.setattr(learning_store, "_connect", lambda: FakeConnection())
+    monkeypatch.setattr(
+        learning_store,
+        "build_orderflow_snapshot",
+        lambda rows, now, window_seconds: {"status": "NO_DATA"},
+    )
+
+    result = learning_store.load_orderflow_snapshot("GC", 300)
+    assert result["contract"] == "GC"
+    assert result["history_days_retained"] == 90
+
