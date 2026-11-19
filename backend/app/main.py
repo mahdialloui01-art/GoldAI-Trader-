@@ -34,7 +34,8 @@ class Settings(BaseSettings):
     trading_mode: str = "paper"
     live_trading_enabled: bool = False
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
-    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=10.0)
+    max_daily_loss_usd: float = Field(default=15.0, gt=0, le=15.0)
+    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=10.0)  # Legacy reporting only
     demo_execution_enabled: bool = False
     manual_demo_execution_enabled: bool = False
     demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=2.0)  # Manual DEMO only; hard-capped at 0.5%.
@@ -58,8 +59,13 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
+def _effective_daily_loss_cap_usd() -> float:
+    return min(float(settings.max_daily_loss_usd), 15.0)
+
+
 def _effective_daily_loss_cap_percent() -> float:
-    return min(float(settings.max_daily_loss_percent), 2.0)
+    # Compatibility for old clients; no longer used for daily-loss enforcement.
+    return min(float(settings.max_daily_loss_percent), 100.0)
 
 
 def _effective_manual_risk_cap_percent() -> float:
@@ -233,6 +239,7 @@ class RiskCheckRequest(BaseModel):
     point_value_per_lot: float = Field(gt=0)
     proposed_lots: float = Field(gt=0)
     daily_loss_percent: float = Field(default=0, ge=0)
+    daily_loss_usd: float = Field(default=0, ge=0, le=1_000_000)
 
 
 
@@ -241,6 +248,7 @@ class PositionSizeRequest(BaseModel):
     risk_percent: float = Field(default=0.5, gt=0, le=1.0)
     account_equity: float | None = Field(default=None, gt=0)
     daily_loss_percent: float = Field(default=0, ge=0, le=100)
+    daily_loss_usd: float = Field(default=0, ge=0, le=1_000_000)
 
 
 class RiskCheckResponse(BaseModel):
@@ -270,11 +278,13 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
             status_code=422,
             detail=f"Requested risk exceeds configured maximum of {settings.max_risk_per_trade_percent}%.",
         )
-    if request.daily_loss_percent >= _effective_daily_loss_cap_percent():
+    if request.daily_loss_usd >= _effective_daily_loss_cap_usd():
         return {
             "approved": False, "recommended_lots": 0.0, "risk_amount": 0.0,
             "estimated_risk_percent": 0.0, "account_currency": quote["account_currency"],
-            "reason": "Daily loss limit reached; new positions are locked.",
+            "reason": "Daily loss limit of $15 reached; new positions are locked.",
+            "daily_loss_usd": request.daily_loss_usd,
+            "max_daily_loss_usd": _effective_daily_loss_cap_usd(),
             "execution_enabled": False,
         }
 
@@ -349,7 +359,7 @@ def get_config() -> dict:
         "trading_mode": settings.trading_mode,
         "live_trading_enabled": settings.live_trading_enabled,
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
-        "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
+        "max_daily_loss_usd": _effective_daily_loss_cap_usd(),
         "risk_capital_usd": settings.risk_capital_usd,
         "demo_execution_enabled": settings.demo_execution_enabled,
         "manual_demo_execution_enabled": settings.manual_demo_execution_enabled,
@@ -4014,7 +4024,7 @@ def get_next_manual_demo_trade(authorization: str | None = Header(default=None))
     return {"available": True, **command}
 
 
-def _adaptive_demo_risk_policy(analysis: dict, daily_loss_percent: float) -> dict:
+def _adaptive_demo_risk_policy(analysis: dict, daily_loss_usd: float) -> dict:
     """Choose a bounded DEMO risk budget from setup quality and remaining daily-loss headroom."""
     dossier = analysis.get("technical_dossier") or {}
     entry_engine = analysis.get("entry_engine") or {}
@@ -4048,14 +4058,14 @@ def _adaptive_demo_risk_policy(analysis: dict, daily_loss_percent: float) -> dic
         quality_risk = 0.15
         quality_band = "MINIMUM_QUALIFIED"
 
-    daily_limit = _effective_daily_loss_cap_percent()
-    if daily_limit <= 0 or daily_loss_percent >= daily_limit:
+    daily_limit = _effective_daily_loss_cap_usd()
+    if daily_limit <= 0 or daily_loss_usd >= daily_limit:
         return {
             "approved": False, "risk_percent": 0.0, "quality_score": round(quality, 2),
             "quality_band": quality_band, "daily_loss_scale": 0.0,
             "reason": "Daily loss limit reached; all new entries are locked.",
         }
-    utilization = daily_loss_percent / daily_limit
+    utilization = daily_loss_usd / daily_limit
     if utilization >= 0.75:
         scale, headroom = 0.25, "LOW"
     elif utilization >= 0.50:
@@ -4087,13 +4097,15 @@ def _adaptive_demo_risk_policy(analysis: dict, daily_loss_percent: float) -> dic
         "daily_loss_scale": scale,
         "daily_loss_headroom": headroom,
         "daily_loss_utilization_percent": round(utilization * 100, 2),
+        "daily_loss_usd": round(daily_loss_usd, 2),
+        "daily_loss_limit_usd": daily_limit,
         "reason": "Risk selected from the weaker confirmed quality score, then reduced for daily-loss utilization and capped by server policy.",
     }
 
 
 @app.get("/api/v1/mt5/demo/signal")
 async def mt5_demo_signal(
-    daily_loss_percent: float = 0.0,
+    daily_loss_usd: float = 0.0,
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Return a candidate for a separately demo-gated MT5 executor; never place orders."""
@@ -4102,8 +4114,8 @@ async def mt5_demo_signal(
         authorization.removeprefix("Bearer ").strip(), expected
     ):
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
-    if not math.isfinite(daily_loss_percent) or daily_loss_percent < 0 or daily_loss_percent > 100:
-        raise HTTPException(status_code=422, detail="daily_loss_percent must be between 0 and 100.")
+    if not math.isfinite(daily_loss_usd) or daily_loss_usd < 0 or daily_loss_usd > 1_000_000:
+        raise HTTPException(status_code=422, detail="daily_loss_usd must be between 0 and 1000000.")
     if settings.live_trading_enabled or settings.trading_mode.lower() != "paper":
         raise HTTPException(status_code=503, detail="Demo signal service is locked by the global safety policy.")
     if not settings.demo_execution_enabled:
@@ -4112,12 +4124,12 @@ async def mt5_demo_signal(
             "reason": "Demo execution has not been explicitly enabled on the server.",
             "execution_enabled": False,
         }
-    if daily_loss_percent >= _effective_daily_loss_cap_percent():
+    if daily_loss_usd >= _effective_daily_loss_cap_usd():
         return {
             "enabled": True, "decision": "WAIT",
             "reason": "Daily loss limit reached; new entries are locked.",
             "daily_loss_percent": daily_loss_percent,
-            "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
+            "max_daily_loss_usd": _effective_daily_loss_cap_usd(),
             "execution_enabled": False,
         }
 
@@ -4146,7 +4158,7 @@ async def mt5_demo_signal(
             "quality_gate": quality_details,
             "execution_enabled": False,
         }
-    risk_policy = _adaptive_demo_risk_policy(analysis, daily_loss_percent)
+    risk_policy = _adaptive_demo_risk_policy(analysis, daily_loss_usd)
     if not risk_policy.get("approved"):
         return {
             "enabled": True, "decision": "WAIT",
@@ -4181,7 +4193,7 @@ async def mt5_demo_signal(
         stop_distance_points=stop_points,
         risk_percent=float(risk_policy["risk_percent"]),
         account_equity=float(quote["account_equity"]),
-        daily_loss_percent=daily_loss_percent,
+        daily_loss_usd=daily_loss_usd,
     ))
     if not sizing.get("approved") or sizing.get("recommended_lots", 0) <= 0:
         return {
@@ -4207,8 +4219,8 @@ async def mt5_demo_signal(
         "account_currency": quote.get("account_currency"),
         "risk_policy": risk_policy,
         "position_sizing": sizing,
-        "daily_loss_percent": daily_loss_percent,
-        "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
+        "daily_loss_usd": daily_loss_usd,
+        "max_daily_loss_usd": _effective_daily_loss_cap_usd(),
         "blockers": [],
         "candidate_ready": True,
         "execution_enabled": False,
