@@ -4470,10 +4470,14 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
             "iceberg_candidates": [], "execution_enabled": False,
         }
     orderflow_component = 0
+    flow_coverage = (orderflow_context.get("data_quality") or {}).get("explicit_aggressor_coverage_percent")
     flow_fresh = (
         orderflow_context.get("delta_status") == "VALID_EXPLICIT_AGGRESSOR"
         and orderflow_context.get("freshness_seconds") is not None
         and orderflow_context["freshness_seconds"] <= 30
+        and int(orderflow_context.get("tagged_trade_count") or 0) >= 5
+        and flow_coverage is not None
+        and float(flow_coverage) >= 80.0
     )
     tagged_total = (
         float(orderflow_context.get("tagged_buy_volume") or 0)
@@ -4491,8 +4495,10 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
             reasons.append("Delta COMEX يعاكس الاتجاه الفني؛ خُفّض تقييم الإعداد.")
     elif orderflow_context.get("delta_status") != "VALID_EXPLICIT_AGGRESSOR":
         orderflow_context["fusion_status"] = "ADVISORY_ONLY_NO_VERIFIED_DELTA"
-    elif not flow_fresh:
+    elif orderflow_context.get("freshness_seconds") is not None and orderflow_context["freshness_seconds"] > 30:
         orderflow_context["fusion_status"] = "ADVISORY_ONLY_STALE_FLOW"
+    elif int(orderflow_context.get("tagged_trade_count") or 0) < 5 or flow_coverage is None or float(flow_coverage) < 80.0:
+        orderflow_context["fusion_status"] = "ADVISORY_ONLY_INSUFFICIENT_TAGGED_SAMPLE"
     else:
         orderflow_context["fusion_status"] = "ADVISORY_ONLY_WEAK_OR_NEUTRAL_DELTA"
     components["ORDER_FLOW_DELTA"] = orderflow_component
