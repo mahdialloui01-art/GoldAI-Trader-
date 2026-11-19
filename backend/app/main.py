@@ -1962,7 +1962,7 @@ def multi_timeframe_analysis(request: MultiTimeframeAnalysisRequest) -> dict:
     else:
         reasons.append("M15 يعاكس اتجاه H4/H1؛ تم رفض الإشارة رغم توافق بقية الأطر.")
 
-    if any(result["spread_atr_ratio"] > 0.15 for result in analyses.values()):
+    if any(result["spread_atr_ratio"] is not None and result["spread_atr_ratio"] > 0.15 for result in analyses.values()):
         final_direction = Direction.WAIT
         reasons.append("فلتر السبريد منع الصفقة لأن تكلفته مرتفعة مقارنة بتذبذب أحد الأطر.")
 
@@ -2096,7 +2096,10 @@ async def signal_fusion_analysis(request: MultiTimeframeAnalysisRequest) -> dict
         reasons.append("بيانات FRED الاقتصادية غير متاحة أو قديمة؛ تم إيقاف الإشارة احتياطياً.")
 
     quote = _fresh_mt5_quote()
-    spread_block = any(float(item["spread_atr_ratio"]) > 0.15 for item in analyses.values())
+    spread_block = any(
+        item["spread_atr_ratio"] is not None and float(item["spread_atr_ratio"]) > 0.15
+        for item in analyses.values()
+    )
     if spread_block:
         final_direction = Direction.WAIT
         reasons.append("السبريد مرتفع مقارنة بـ ATR في إطار واحد على الأقل.")
