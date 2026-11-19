@@ -99,17 +99,6 @@ def test_opportunity_log_preserves_exact_entry_engine_decision_context(monkeypat
     assert learning.save_opportunity(analysis) is True
     params = captured["params"]
     context = json.loads(params[-1])
-    fingerprint = json.loads(json.dumps({
-        "symbol": "GOLD",
-        "decision": "WAIT",
-        "blockers": ["ENTRY_CONFIRMATION_MISSING"],
-        "latest_candle_times": {"M5": "2026-11-19T03:05:00Z"},
-        "confluence_score": 9.5,
-        "entry_score": 9.5,
-        "entry_direction": "WAIT",
-        "entry_strategy": "MOMENTUM_CONTINUATION",
-        "strategy": None,
-    }))
     assert context["entry_engine"]["raw_entry_quality_score_0_to_100"] == 89
     assert context["entry_engine"]["effective_entry_quality_score_0_to_100"] == 9.5
     assert context["technical_dossier"]["strategy_scan"]["diagnostic_direction"] == "SELL"
