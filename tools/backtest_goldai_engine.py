@@ -74,7 +74,58 @@ for old,new in _replacements:
     if old not in _entry_source:
         raise RuntimeError("Research patch anchor missing: "+old[:90])
     _entry_source=_entry_source.replace(old,new,1)
+_entry_source = _entry_source.replace("elif spread_atr_ratio <= 0.15:", "elif spread_atr_ratio <= 0.20:")
+_entry_source = _entry_source.replace("if quote_distance_atr > 0.50:", "if quote_distance_atr > 0.75:")
+_entry_source = _entry_source.replace("if m5_extension_atr > 1.50:", "if m5_extension_atr > 1.80:")
+_entry_source = _entry_source.replace("spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50 or m5_extension_atr > 1.50", "spread_atr_ratio > 0.20 or volatility_ratio > 1.8 or quote_distance_atr > 0.75 or m5_extension_atr > 1.80")
 exec(compile(_entry_source, inspect.getsourcefile(e.analyze_entry_plan) or "<research-entry-ablation>", "exec"), e.__dict__)
+# Independent research-only M5 trigger detector. Closed bars only; production untouched.
+def research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio):
+    if direction not in ("BUY", "SELL"):
+        return {"selected": None, "candidates": [], "direction": direction, "blockers": ["NO_HIGHER_TIMEFRAME_DIRECTION"]}
+    m5, report = frames["M5"], reports.get("M5", {})
+    if len(m5) < 30:
+        return {"selected": None, "candidates": [], "direction": direction, "blockers": ["INSUFFICIENT_M5_HISTORY"]}
+    atr, ema20 = float(report.get("atr14") or 0.0), float(report.get("ema20") or 0.0)
+    if atr <= 0 or ema20 <= 0:
+        return {"selected": None, "candidates": [], "direction": direction, "blockers": ["INVALID_ATR_OR_EMA"]}
+    last, prev = m5[-1], m5[-2]
+    close, opn, high, low = float(last.close), float(last.open), float(last.high), float(last.low)
+    prev_high, prev_low = float(prev.high), float(prev.low)
+    candle_range = max(high-low, 1e-12)
+    body_atr, close_pos = abs(close-opn)/atr, (close-low)/candle_range
+    extension, bullish = abs(close-ema20)/atr, direction == "BUY"
+    directional = close > opn if bullish else close < opn
+    near_ema = extension <= 1.80
+    micro_break = close > prev_high if bullish else close < prev_low
+    close_strong = close_pos >= 0.68 if bullish else close_pos <= 0.32
+    reclaim = (float(prev.close) <= ema20 < close) if bullish else (float(prev.close) >= ema20 > close)
+    recent = m5[-4:-1]
+    if bullish:
+        touched = min(float(c.low) for c in recent) <= ema20 + 0.18*atr
+        held = close > ema20 and close > float(recent[-1].close)
+    else:
+        touched = max(float(c.high) for c in recent) >= ema20 - 0.18*atr
+        held = close < ema20 and close < float(recent[-1].close)
+    candidates=[]
+    if reclaim and directional and close_strong and body_atr >= 0.20 and near_ema:
+        candidates.append({"strategy":"EMA_RECLAIM","score":5,"max_score":5,"evidence":["إغلاق M5 استعاد EMA20 بعد تصحيح","شمعة مغلقة في اتجاه H1/H4"]})
+    if micro_break and directional and close_strong and body_atr >= 0.25 and near_ema:
+        candidates.append({"strategy":"MOMENTUM_CONTINUATION","score":5,"max_score":5,"evidence":["إغلاق M5 تجاوز قمة/قاع الشمعة السابقة","جسم الشمعة وموقع الإغلاق يؤكدان الاتجاه"]})
+    if touched and held and directional and close_strong and near_ema:
+        candidates.append({"strategy":"PULLBACK","score":5,"max_score":5,"evidence":["إعادة اختبار منطقة EMA20 خلال آخر ثلاث شمعات","رفض سعري وإغلاق مؤيد للاتجاه"]})
+    priority={"EMA_RECLAIM":3,"MOMENTUM_CONTINUATION":2,"PULLBACK":1}
+    candidates.sort(key=lambda x:priority.get(x["strategy"],0),reverse=True)
+    selected=candidates[0] if candidates else None
+    blockers=[]
+    if spread_atr_ratio > 0.20: blockers.append("SPREAD_TOO_HIGH")
+    if report.get("market_regime") == "HIGH_VOLATILITY": blockers.append("EXTREME_M5_VOLATILITY")
+    if extension > 1.80: blockers.append("M5_OVEREXTENDED")
+    if blockers: selected=None
+    return {"selected":selected,"candidates":candidates,"direction":direction,"spread_to_m5_atr_ratio":round(spread_atr_ratio,4),"m5_extension_from_ema20_atr":round(extension,3),"blockers":blockers,"score_note":"Independent research trigger rules; not calibrated win probability."}
+
+e._classify_entry_setups_for_direction = research_m5_setup_classifier
+
 class SimDateTime(REAL_DT):
     @classmethod
     def now(cls,tz=None):
@@ -330,7 +381,7 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"RESEARCH ONLY: isolated entry engine, score sensitivity 65 standard / 72 structural; bypass expert-direction agreement and dossier confluence floor only","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"65 standard / 72 structural (exploratory sensitivity sweep)","setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
+    report={"test":"RESEARCH ONLY: isolated entry engine, score sensitivity 65 standard / 72 structural; bypass expert-direction agreement and dossier confluence floor only","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"65 standard / 72 structural (exploratory sensitivity sweep)","research_trigger_engine":"independent M5 EMA reclaim, pullback retest, momentum close","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
