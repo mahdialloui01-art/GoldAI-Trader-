@@ -432,7 +432,8 @@ void TryManualDemoTrade()
       return;
    }
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double maxRiskMoney = equity * ManualMaxRiskPerTradePercent / 100.0;
+   double riskBase = MathMin(equity, RiskCapitalCapUSD);
+   double maxRiskMoney = riskBase * ManualMaxRiskPerTradePercent / 100.0;
    if(riskBase <= 0 || estimatedStopPnl >= 0 || (-estimatedStopPnl * 1.05) > maxRiskMoney)
    {
       Print("GoldAI manual DEMO blocked: stop risk exceeds configured maximum ",
@@ -566,7 +567,8 @@ void TryDemoTrade()
       return;
    }
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
-   double maxRiskMoney = equity * DemoMaxRiskPerTradePercent / 100.0;
+   double riskBase = MathMin(equity, RiskCapitalCapUSD);
+   double maxRiskMoney = riskBase * DemoMaxRiskPerTradePercent / 100.0;
    if(riskBase <= 0 || estimatedStopPnl >= 0 ||
       (-estimatedStopPnl * 1.05) > maxRiskMoney)
    {
