@@ -120,7 +120,21 @@ async def run():
         except Exception as ex:
             blocked["ENGINE_ERROR_"+type(ex).__name__]+=1
             detail = getattr(ex, "detail", None) or str(ex) or repr(ex)
-            engine_errors[f"{type(ex).__name__}: {detail}"] += 1
+            age_diag = {}
+            try:
+                cached = e._latest_mt5_candles.get("timeframes", {})
+                sim_now = SimDateTime.now(timezone.utc)
+                for frame, candles in cached.items():
+                    last_time = candles[-1].time.astimezone(timezone.utc)
+                    age_diag[frame] = {
+                        "last_candle_time": last_time.isoformat(),
+                        "sim_now": sim_now.isoformat(),
+                        "age_seconds": round((sim_now - last_time).total_seconds(), 2),
+                        "limit_seconds": secs[frame] * 2 + 60,
+                    }
+            except Exception as diag_ex:
+                age_diag = {"diagnostic_error": repr(diag_ex)}
+            engine_errors[f"{type(ex).__name__}: {detail} | ages={json.dumps(age_diag, ensure_ascii=False, sort_keys=True)}"] += 1
             continue
         if not ok:
             blocked[reason]+=1
