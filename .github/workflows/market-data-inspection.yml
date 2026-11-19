@@ -1,0 +1,31 @@
+name: GoldAI historical data inspection
+on:
+  push:
+    paths:
+      - "tools/inspect_market_data.py"
+      - "xauusd-m1-bid-2026-05-01-2026-08-01.csv"
+      - "xauusd-m1-ask-2026-05-01-2026-08-01.csv"
+      - ".github/workflows/market-data-inspection.yml"
+  workflow_dispatch:
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository and LFS data
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Inspect BID and ASK data
+        run: python tools/inspect_market_data.py
+      - name: Upload inspection report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: goldai-market-data-inspection
+          path: data-inspection.json
+          if-no-files-found: warn
+          retention-days: 14
