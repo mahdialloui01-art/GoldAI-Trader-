@@ -12,7 +12,7 @@ def _analysis(score=85.0, strategy="EMA_RECLAIM", setup_score=4, blockers=None):
                     "score": setup_score,
                     "max_score": 5,
                 },
-                "blockers": blockers or [],
+                "blockers": ["LEGACY_LAYER_BLOCK"] if blockers == ["LEGACY_LAYER_BLOCK"] else [],
             },
         },
         "entry_engine": {
@@ -26,6 +26,14 @@ def _analysis(score=85.0, strategy="EMA_RECLAIM", setup_score=4, blockers=None):
                 "entry_reference": 2300.0,
                 "stop_loss": 2295.0,
                 "take_profit": {"TP2_2R": 2310.0},
+            },
+            "entry_setup_scan": {
+                "selected": {
+                    "strategy": strategy,
+                    "score": setup_score,
+                    "max_score": 5,
+                },
+                "blockers": blockers or [],
             },
             "blockers": [],
         },
@@ -121,3 +129,11 @@ def test_demo_gate_rejects_pullback_after_negative_training_and_weak_validation(
     assert passed is False
     assert "informational only or unsupported" in reason
     assert details["selected_strategy"] == "PULLBACK"
+
+
+def test_demo_gate_uses_dedicated_entry_scan_not_legacy_dossier_scan():
+    analysis = _analysis()
+    analysis["technical_dossier"]["strategy_scan"]["blockers"] = ["LEGACY_SCAN_STALE"]
+    passed, reason, details = _demo_candidate_quality_gate(analysis)
+    assert passed is True
+    assert details["selected_strategy"] == "EMA_RECLAIM"
