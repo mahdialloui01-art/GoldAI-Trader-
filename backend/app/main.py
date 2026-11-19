@@ -2146,14 +2146,14 @@ def check_risk(request: RiskCheckRequest) -> RiskCheckResponse:
 
     if risk_percent > settings.max_risk_per_trade_percent:
         reasons.append("Proposed position exceeds the configured per-trade risk limit.")
-    if request.daily_loss_percent >= _effective_daily_loss_cap_percent():
-        reasons.append("Daily loss limit reached; trading must remain locked.")
+    if request.daily_loss_usd >= _effective_daily_loss_cap_usd():
+        reasons.append("Daily loss limit of $15 reached; trading must remain locked.")
     if not settings.live_trading_enabled:
         reasons.append("Execution is disabled; this service is in analysis/paper mode.")
 
     approved = (
         risk_percent <= settings.max_risk_per_trade_percent
-        and request.daily_loss_percent < _effective_daily_loss_cap_percent()
+        and request.daily_loss_usd < _effective_daily_loss_cap_usd()
     )
     return RiskCheckResponse(
         approved=approved,
@@ -4127,8 +4127,8 @@ async def mt5_demo_signal(
     if daily_loss_usd >= _effective_daily_loss_cap_usd():
         return {
             "enabled": True, "decision": "WAIT",
-            "reason": "Daily loss limit reached; new entries are locked.",
-            "daily_loss_percent": daily_loss_percent,
+            "reason": "Daily loss limit of $15 reached; new entries are locked.",
+            "daily_loss_usd": daily_loss_usd,
             "max_daily_loss_usd": _effective_daily_loss_cap_usd(),
             "execution_enabled": False,
         }
