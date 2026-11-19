@@ -257,13 +257,17 @@ def research_entry_candidate_gate(analysis):
         return False, "RESEARCH_CONFLUENCE_BELOW_70", {
             "confluence": confluence_score, "minimum_confluence": minimum_confluence,
         }
-    return True, "PRODUCTION_DEMO_ENTRY_GATE_PASSED", {
+    return True, "RESEARCH_ENTRY_QUALITY_GATE_PASSED", {
         "entry_direction": direction, "expert_direction": expert_direction,
         "entry_score": entry_score, "threshold": threshold, "strategy": strategy,
         "setup_score": setup_score, "setup_max": setup_max,
         "confluence": dossier.get("confluence_score"),
         "minimum_confluence": minimum_confluence,
-        "production_gate_bypassed": [],
+        "production_gate_bypassed": [
+            "expert-direction agreement (tracked diagnostically, not required for this isolated entry-engine replay)",
+            "production confluence thresholds 85/82 (research floor is 70)",
+            "production strategy allow-list (research includes paused PULLBACK and LIQUIDITY_SWEEP)",
+        ],
     }
 
 
@@ -285,7 +289,7 @@ async def run():
     e.gold_macro_analysis=macro
     e.economic_news_filter=news
     e.save_opportunity=lambda *a,**k:None
-    trades=[]; blocked=defaultdict(int); blocked_details=defaultdict(int); engine_errors=defaultdict(int); signals=0; stale_skipped=0; pos=None
+    trades=[]; blocked=defaultdict(int); blocked_details=defaultdict(int); engine_errors=defaultdict(int); signals=0; stale_skipped=0; h4_session_reopen_allowed=0; lower_tf_stale_skipped=0; h4_stale_over_7d_skipped=0; pos=None
     diag = {
         "expert_decisions": defaultdict(int), "entry_directions": defaultdict(int),
         "selected_strategies": defaultdict(int), "candidate_strategies": defaultdict(int),
@@ -337,21 +341,41 @@ async def run():
         NOW[0]=datetime.fromtimestamp(end,timezone.utc)
         b,a=qrow["bid"],qrow["ask"]
         spread=max(0,(a["close"]-b["close"])/POINT)
-        QUOTE[0]={"symbol":"GOLD","bid":b["close"],"ask":a["close"],"last":(a["close"]+b["close"])/2,"mid":(a["close"]+b["close"])/2,"spread_points":spread,"digits":2,"point":POINT,"source":"Historical BID/ASK","source_updated_at":NOW[0],"age_seconds":0,"quote_type":"broker_bid_ask","tradable_quote":True}
+        quote_time = datetime.fromtimestamp(end - 60, timezone.utc)
+        QUOTE[0]={"symbol":"GOLD","bid":b["close"],"ask":a["close"],"last":(a["close"]+b["close"])/2,"mid":(a["close"]+b["close"])/2,"spread_points":spread,"digits":2,"point":POINT,"source":"Historical BID/ASK","source_updated_at":quote_time,"age_seconds":60,"quote_type":"broker_bid_ask","tradable_quote":True}
         series={k:make_candles(frames[k],ends[k],end) for k in secs}
         if min(map(len,series.values()))<60: continue
         # Match production freshness limits, but do not count genuine historical
         # market closures/data gaps as engine failures or trading opportunities.
-        stale_frames = []
-        for frame, candles in series.items():
-            age = (NOW[0] - candles[-1].time).total_seconds()
+        # Mirror the production freshness contract: M5/M15/H1 stay strict;
+        # a stale H4 is tolerated only as a bounded session-reopen gap when
+        # every lower timeframe is independently fresh.
+        lower_stale_frames = []
+        for frame in ("M5", "M15", "H1"):
+            age = (NOW[0] - series[frame][-1].time).total_seconds()
             if age > secs[frame] * 2 + 60:
-                stale_frames.append(frame)
+                lower_stale_frames.append(frame)
+        h4_age = (NOW[0] - series["H4"][-1].time).total_seconds()
+        h4_normal_limit = secs["H4"] * 2 + 60
+        h4_session_reopen_gap = (
+            not lower_stale_frames
+            and h4_age > h4_normal_limit
+            and h4_age <= 7 * 24 * 60 * 60
+        )
+        stale_frames = list(lower_stale_frames)
+        if h4_age > h4_normal_limit and not h4_session_reopen_gap:
+            stale_frames.append("H4")
         if stale_frames:
             stale_skipped += 1
+            if lower_stale_frames:
+                lower_tf_stale_skipped += 1
+            if h4_age > 7 * 24 * 60 * 60:
+                h4_stale_over_7d_skipped += 1
             blocked["HISTORICAL_GAP_SKIPPED_" + "_".join(stale_frames)] += 1
             continue
-        e._latest_mt5_candles={"symbol":"GOLD","timeframes":series,"received_at":NOW[0],"source":"Historical paired BID/ASK","data_quality":{"H4":{"h4_session_reopen_gap":True}}}
+        if h4_session_reopen_gap:
+            h4_session_reopen_allowed += 1
+        e._latest_mt5_candles={"symbol":"GOLD","timeframes":series,"received_at":NOW[0],"source":"Historical paired BID/ASK","data_quality":{"H4":{"h4_session_reopen_gap":h4_session_reopen_gap}}}
         signals+=1
         try:
             result=await e.live_expert_technical_analysis()
@@ -468,13 +492,18 @@ async def run():
             "train_may_june": summarize([x for x in strategy_rows if x in train_trades]),
             "validation_july": summarize([x for x in strategy_rows if x in validation_trades]),
         }
-    report={"test":"RESEARCH-ONLY ENTRY ENGINE STRATEGY LAB: 65/72 entry score, 70 confluence floor, all seven executable/research strategies; production gates untouched; chronological May-June train / July untouched validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED",
-        "performance":{"all":summarize(trades),"train_may_june":summarize(train_trades),"validation_july":summarize(validation_trades),"by_strategy":strategy_metrics},"period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_usd_per_lot_round_turn":float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN","0")),"contract_size_oz_per_lot":float(os.getenv("BACKTEST_CONTRACT_SIZE","100")),"commission_swap":"commission configurable; swaps still excluded because historical broker schedule/holding-account data were not supplied","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","entry_score_thresholds":"research ablation thresholds 65 standard / 72 structural","production_confluence_thresholds":{"standard":85,"fully_confirmed_breakout":82},"research_confluence_floor":70,"research_allowed_strategies":["BREAKOUT","COMPRESSION_BREAKOUT","EMA_RECLAIM","MOMENTUM_CONTINUATION","LIQUIDITY_SWEEP","PULLBACK"],"research_only_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"production_paused_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"current production strategy classifier with closed-candle structural, pullback, momentum and compression filters; VWAP and range mean reversion remain research-only","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":[],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Configured commission is deducted when supplied; swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","Historical simulation is still not production-approved; demo-only validation and XM broker parity are required before any execution."]}
+    production_gate_bypassed = [
+        "expert-direction agreement (tracked diagnostically, not required for isolated entry-engine research)",
+        "production confluence thresholds 85/82 (research floor 70)",
+        "production strategy allow-list (research includes paused PULLBACK and LIQUIDITY_SWEEP)",
+    ]
+    report={"test":"RESEARCH-ONLY ENTRY ENGINE STRATEGY LAB: 65/72 entry score, 70 confluence floor, six implemented entry strategies; production execution gates unchanged; chronological May-June train / July untouched validation","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED",
+        "performance":{"all":summarize(trades),"train_may_june":summarize(train_trades),"validation_july":summarize(validation_trades),"by_strategy":strategy_metrics},"period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"h4_session_reopen_windows_allowed":h4_session_reopen_allowed,"lower_timeframe_stale_windows_skipped":lower_tf_stale_skipped,"h4_stale_over_7_days_skipped":h4_stale_over_7d_skipped,"production_gate_bypassed":production_gate_bypassed,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_usd_per_lot_round_turn":float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN","0")),"contract_size_oz_per_lot":float(os.getenv("BACKTEST_CONTRACT_SIZE","100")),"commission_swap":"commission configurable; swaps still excluded because historical broker schedule/holding-account data were not supplied","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","entry_score_thresholds":"research ablation thresholds 65 standard / 72 structural","production_confluence_thresholds":{"standard":85,"fully_confirmed_breakout":82},"research_confluence_floor":70,"research_allowed_strategies":["BREAKOUT","COMPRESSION_BREAKOUT","EMA_RECLAIM","MOMENTUM_CONTINUATION","LIQUIDITY_SWEEP","PULLBACK"],"research_only_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"production_paused_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"research_filter_selection":"May-June training period; July reserved as chronological validation","research_trigger_engine":"current production strategy classifier with closed-candle structural, pullback, momentum and compression filters; VWAP and range mean reversion remain research-only","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":production_gate_bypassed,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Configured commission is deducted when supplied; swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","Historical simulation is still not production-approved; demo-only validation and XM broker parity are required before any execution."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
         w=csv.DictWriter(f,fieldnames=list(trades[0]) if trades else ["no_trades"]); w.writeheader(); w.writerows(trades)
-    (OUT/"summary.md").write_text("# GoldAI Trader historical replay\n\n"+"\n".join(f"- {k}: {v}" for k,v in report.items() if k in ("period_utc","signals_evaluated","historical_gap_windows_skipped"))+"\n\n## Performance\n\n"+"\n".join(f"- {period}: {metrics}" for period,metrics in report["performance"].items() if period != "by_strategy")+"\n\n## Strategy breakdown\n\n"+"\n".join(f"- {name}: {metrics}" for name,metrics in report["performance"]["by_strategy"].items())+"\n\nSee summary.json and trades.csv. Offline research only; macro/news are neutralized. BID/ASK spread and configured slippage are modeled; commission is configurable and swaps/latency/requotes are not modeled. July is held out chronologically from May-June filter selection.\n",encoding="utf-8")
+    (OUT/"summary.md").write_text("# GoldAI Trader historical replay\n\n"+"\n".join(f"- {k}: {v}" for k,v in report.items() if k in ("period_utc","signals_evaluated","historical_gap_windows_skipped","h4_session_reopen_windows_allowed","lower_timeframe_stale_windows_skipped","h4_stale_over_7_days_skipped"))+"\n\n- Research-only production-gate bypasses: "+"; ".join(production_gate_bypassed)+"\n\n## Performance\n\n"+"\n".join(f"- {period}: {metrics}" for period,metrics in report["performance"].items() if period != "by_strategy")+"\n\n## Strategy breakdown\n\n"+"\n".join(f"- {name}: {metrics}" for name,metrics in report["performance"]["by_strategy"].items())+"\n\nSee summary.json and trades.csv. Offline research only; macro/news are neutralized. BID/ASK spread and configured slippage are modeled; commission is configurable and swaps/latency/requotes are not modeled. July is held out chronologically from May-June filter selection.\n",encoding="utf-8")
     print(json.dumps(report,indent=2,ensure_ascii=False))
 
 if __name__=="__main__": asyncio.run(run())
