@@ -1,4 +1,5 @@
 name: Fetch COMEX GC research data
+run-name: GoldAI FinzData 90-day COMEX collection
 
 on:
   workflow_dispatch:
