@@ -418,7 +418,7 @@ async def run():
                 elif a["low"]<=pos["target"]: close(pos["target"]+SLIP,t,"TARGET")
         if pos is not None: continue
         current_day = datetime.fromtimestamp(end,timezone.utc).date().isoformat()
-        realized_today = sum(x["net_pnl_usd"] for x in trades if x["entry_time"][:10] == current_day)
+        realized_today = sum(x["net_pnl_usd"] for x in trades if x["exit_time"][:10] == current_day)
         if realized_today <= -daily_loss_limit_usd:
             blocked["DAILY_LOSS_LOCK_USD"] += 1
             continue
