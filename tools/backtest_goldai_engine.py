@@ -159,7 +159,8 @@ def load(path):
             t=int(float(x["timestamp"])); t=t//1000 if t>10**12 else t
             try:
                 v={k:float(x[k]) for k in ("open","high","low","close")}
-                vol=max(0,int(float(x.get("volume") or 0)))
+                # Source CSV volume is fractional; preserve relative weights instead of truncating every row to zero.
+                vol=max(0,int(round(float(x.get("volume") or 0)*1_000_000)))
                 if all(math.isfinite(z) and z>0 for z in v.values()) and v["high"]>=max(v["open"],v["close"],v["low"]) and v["low"]<=min(v["open"],v["close"],v["high"]):
                     out[t]={**v,"volume":vol}
             except (ValueError,TypeError): pass
