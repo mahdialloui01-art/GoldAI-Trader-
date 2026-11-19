@@ -22,6 +22,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -687,9 +689,10 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
     var targetPoints by remember { mutableStateOf("") }
     var pin by remember { mutableStateOf("") }
     var defaultsStatus by remember { mutableStateOf("جارٍ حساب حجم العقد ووقف الخسارة والهدف من بيانات MT5...") }
+    var manualOverride by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    suspend fun loadDefaults(): Boolean {
+    suspend fun loadDefaults(force: Boolean = false): Boolean {
         return withContext(Dispatchers.IO) {
             try {
                 val connection = URL("${BuildConfig.API_BASE_URL}/api/v1/manual/demo/defaults")
@@ -707,10 +710,14 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
                     }
                     val data = JSONObject(body)
                     withContext(Dispatchers.Main) {
-                        lots = data.getDouble("recommended_lots").toString()
-                        stopPoints = data.getInt("stop_loss_points").toString()
-                        targetPoints = data.getInt("take_profit_points").toString()
-                        defaultsStatus = "جاهز: مخاطرة ${data.optString("estimated_risk_percent")}% من الرصيد — SL/TP حسب ATR لشموع M5."
+                        // Auto-fill on first load/explicit refresh. Preserve user edits until reset.
+                        if (force || !manualOverride) {
+                            lots = data.getDouble("recommended_lots").toString()
+                            stopPoints = data.getInt("stop_loss_points").toString()
+                            targetPoints = data.getInt("take_profit_points").toString()
+                            manualOverride = false
+                        }
+                        defaultsStatus = "الحساب التلقائي من MT5 جاهز: مخاطرة ${data.optString("estimated_risk_percent")}% — يمكنك تعديل اللوت وSL وTP يدوياً."
                     }
                     true
                 } finally { connection.disconnect() }
@@ -727,8 +734,8 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
     // A direction change also triggers an immediate refresh so the displayed ticket is never left stale.
     LaunchedEffect(direction) {
         while (true) {
-            val ready = loadDefaults()
-            if (!ready) {
+            val ready = if (!manualOverride) loadDefaults() else true
+            if (!ready && !manualOverride) {
                 lots = ""
                 stopPoints = ""
                 targetPoints = ""
@@ -750,14 +757,19 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
                     Text("SELL / بيع", fontWeight = FontWeight.Bold)
                 }
             }
-            OutlinedTextField(value = lots, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
-                label = { Text("حجم العقد المحسوب تلقائياً (Lots)") }, singleLine = true, readOnly = true)
-            OutlinedTextField(value = stopPoints, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
-                label = { Text("وقف الخسارة التلقائي (نقاط)") }, singleLine = true, readOnly = true)
-            OutlinedTextField(value = targetPoints, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
-                label = { Text("جني الأرباح التلقائي (نقاط)") }, singleLine = true, readOnly = true)
+            OutlinedTextField(value = lots, onValueChange = { lots = it; manualOverride = true },
+                modifier = Modifier.fillMaxWidth(), label = { Text("حجم العقد — تلقائي وقابل للتعديل (Lots)") },
+                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
+            OutlinedTextField(value = stopPoints, onValueChange = { stopPoints = it; manualOverride = true },
+                modifier = Modifier.fillMaxWidth(), label = { Text("وقف الخسارة — تلقائي وقابل للتعديل (نقاط)") },
+                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            OutlinedTextField(value = targetPoints, onValueChange = { targetPoints = it; manualOverride = true },
+                modifier = Modifier.fillMaxWidth(), label = { Text("جني الأرباح — تلقائي وقابل للتعديل (نقاط)") },
+                singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
             Text(defaultsStatus, color = if (lots.isNotBlank()) Green else Gold, fontSize = 10.sp)
-            TextButton(onClick = { scope.launch { loadDefaults() } }) { Text("إعادة الحساب الآن من سعر MT5 والشموع") }
+            TextButton(onClick = { manualOverride = false; scope.launch { loadDefaults(force = true) } }) {
+                Text("إعادة الحساب التلقائي من MT5 واستبدال التعديلات")
+            }
             OutlinedTextField(value = pin, onValueChange = { pin = it }, modifier = Modifier.fillMaxWidth(),
                 label = { Text("رمز أمان التداول اليدوي") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation())
