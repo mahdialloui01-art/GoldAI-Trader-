@@ -21,6 +21,7 @@ def test_delta_footprint_and_unknown_volume_are_separated():
     result = build_orderflow_snapshot(rows, now=NOW)
     assert result["tagged_buy_volume"] == 7
     assert result["tagged_sell_volume"] == 3
+    assert result["tagged_trade_count"] == 2
     assert result["unknown_aggressor_volume"] == 4
     assert result["delta"] == 4
     assert result["delta_status"] == "VALID_EXPLICIT_AGGRESSOR"
@@ -57,3 +58,14 @@ def test_stale_and_future_events_are_ignored():
     result = build_orderflow_snapshot(rows, now=NOW)
     assert result["event_count"] == 0
     assert result["delta"] is None
+
+
+def test_unknown_aggressor_does_not_increase_tagged_trade_count():
+    rows = [
+        event(20, "TRADE", price=2650.1, size=7, aggressor_side="BUY"),
+        event(10, "TRADE", price=2650.1, size=3, aggressor_side="UNKNOWN"),
+    ]
+    result = build_orderflow_snapshot(rows, now=NOW)
+    assert result["trade_count"] == 2
+    assert result["tagged_trade_count"] == 1
+    assert result["data_quality"]["explicit_aggressor_coverage_percent"] == 70.0
