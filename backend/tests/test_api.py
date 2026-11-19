@@ -1453,6 +1453,12 @@ def test_demo_quality_gate_accepts_new_strategies_only_with_strong_setup_score()
             "effective_entry_quality_score_0_to_100": 90,
             "score_threshold": 85,
             "blockers": [],
+            "entry_setup_scan": {
+                "blockers": [],
+                "selected": {
+                    "strategy": "EMA_RECLAIM", "score": 5, "max_score": 5,
+                },
+            },
             "setup": {
                 "strategy": "EMA_RECLAIM",
                 "entry": 2320.0,
