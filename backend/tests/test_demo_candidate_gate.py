@@ -3,6 +3,7 @@ from app.main import _demo_candidate_quality_gate
 
 def _analysis(score=85.0, strategy="PULLBACK", setup_score=4, blockers=None):
     return {
+        "decision": "BUY",
         "technical_dossier": {
             "confluence_score": score,
             "strategy_scan": {
@@ -13,7 +14,21 @@ def _analysis(score=85.0, strategy="PULLBACK", setup_score=4, blockers=None):
                 },
                 "blockers": blockers or [],
             },
-        }
+        },
+        "entry_engine": {
+            "direction": "BUY",
+            "selected_strategy": strategy,
+            "entry_quality_score_0_to_100": score,
+            "effective_entry_quality_score_0_to_100": score,
+            "score_threshold": 85,
+            "setup": {
+                "strategy": strategy,
+                "entry_reference": 2300.0,
+                "stop_loss": 2295.0,
+                "take_profit": {"TP2_2R": 2310.0},
+            },
+            "blockers": [],
+        },
     }
 
 
