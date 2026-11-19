@@ -12,6 +12,8 @@ from psycopg.rows import dict_row
 from fastapi import APIRouter, Header, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 
+from .orderflow_engine import build_orderflow_snapshot
+
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/learning", tags=["learning"])
 
@@ -464,3 +466,36 @@ def comex_orderflow_status() -> dict:
     except Exception as exc:
         logger.exception("GoldAI COMEX status unavailable")
         raise HTTPException(status_code=503, detail="COMEX order-flow database is unavailable.") from exc
+
+
+@router.get("/orderflow/snapshot")
+def orderflow_snapshot(
+    contract: str = Query(default="GC", min_length=2, max_length=40),
+    window_seconds: int = Query(default=300, ge=60, le=900),
+) -> dict:
+    """Return recent COMEX GC Delta/CVD, footprint, depth and cautious inference."""
+    normalized_contract = contract.upper()
+    try:
+        with _connect() as conn:
+            rows = conn.execute("""
+                SELECT event_time, event_type, payload
+                FROM comex_market_events
+                WHERE contract = %s
+                  AND event_time >= NOW() - (%s * INTERVAL '1 second')
+                ORDER BY event_time DESC
+                LIMIT 10000
+            """, (normalized_contract, window_seconds)).fetchall()
+        result = build_orderflow_snapshot(
+            rows, now=datetime.now(timezone.utc), window_seconds=window_seconds
+        )
+        result["contract"] = normalized_contract
+        result["history_days_retained"] = 90
+        result["note"] = (
+            "Delta/CVD use explicit aggressor-tagged COMEX prints only. "
+            "Depth and iceberg fields are hypotheses, not observed hidden orders. "
+            "COMEX is contextual data and does not replace XM execution quotes."
+        )
+        return result
+    except Exception as exc:
+        logger.exception("GoldAI order-flow snapshot unavailable")
+        raise HTTPException(status_code=503, detail="Order-flow data is unavailable or the database is not ready.") from exc
