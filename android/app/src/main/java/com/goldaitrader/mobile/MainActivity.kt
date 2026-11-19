@@ -352,6 +352,14 @@ class MainActivity : ComponentActivity() {
                     val candidate = live.optString("candidate_direction", "NEUTRAL")
                     val strength = live.optDouble("directional_strength_score_0_to_100", 0.0)
                     val finalDecision = live.optString("decision", "WAIT")
+                    val projection = live.optJSONObject("price_projection")
+                    val projectionText = if (projection?.optString("status") == "ESTIMATE") {
+                        val dir = projection.optString("direction", candidate)
+                        val directionArabic = if (dir == "SELL") "هبوط متوقع" else "صعود متوقع"
+                        "$directionArabic — السعر المرجعي ${projection.optDouble("reference_price")} — الأهداف: ${projection.optDouble("target_1")} ثم ${projection.optDouble("target_2")} ثم ${projection.optDouble("target_3")} — إبطال السيناريو عند ${projection.optDouble("invalidation_level")} — أفق تقديري M5-M15"
+                    } else {
+                        "مسار السعر غير متاح حالياً؛ لا توجد أفضلية اتجاهية كافية."
+                    }
                     val liveBars = live.optJSONArray("live_candles")
                     val m5Live = (0 until (liveBars?.length() ?: 0)).mapNotNull { liveBars?.optJSONObject(it) }.firstOrNull { it.optString("timeframe") == "M5" }
                     val candleText = if (m5Live != null) {
@@ -367,7 +375,7 @@ class MainActivity : ComponentActivity() {
                     val reasonText = if (reasons != null && reasons.length() > 0) (0 until minOf(5, reasons.length())).joinToString("؛ ") { reasons.optString(it) } else "لا توجد أسباب إضافية"
                     val blockers = report?.optJSONArray("blockers")
                     val blockerText = if (blockers != null && blockers.length() > 0) (0 until minOf(5, blockers.length())).joinToString("؛ ") { blockers.optString(it) } else "لا توجد موانع مسجلة"
-                    "الاتجاه المرشح: $candidate — قوة الأدلة: ${"%.1f".format(Locale.US, strength)}/100 — القرار: $finalDecision\n$candleText\nالأطر: $frameText\nالأسباب: $reasonText\nأسباب WAIT/الموانع: $blockerText"
+                    "الاتجاه المرشح: $candidate — قوة الأدلة: ${"%.1f".format(Locale.US, strength)}/100 — القرار: $finalDecision\nتوقع المسار: $projectionText\n$candleText\nالأطر: $frameText\nالأسباب: $reasonText\nأسباب WAIT/الموانع: $blockerText"
                 } catch (e: Exception) {
                     "تقرير الشمعة الحية غير متاح: ${e.message ?: "تعذر الاتصال"}"
                 }
