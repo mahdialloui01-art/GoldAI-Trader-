@@ -25,7 +25,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.7"
+    assert body["analysis_engine_version"] == "0.6.8"
     assert body["adaptive_risk_policy"]["enabled"] is True
     assert body["adaptive_risk_policy"]["live_trading_enabled"] is False
     assert "closed_candle_microstructure" in body["analysis_layers"]
@@ -312,21 +312,23 @@ def test_multi_timeframe_requires_all_four_frames_to_align():
     assert body["direction"] == "BUY"
 
 
-def test_multi_timeframe_fails_closed_when_one_frame_is_stale():
-    _set_fresh_quote()
+def test_multi_timeframe_keeps_historical_candles_during_session_break():
+    main._latest_mt5_quote = None
     payload = {
         "symbol": "GOLD",
-        "m5": _technical_payload("M5")["candles"],
-        "m15": _technical_payload("M15")["candles"],
-        "h1": _technical_payload("H1")["candles"],
+        "m5": _technical_payload("M5", start_offset_seconds=48 * 3600)["candles"],
+        "m15": _technical_payload("M15", start_offset_seconds=48 * 3600)["candles"],
+        "h1": _technical_payload("H1", start_offset_seconds=48 * 3600)["candles"],
         "h4": _technical_payload("H4", start_offset_seconds=48 * 3600)["candles"],
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
-    assert response.status_code == 422
-    assert "stale" in response.json()["detail"]
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["timeframes"]["H1"]["analysis_mode"] == "HISTORICAL_CLOSED_MARKET"
+    assert body["execution_enabled"] is False
 
 
-def test_multi_timeframe_fails_closed_without_mt5_quote():
+def test_multi_timeframe_runs_historical_analysis_without_live_quote():
     main._latest_mt5_quote = None
     payload = {
         "symbol": "GOLD",
@@ -336,7 +338,8 @@ def test_multi_timeframe_fails_closed_without_mt5_quote():
         "h4": _technical_payload("H4")["candles"],
     }
     response = client.post("/api/v1/analysis/multi-timeframe", json=payload)
-    assert response.status_code == 503
+    assert response.status_code == 200, response.text
+    assert response.json()["timeframes"]["H1"]["analysis_mode"] == "HISTORICAL_CLOSED_MARKET"
 
 
 def test_technical_analysis_returns_real_indicator_fields():
@@ -377,18 +380,21 @@ def test_technical_analysis_rejects_unsupported_timeframe():
     assert response.status_code == 422
 
 
-def test_technical_analysis_rejects_stale_candles():
-    _set_fresh_quote()
-    payload = _technical_payload(start_offset_seconds=3600)
+def test_technical_analysis_accepts_closed_historical_candles():
+    main._latest_mt5_quote = None
+    payload = _technical_payload(start_offset_seconds=48 * 3600)
     response = client.post("/api/v1/analysis/technical", json=payload)
-    assert response.status_code == 422
-    assert "stale" in response.json()["detail"]
+    assert response.status_code == 200, response.text
+    assert response.json()["analysis_mode"] == "HISTORICAL_CLOSED_MARKET"
+    assert response.json()["execution_enabled"] is False
 
 
-def test_technical_analysis_fails_closed_without_mt5_quote():
+def test_technical_analysis_runs_without_live_quote_but_does_not_authorize_execution():
     main._latest_mt5_quote = None
     response = client.post("/api/v1/analysis/technical", json=_technical_payload())
-    assert response.status_code == 503
+    assert response.status_code == 200, response.text
+    assert response.json()["broker_quote"] is None
+    assert response.json()["execution_enabled"] is False
 
 
 def test_price_action_endpoint_returns_structure_features_without_authorizing_trades():
@@ -420,18 +426,19 @@ def test_confirmed_swings_never_include_unconfirmed_right_edge():
     assert all(item["index"] >= 3 for item in highs + lows)
 
 
-def test_price_action_rejects_stale_candles_and_never_uses_them():
-    _set_fresh_quote()
-    payload = _technical_payload("M5", start_offset_seconds=3600)
+def test_price_action_keeps_historical_structure_during_market_closure():
+    main._latest_mt5_quote = None
+    payload = _technical_payload("M5", start_offset_seconds=48 * 3600)
     response = client.post("/api/v1/analysis/price-action", json=payload)
-    assert response.status_code == 422
-    assert "stale" in response.json()["detail"]
+    assert response.status_code == 200, response.text
+    assert response.json()["execution_enabled"] is False
 
 
-def test_price_action_fails_closed_without_mt5_quote():
+def test_price_action_is_available_without_live_quote_for_historical_analysis():
     main._latest_mt5_quote = None
     response = client.post("/api/v1/analysis/price-action", json=_technical_payload("M5"))
-    assert response.status_code == 503
+    assert response.status_code == 200, response.text
+    assert response.json()["execution_enabled"] is False
 
 
 def test_price_action_rejects_unsupported_symbol():
@@ -878,11 +885,13 @@ def test_market_regime_prioritizes_high_volatility():
     assert result["indicators"]["atr_vs_recent_median"] >= 1.5
 
 
-def test_market_regime_endpoint_requires_fresh_broker_quote():
+def test_market_regime_endpoint_analyzes_closed_bars_without_live_quote():
     main._latest_mt5_quote = None
-    payload = _technical_payload("M5", start_offset_seconds=300)
+    payload = _technical_payload("M5", start_offset_seconds=48 * 3600)
     response = client.post("/api/v1/analysis/market-regime", json=payload)
-    assert response.status_code == 503
+    assert response.status_code == 200, response.text
+    assert response.json()["analysis_mode"] == "HISTORICAL_CLOSED_MARKET"
+    assert response.json()["broker_spread_points"] is None
 
 
 def test_market_regime_endpoint_returns_analysis_only():
