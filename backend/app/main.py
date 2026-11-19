@@ -2918,7 +2918,7 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         ]
         if matching_confirmation:
             pullback_evidence.append(
-                f"تأكيد شمعة مغلقة ظهر ضمن آخر {matching_confirmation['bars_ago'] + 1} شمعة"
+                f"تأكيد شمعة مغلقة ظهر ضمن آخر {max(1, matching_confirmation['bars_ago'])} شمعة"
             )
         candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
                            "evidence": pullback_evidence})
