@@ -113,3 +113,11 @@ def test_demo_gate_rejects_liquidity_sweep_after_negative_walk_forward_replay():
     assert passed is False
     assert "informational only or unsupported" in reason
     assert details["selected_strategy"] == "LIQUIDITY_SWEEP"
+
+def test_demo_gate_rejects_pullback_after_negative_training_and_weak_validation():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=95.0, strategy="PULLBACK", setup_score=5)
+    )
+    assert passed is False
+    assert "informational only or unsupported" in reason
+    assert details["selected_strategy"] == "PULLBACK"
