@@ -1,7 +1,7 @@
 from app.main import _demo_candidate_quality_gate
 
 
-def _analysis(score=85.0, strategy="PULLBACK", setup_score=4, blockers=None):
+def _analysis(score=85.0, strategy="EMA_RECLAIM", setup_score=4, blockers=None):
     return {
         "decision": "BUY",
         "technical_dossier": {
@@ -39,7 +39,7 @@ def test_demo_gate_accepts_high_confluence_confirmed_setup():
     assert details["selected_strategy"] == "PULLBACK"
 
 
-def test_demo_gate_rejects_pullback_below_85():
+def test_demo_gate_rejects_ema_reclaim_below_85():
     passed, reason, details = _demo_candidate_quality_gate(_analysis(score=84.99))
     assert passed is False
     assert "85/100" in reason
