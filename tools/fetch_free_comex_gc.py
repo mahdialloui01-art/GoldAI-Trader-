@@ -71,12 +71,14 @@ def main() -> int:
         frame.to_csv(args.output, index=False)
         coverage_start = frame[time_column].min().isoformat()
         coverage_end = frame[time_column].max().isoformat()
+        coverage_complete = (datetime.now(timezone.utc) - pd.Timestamp(coverage_start).to_pydatetime()).days >= args.days - 1
         metadata = {
             "provider": "FinzData",
             "source": "COMEX_GC_CONTINUOUS",
             "interval": "daily",
             "rows": int(len(frame)),
             "requested_window_days": args.days,
+            "coverage_complete_90d": coverage_complete,
             "actual_coverage_start_utc": coverage_start,
             "actual_coverage_end_utc": coverage_end,
             "fields": list(frame.columns),
@@ -88,7 +90,7 @@ def main() -> int:
         metadata_path = args.output.with_suffix(".meta.json")
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         print(json.dumps(metadata, indent=2))
-        if (datetime.now(timezone.utc) - pd.Timestamp(coverage_start).to_pydatetime()).days < args.days - 1:
+        if not coverage_complete:
             print("WARNING: provider returned less than 90 days; do not treat this as a complete 90-day dataset.",
                   file=sys.stderr)
         return 0
