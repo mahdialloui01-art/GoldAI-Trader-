@@ -16,7 +16,7 @@ input int CandleBarsPerTimeframe = 120;
 input string RequiredSymbol = "GOLD";
 input bool EnableDemoExecution = true;
 input double RiskCapitalCapUSD = 80.0;
-input double DemoDailyLossLimitPercent = 2.0;
+input double DailyLossLimitUSD = 15.0;
 input double DemoMaxRiskPerTradePercent = 0.5;
 input double ManualMaxRiskPerTradePercent = 0.5;
 input ulong DemoMagicNumber = 26111601;
@@ -46,7 +46,7 @@ int OnInit()
       StringFind(DemoSignalUrl, "https://") != 0 ||
       StringFind(ManualTradeUrl, "https://") != 0 ||
       RiskCapitalCapUSD <= 0 || RiskCapitalCapUSD > 80.0 ||
-       DemoDailyLossLimitPercent <= 0 || DemoDailyLossLimitPercent > 2.0 ||
+       DailyLossLimitUSD <= 0 || DailyLossLimitUSD > 15.0 ||
       DemoMaxRiskPerTradePercent <= 0 || DemoMaxRiskPerTradePercent > 0.5 ||
       ManualMaxRiskPerTradePercent <= 0 || ManualMaxRiskPerTradePercent > 0.5 ||
       BreakEvenTriggerR <= 0 || BreakEvenLockR < 0 || PartialCloseTriggerR <= 0 ||
@@ -256,7 +256,7 @@ bool IsDemoAccount()
    return (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE) == ACCOUNT_TRADE_MODE_DEMO;
 }
 
-double TodayAccountLossPercent()
+double TodayAccountLossUSD()
 {
    datetime now = TimeTradeServer();
    if(now <= 0) now = TimeCurrent();
@@ -326,7 +326,7 @@ double JsonNumber(string payload, string key)
 
 bool FetchDemoSignal(double dailyLoss, string &payload)
 {
-   string url = DemoSignalUrl + "?daily_loss_percent=" + DoubleToString(dailyLoss, 4);
+   string url = DemoSignalUrl + "?daily_loss_usd=" + DoubleToString(dailyLoss, 2);
    char data[], result[];
    ArrayResize(data, 0);
    string headers = "Authorization: Bearer " + BridgeToken + "\r\n";
@@ -379,10 +379,10 @@ void TryManualDemoTrade()
       Print("GoldAI manual DEMO request rejected locally: invalid command fields.");
       return;
    }
-   double dailyLoss = TodayAccountLossPercent();
-   if(dailyLoss >= DemoDailyLossLimitPercent)
+   double dailyLoss = TodayAccountLossUSD();
+   if(dailyLoss >= DailyLossLimitUSD)
    {
-      Print("GoldAI manual DEMO blocked by daily loss lock: ", DoubleToString(dailyLoss, 2), "%");
+      Print("GoldAI manual DEMO blocked by daily loss lock: ", DoubleToString(dailyLoss, 2), " USD");
       return;
    }
    if(CountOurOpenPositions() > 0)
