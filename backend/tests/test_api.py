@@ -706,15 +706,16 @@ def test_mt5_quote_rejects_partial_contract_metadata(monkeypatch):
 def test_position_size_uses_broker_tick_value_and_rounds_down_to_volume_step():
     _set_quote_with_xm_contract(equity=1000.0)
     response = client.post("/api/v1/risk/position-size", json={
-        "stop_distance_points": 100,
+        "stop_distance_points": 10,
         "risk_percent": 0.5,
     })
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["approved"] is True
-    assert body["recommended_lots"] == 0.5
-    assert body["estimated_stop_loss_amount"] == 5.0
+    assert body["recommended_lots"] == 0.4
+    assert body["estimated_stop_loss_amount"] == 0.4
     assert body["estimated_risk_percent"] == 0.5
+    assert body["risk_capital_usd"] == 80.0
     assert body["account_currency"] == "USD"
     assert body["execution_enabled"] is False
 
@@ -1355,7 +1356,7 @@ def test_adaptive_demo_risk_reduces_after_daily_loss_and_respects_server_cap(mon
         "technical_dossier": {"confluence_score": 93},
         "entry_engine": {"entry_quality_score_0_to_100": 93},
     }
-    reduced = main._adaptive_demo_risk_policy(analysis, 5.0)
+    reduced = main._adaptive_demo_risk_policy(analysis, 1.0)
     assert reduced["risk_percent"] == 0.2
     assert reduced["daily_loss_headroom"] == "REDUCED"
 
