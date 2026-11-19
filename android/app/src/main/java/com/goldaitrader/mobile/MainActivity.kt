@@ -723,10 +723,17 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
         }
     }
 
-    LaunchedEffect(Unit) {
-        while (lots.isBlank() || stopPoints.isBlank() || targetPoints.isBlank()) {
-            if (loadDefaults()) break
-            delay(15000)
+    // Recalculate the manual ticket continuously from the latest broker quote and closed M5 candles.
+    // A direction change also triggers an immediate refresh so the displayed ticket is never left stale.
+    LaunchedEffect(direction) {
+        while (true) {
+            val ready = loadDefaults()
+            if (!ready) {
+                lots = ""
+                stopPoints = ""
+                targetPoints = ""
+            }
+            delay(10_000)
         }
     }
 
@@ -750,11 +757,11 @@ private fun ManualTradePanel(status: String, onSubmit: (String, String, String, 
             OutlinedTextField(value = targetPoints, onValueChange = {}, modifier = Modifier.fillMaxWidth(),
                 label = { Text("جني الأرباح التلقائي (نقاط)") }, singleLine = true, readOnly = true)
             Text(defaultsStatus, color = if (lots.isNotBlank()) Green else Gold, fontSize = 10.sp)
-            TextButton(onClick = { scope.launch { loadDefaults() } }) { Text("تحديث الحسابات من MT5") }
+            TextButton(onClick = { scope.launch { loadDefaults() } }) { Text("إعادة الحساب الآن من سعر MT5 والشموع") }
             OutlinedTextField(value = pin, onValueChange = { pin = it }, modifier = Modifier.fillMaxWidth(),
                 label = { Text("رمز أمان التداول اليدوي") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation())
-            Text("المخاطرة اليدوية القصوى 2% فقط. يتم حساب اللوت حسب Equity وTick Value، وSL=1.5×ATR وTP=3×ATR. التداول الآلي يبقى على حدّه المنفصل 0.25%. التنفيذ DEMO فقط ويتطلب MT5 وEA شغالين.", color = Muted, fontSize = 10.sp)
+            Text("المخاطرة القصوى 0.5% من سقف رأس مال 80$ (0.40$ للصفقة). يعاد حساب اللوت وSL وTP كل 10 ثوانٍ من Tick Value والسبريد وATR لشموع M5 المغلقة؛ SL لا يقل عن 1.5×ATR و3×السبريد، وTP=2R. عند غياب بيانات MT5 الحديثة تتوقف الإتاحة ولا يُرسل أمر قديم. DEMO فقط ويتطلب MT5 وEA شغالين.", color = Muted, fontSize = 10.sp)
             Button(
                 onClick = { onSubmit(direction, lots, stopPoints, targetPoints, pin) },
                 modifier = Modifier.fillMaxWidth(),
