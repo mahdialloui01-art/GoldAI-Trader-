@@ -293,7 +293,11 @@ def test_pullback_uses_confirmation_from_recent_closed_m5_candles(monkeypatch):
         time=datetime.now(timezone.utc) - timedelta(minutes=500 - i * 5),
         open=100.0, high=100.2, low=99.8, close=100.0,
     ) for i in range(100)]
-    original = main._candle_microstructure_analysis
+    # Make the final closed candle a genuine bearish EMA20 reclaim after a
+    # recent retest; flat candles alone must not qualify as a pullback.
+    candles[-1] = candles[-1].model_copy(update={
+        "open": 100.0, "high": 100.2, "low": 99.4, "close": 99.5,
+    })
 
     def fake_microstructure(window):
         if len(window) == 99:
