@@ -90,11 +90,12 @@ def test_demo_gate_rejects_weak_setup_score():
     assert details["setup_score"] == 3.0
 
 
-def test_demo_gate_accepts_confirmed_vwap_reclaim():
+def test_demo_gate_rejects_vwap_reclaim_after_negative_initial_backtest():
     passed, reason, details = _demo_candidate_quality_gate(
-        _analysis(score=85.0, strategy="VWAP_RECLAIM", setup_score=5)
+        _analysis(score=95.0, strategy="VWAP_RECLAIM", setup_score=5)
     )
-    assert passed is True
+    assert passed is False
+    assert "informational only or unsupported" in reason
     assert details["selected_strategy"] == "VWAP_RECLAIM"
 
 
