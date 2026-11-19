@@ -3463,9 +3463,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     confluence = round(min(100.0, abs(weighted_score) / max_score * 100), 1)
     expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
     decision = str(base.get("decision", "WAIT"))
-    if decision not in ("BUY", "SELL"):
-        expert_direction = "WAIT"
-    elif expert_direction != decision or confluence < 45:
+    if expert_direction not in ("BUY", "SELL") or expert_direction != decision or confluence < 45:
         blockers.append("EXPERT_CONFLUENCE_NOT_CONFIRMED")
         reasons.append("طبقة التوافق المتقدم لا تؤكد اتجاه القرار الأساسي؛ تم تحويل القرار إلى WAIT.")
         decision = "WAIT"
@@ -3623,7 +3621,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
 async def live_analysis_report() -> dict:
     """Return a detailed closed-bar expert dossier plus the currently forming MT5 candles."""
     analysis = await live_expert_technical_analysis()
-    quote = _fresh_mt5_quote()
+    quote = _optional_fresh_mt5_quote()
     dossier = analysis.get("technical_dossier") or {}
     frames = dossier.get("timeframes") or {}
     dominant = str(dossier.get("dominant_technical_direction") or "WAIT")
@@ -3650,9 +3648,12 @@ async def live_analysis_report() -> dict:
         m5_rows = (_latest_mt5_candles or {}).get("timeframes", {}).get("M5", [])
         if candidate in ("BUY", "SELL") and len(m5_rows) >= 20:
             m5_atr = float(_atr_wilder(m5_rows))
-            midpoint = (float(quote["bid"]) + float(quote["ask"])) / 2.0
+            midpoint = (
+                (float(quote["bid"]) + float(quote["ask"])) / 2.0
+                if quote else float(m5_rows[-1].close)
+            )
             recent = m5_rows[-12:]
-            digits = int(quote.get("digits") or 2)
+            digits = int(quote.get("digits") or 2) if quote else 2
             if m5_atr > 0:
                 if candidate == "SELL":
                     targets = [midpoint - m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
@@ -3674,7 +3675,7 @@ async def live_analysis_report() -> dict:
                     "atr_m5": round(m5_atr, digits),
                     "structure_basis": structure_basis,
                     "horizon": "M5-M15 indicative; refreshed with each live report",
-                    "basis": "Current MT5 quote midpoint and closed M5 ATR; not a calibrated forecast.",
+                    "basis": "Current MT5 quote midpoint when available; otherwise last closed M5 close. ATR projection is indicative, not a calibrated forecast.",
                 }
     except (KeyError, TypeError, ValueError, ZeroDivisionError):
         pass
@@ -3692,8 +3693,9 @@ async def live_analysis_report() -> dict:
         live_candles.append(item)
     blockers = list(analysis.get("blockers") or [])
     return {
-        "symbol": quote["symbol"],
+        "symbol": settings.broker_gold_symbol.upper(),
         "generated_at": now.isoformat(),
+        "analysis_mode": "LIVE_CONTEXT" if quote else "HISTORICAL_CLOSED_MARKET",
         "decision": analysis.get("decision", "WAIT"),
         "candidate_direction": candidate,
         "directional_strength_score_0_to_100": directional_strength,
@@ -3705,11 +3707,11 @@ async def live_analysis_report() -> dict:
             "لا توجد أفضلية اتجاهية كافية حالياً." if candidate == "NEUTRAL" else
             "اتجاه التحليل وإشارة القرار متوافقان؛ راجع شروط التنفيذ والحواجز."
         ),
-        "quote": {
+        "quote": ({
             "bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"],
             "source_timestamp": quote["source_updated_at"], "age_seconds": quote["age_seconds"],
             "source": "XM MT5 live broker quote",
-        },
+        } if quote else None),
         "live_candles": live_candles,
         "closed_candle_expert_report": {
             "confluence_score": dossier.get("confluence_score"),
@@ -3769,7 +3771,7 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
     reports = dossier.get("timeframes") or {}
     reports_by_timeframe = {frame: reports.get(frame, {}) for frame in frames}
     strategy_scan: dict = {"status": "UNAVAILABLE_STALE_OR_NO_LIVE_QUOTE", "execution_enabled": False}
-    if analysis and not analysis_error:
+    if analysis and not analysis_error and _optional_fresh_mt5_quote():
         try:
             m5_atr = float((reports.get("M5") or {}).get("atr14") or 0.0)
             quote = _fresh_mt5_quote()
@@ -3780,6 +3782,8 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
             )
         except HTTPException as exc:
             analysis_error = str(exc.detail)
+    elif analysis and not analysis_error:
+        strategy_scan = {"status": "HISTORICAL_ONLY_NO_LIVE_QUOTE", "execution_enabled": False}
 
     return {
         "symbol": _latest_mt5_candles["symbol"],
