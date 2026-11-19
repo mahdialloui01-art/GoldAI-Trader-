@@ -169,7 +169,8 @@ def test_risk_check_blocks_position_over_risk_limit():
     assert response.status_code == 200
     body = response.json()
     assert body["approved"] is False
-    assert body["estimated_risk_percent"] == 1.0
+    # The account has $1,000, but the risk denominator is capped at $80.
+    assert body["estimated_risk_percent"] == 12.5
 
 
 def test_risk_check_distinguishes_risk_approval_from_execution_authorization():
@@ -179,13 +180,14 @@ def test_risk_check_distinguishes_risk_approval_from_execution_authorization():
             "account_equity": 10000,
             "stop_distance_points": 10,
             "point_value_per_lot": 1,
-            "proposed_lots": 0.1,
+            "proposed_lots": 0.01,
             "daily_loss_percent": 0,
         },
     )
     assert response.status_code == 200
     body = response.json()
     assert body["approved"] is True
+    assert body["estimated_risk_percent"] == 0.125
     assert body["execution_authorized"] is False
     assert any("Execution is disabled" in reason for reason in body["reasons"])
 
