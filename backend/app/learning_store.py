@@ -374,7 +374,7 @@ class ComexMarketEvent(BaseModel):
     def validate_event(self):
         self.event_type = self.event_type.upper()
         self.contract = self.contract.strip().upper()
-        if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ]\\d{1,2})?", self.contract):
+        if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ]\d{1,2})?", self.contract):
             raise ValueError("contract must be GC or a valid COMEX GC delivery code")
         stamp = self.timestamp.astimezone(timezone.utc) if self.timestamp.tzinfo else None
         if stamp is None:
@@ -481,14 +481,21 @@ def comex_orderflow_status() -> dict:
 
 def load_orderflow_snapshot(contract: str = "GC", window_seconds: int = 300) -> dict:
     """Load and normalize recent licensed COMEX events for analysis fusion."""
-    normalized_contract = contract.upper()
+    normalized_contract = contract.strip().upper()
+    if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ]\d{1,2})?", normalized_contract):
+        raise ValueError("Only COMEX Gold GC contracts are supported")
     with _connect() as conn:
         rows = conn.execute("""
             SELECT event_time, event_type, payload
             FROM comex_market_events
             WHERE (
                 contract = %s
-                OR (%s = 'GC' AND contract ~ '^GC[FGHJKMNQUVXZ][0-9]{1,2}
+                OR (%s = 'GC' AND contract LIKE 'GC%')
+            )
+              AND event_time >= NOW() - (%s * INTERVAL '1 second')
+            ORDER BY event_time DESC
+            LIMIT 10000
+        """, (normalized_contract, normalized_contract, window_seconds)).fetchall()
     result = build_orderflow_snapshot(
         rows, now=datetime.now(timezone.utc), window_seconds=window_seconds
     )
@@ -499,7 +506,6 @@ def load_orderflow_snapshot(contract: str = "GC", window_seconds: int = 300) -> 
         "hypotheses, not observed hidden orders. COMEX is contextual data, not XM execution data."
     )
     return result
-
 
 @router.get("/orderflow/snapshot")
 def orderflow_snapshot(
