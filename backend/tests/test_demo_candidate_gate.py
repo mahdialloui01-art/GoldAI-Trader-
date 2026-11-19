@@ -20,7 +20,7 @@ def _analysis(score=85.0, strategy="PULLBACK", setup_score=4, blockers=None):
             "selected_strategy": strategy,
             "entry_quality_score_0_to_100": score,
             "effective_entry_quality_score_0_to_100": score,
-            "score_threshold": 85,
+            "score_threshold": 82 if strategy in ("BREAKOUT", "LIQUIDITY_SWEEP") and setup_score >= 5 else 85,
             "setup": {
                 "strategy": strategy,
                 "entry_reference": 2300.0,
