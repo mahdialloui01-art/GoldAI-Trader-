@@ -105,3 +105,11 @@ def test_demo_gate_rejects_research_only_range_mean_reversion():
     )
     assert passed is False
     assert details["selected_strategy"] == "RANGE_MEAN_REVERSION"
+
+def test_demo_gate_rejects_liquidity_sweep_after_negative_walk_forward_replay():
+    passed, reason, details = _demo_candidate_quality_gate(
+        _analysis(score=95.0, strategy="LIQUIDITY_SWEEP", setup_score=5)
+    )
+    assert passed is False
+    assert "informational only or unsupported" in reason
+    assert details["selected_strategy"] == "LIQUIDITY_SWEEP"
