@@ -25,7 +25,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.6"
+    assert body["analysis_engine_version"] == "0.6.7"
     assert body["adaptive_risk_policy"]["enabled"] is True
     assert body["adaptive_risk_policy"]["live_trading_enabled"] is False
     assert "closed_candle_microstructure" in body["analysis_layers"]
