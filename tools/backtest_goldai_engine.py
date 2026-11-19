@@ -117,6 +117,52 @@ async def macro():
 async def news():
     return {"status":"AVAILABLE","decision":"CLEAR","trading_allowed":True,"active_events":[],"upcoming_events":[],"execution_enabled":False}
 
+def research_entry_candidate_gate(analysis):
+    """Research-only: isolate entry engine; retain its blockers and setup validation.
+    Deliberately bypass only expert-direction agreement and dossier confluence floor.
+    This function is never imported by the production API.
+    """
+    dossier = analysis.get("technical_dossier") or {}
+    scan = dossier.get("strategy_scan") or {}
+    if not isinstance(dossier, dict) or not isinstance(scan, dict):
+        return False, "MISSING_DOSSIER_OR_SCAN", {}
+    if scan.get("blockers"):
+        return False, "STRATEGY_SCAN_BLOCKED", {"strategy_blockers": scan.get("blockers")}
+    entry = analysis.get("entry_engine") or {}
+    blockers = entry.get("blockers") or []
+    if blockers:
+        return False, "ENTRY_ENGINE_BLOCKED", {"entry_engine_blockers": blockers}
+    direction = str(entry.get("direction", "WAIT")).upper()
+    setup = entry.get("setup")
+    if direction not in ("BUY", "SELL") or not isinstance(setup, dict):
+        return False, "NO_EXECUTABLE_ENTRY_SETUP", {}
+    strategy = str(entry.get("selected_strategy", setup.get("strategy", ""))).upper()
+    if strategy not in e._DEMO_ALLOWED_ENTRY_STRATEGIES:
+        return False, "UNSUPPORTED_STRATEGY", {"selected_strategy": strategy}
+    selected = scan.get("selected") or {}
+    try:
+        setup_score = float(selected.get("score", 0))
+        setup_max = float(selected.get("max_score", 0))
+        entry_score = float(entry.get("effective_entry_quality_score_0_to_100",
+                                      entry.get("entry_quality_score_0_to_100")))
+        threshold = float(entry.get("score_threshold") or 85)
+    except (TypeError, ValueError):
+        return False, "INVALID_SCORE", {}
+    if not all(math.isfinite(x) for x in (setup_score, setup_max, entry_score, threshold)) or setup_max <= 0:
+        return False, "INVALID_SCORE", {}
+    if setup_score < setup_max * 0.8:
+        return False, "SETUP_SCORE_BELOW_80_PERCENT", {"setup_score": setup_score, "setup_max": setup_max}
+    if entry_score < threshold:
+        return False, "ENTRY_SCORE_BELOW_THRESHOLD", {"entry_score": entry_score, "threshold": threshold}
+    return True, "RESEARCH_ENTRY_ENGINE_CANDIDATE_ONLY", {
+        "entry_direction": direction, "expert_direction": str(analysis.get("decision", "WAIT")),
+        "entry_score": entry_score, "threshold": threshold, "strategy": strategy,
+        "setup_score": setup_score, "setup_max": setup_max,
+        "confluence": dossier.get("confluence_score"),
+        "bypassed_for_research_only": ["EXPERT_DIRECTION_AGREEMENT", "DOSSIER_CONFLUENCE_FLOOR"],
+    }
+
+
 async def run():
     bid,ask=load(BID),load(ASK)
     paired=[]
@@ -201,7 +247,7 @@ async def run():
         signals+=1
         try:
             result=await e.live_expert_technical_analysis()
-            ok,reason,details=e._demo_candidate_quality_gate(result)
+            ok,reason,details=research_entry_candidate_gate(result)
             dossier = result.get("technical_dossier") or {}
             frames_report = dossier.get("timeframes") or {}
             entry = result.get("entry_engine") or {}
@@ -284,7 +330,7 @@ async def run():
         equity+=x["net_R"]; peak=max(peak,equity); dd=max(dd,peak-equity)
     monthly=defaultdict(float)
     for x in trades: monthly[x["entry_time"][:7]]+=x["net_R"]
-    report={"test":"Production GoldAI live expert orchestration + dedicated entry engine + production DEMO gate","mode":"OFFLINE_RESEARCH_ONLY","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","standard_entry_threshold":85,"production_structural_BOS_sweep_threshold":82,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee."]}
+    report={"test":"RESEARCH ONLY: isolated dedicated entry-engine candidates; bypass expert-direction agreement and dossier confluence floor only","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED","period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_swap":"not included; not provided","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","research_entry_score_thresholds":"75 standard / 82 structural","setup_score_minimum_percent":80,"production_entry_gate_bypassed":["expert-direction agreement","dossier confluence floor"],"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Commission, swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","This ablation is not production-approved and must not enable live trading."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
