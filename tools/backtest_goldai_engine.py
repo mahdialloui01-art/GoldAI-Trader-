@@ -128,6 +128,20 @@ def research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio):
         candidates.append({"strategy":"EMA_RECLAIM","score":5,"max_score":5,"evidence":["إغلاق M5 استعاد EMA20 بعد تصحيح","شمعة مغلقة في اتجاه H1/H4"]})
     if micro_break and directional and close_strong and body_atr >= 0.25 and near_ema:
         candidates.append({"strategy":"MOMENTUM_CONTINUATION","score":5,"max_score":5,"evidence":["إغلاق M5 تجاوز قمة/قاع الشمعة السابقة","جسم الشمعة وموقع الإغلاق يؤكدان الاتجاه"]})
+
+    # Additional closed-bar breakout families to increase the tested opportunity sample
+    # without removing higher-timeframe direction, spread, volatility or extension guards.
+    prior8 = m5[-9:-1]
+    if len(prior8) == 8:
+        range_high = max(float(c.high) for c in prior8)
+        range_low = min(float(c.low) for c in prior8)
+        range_width_atr = (range_high - range_low) / atr
+        breakout = (close > range_high) if bullish else (close < range_low)
+        strong_break = directional and close_strong and body_atr >= 0.30 and near_ema
+        if breakout and strong_break:
+            candidates.append({"strategy":"BREAKOUT","score":5,"max_score":5,"evidence":["إغلاق M5 كسر نطاق آخر 8 شمعات مغلقة","تأكيد جسم الشمعة وموقع الإغلاق مع اتجاه الإطار الأعلى"]})
+            if range_width_atr <= 2.5:
+                candidates.append({"strategy":"COMPRESSION_BREAKOUT","score":5,"max_score":5,"evidence":["نطاق آخر 8 شمعات مضغوط بالنسبة إلى ATR","كسر مؤكد بإغلاق M5 في اتجاه الإطار الأعلى"]})
     if touched and held and directional and close_strong and near_ema:
         candidates.append({"strategy":"PULLBACK","score":5,"max_score":5,"evidence":["إعادة اختبار منطقة EMA20 خلال آخر ثلاث شمعات","رفض سعري وإغلاق مؤيد للاتجاه"]})
 
@@ -147,7 +161,7 @@ def research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio):
         if reclaimed and confirmed and extension <= 1.0:
             candidates.append({"strategy":"VWAP_RECLAIM","score":5,"max_score":5,"evidence":["Closed M5 reclaim/loss of 20-bar broker tick-volume VWAP","Directional candle confirmation","VWAP volume is broker tick-volume proxy"]})
 
-    priority={"VWAP_RECLAIM":4,"EMA_RECLAIM":3,"MOMENTUM_CONTINUATION":2,"PULLBACK":1}
+    priority={"VWAP_RECLAIM":6,"COMPRESSION_BREAKOUT":5,"BREAKOUT":4,"EMA_RECLAIM":3,"MOMENTUM_CONTINUATION":2,"PULLBACK":1}
     candidates.sort(key=lambda x:priority.get(x["strategy"],0),reverse=True)
     selected=candidates[0] if candidates else None
     blockers=[]
@@ -311,7 +325,7 @@ def research_setup_classifier(direction, frames, reports, spread_atr_ratio):
     if not candidates:
         scan["selected"] = None
         return scan
-    priority = {"EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
+    priority = {"COMPRESSION_BREAKOUT": 5, "BREAKOUT": 4, "EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
     candidates.sort(key=lambda item: priority.get(str(item.get("strategy") or ""), 0), reverse=True)
     scan["candidates"] = candidates
     scan["selected"] = candidates[0]
@@ -364,6 +378,11 @@ async def run():
     def sval(value):
         return str(value.value if hasattr(value, "value") else value)
     slip_points=float(os.getenv("BACKTEST_SLIPPAGE_POINTS","2"))
+    # Fixed-dollar sizing model requested by the user: $80 reference capital,
+    # 0.5% risk per trade ($0.40), and a $15 cumulative daily loss lock.
+    reference_capital_usd = 80.0
+    risk_per_trade_usd = 0.40
+    daily_loss_limit_usd = 15.0
 
     def close(exit_price,t,reason):
         nonlocal pos
@@ -373,7 +392,8 @@ async def run():
         commission_per_lot = max(0.0, float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN", "0")))
         contract_size = max(0.000001, float(os.getenv("BACKTEST_CONTRACT_SIZE", "100")))
         commission_r = commission_per_lot / (contract_size * pos["risk"])
-        trades.append({"direction":d,"strategy":pos["strategy"],"entry_time":datetime.fromtimestamp(pos["entry_ts"],timezone.utc).isoformat(),"exit_time":datetime.fromtimestamp(t,timezone.utc).isoformat(),"entry_price":round(pos["entry"],2),"exit_price":round(exit_price,2),"stop":round(pos["stop"],2),"target_2R":round(pos["target"],2),"gross_R":round(gross_r,4),"commission_R":round(commission_r,5),"net_R":round(gross_r-commission_r,4),"entry_score":pos["score"],"confluence":pos["confluence"],"exit_reason":reason})
+        net_r = gross_r - commission_r
+        trades.append({"direction":d,"strategy":pos["strategy"],"entry_time":datetime.fromtimestamp(pos["entry_ts"],timezone.utc).isoformat(),"exit_time":datetime.fromtimestamp(t,timezone.utc).isoformat(),"entry_price":round(pos["entry"],2),"exit_price":round(exit_price,2),"stop":round(pos["stop"],2),"target_2R":round(pos["target"],2),"gross_R":round(gross_r,4),"commission_R":round(commission_r,5),"net_R":round(net_r,4),"risk_usd":risk_per_trade_usd,"gross_pnl_usd":round(gross_r*risk_per_trade_usd,2),"commission_usd":round(commission_r*risk_per_trade_usd,2),"net_pnl_usd":round(net_r*risk_per_trade_usd,2),"entry_score":pos["score"],"confluence":pos["confluence"],"exit_reason":reason})
         pos=None
 
     for m5 in frames["M5"]:
@@ -397,6 +417,11 @@ async def run():
                 elif a["open"]<=pos["target"]: close(a["open"]+SLIP,t,"TARGET_GAP")
                 elif a["low"]<=pos["target"]: close(pos["target"]+SLIP,t,"TARGET")
         if pos is not None: continue
+        current_day = datetime.fromtimestamp(end,timezone.utc).date().isoformat()
+        realized_today = sum(x["net_pnl_usd"] for x in trades if x["entry_time"][:10] == current_day)
+        if realized_today <= -daily_loss_limit_usd:
+            blocked["DAILY_LOSS_LOCK_USD"] += 1
+            continue
         nxt=m1.get(end)
         qrow=m1.get(end-60)
         if nxt is None or qrow is None: continue
@@ -531,10 +556,23 @@ async def run():
         gross_profit_ = sum(x["net_R"] for x in wins_)
         gross_loss_ = abs(sum(x["net_R"] for x in losses_))
         eq_ = peak_ = dd_ = 0.0
+        eq_usd = peak_usd = dd_usd = 0.0
+        losing_streak = max_losing_streak = 0
+        daily_usd = defaultdict(float)
         for trade_ in rows:
             eq_ += trade_["net_R"]
             peak_ = max(peak_, eq_)
             dd_ = max(dd_, peak_ - eq_)
+            eq_usd += trade_["net_pnl_usd"]
+            peak_usd = max(peak_usd, eq_usd)
+            dd_usd = max(dd_usd, peak_usd - eq_usd)
+            day_ = trade_["entry_time"][:10]
+            daily_usd[day_] += trade_["net_pnl_usd"]
+            if trade_["net_pnl_usd"] < 0:
+                losing_streak += 1
+                max_losing_streak = max(max_losing_streak, losing_streak)
+            else:
+                losing_streak = 0
         return {
             "trades": len(rows), "wins": len(wins_), "losses_or_breakeven": len(losses_),
             "win_rate_percent": round(100 * len(wins_) / len(rows), 2) if rows else None,
@@ -542,6 +580,14 @@ async def run():
             "expectancy_R": round(sum(x["net_R"] for x in rows) / len(rows), 4) if rows else None,
             "profit_factor": round(gross_profit_ / gross_loss_, 3) if gross_loss_ else ("infinite" if gross_profit_ else None),
             "max_drawdown_R": round(dd_, 3),
+            "starting_capital_usd": reference_capital_usd,
+            "risk_per_trade_usd": risk_per_trade_usd,
+            "net_pnl_usd": round(sum(x["net_pnl_usd"] for x in rows), 2),
+            "ending_balance_usd": round(reference_capital_usd + sum(x["net_pnl_usd"] for x in rows), 2),
+            "max_drawdown_usd": round(dd_usd, 2),
+            "max_losing_streak": max_losing_streak,
+            "worst_day_pnl_usd": round(min(daily_usd.values()), 2) if daily_usd else 0.0,
+            "daily_loss_limit_usd": daily_loss_limit_usd,
         }
     train_trades = []
     validation_trades = list(trades)
@@ -560,7 +606,7 @@ async def run():
     ]
     report={"test":"JULY 2026 ONLY: research-only replay; pre-July bars used only for indicator warm-up; no May/June trades counted; production execution gates unchanged","mode":"OFFLINE_RESEARCH_ONLY_NOT_EXECUTION_APPROVED",
         "evaluation_window_utc":{"start":datetime.fromtimestamp(JULY_START,timezone.utc).isoformat(),"end_exclusive":datetime.fromtimestamp(JULY_END,timezone.utc).isoformat(),"paired_july_m1_rows":len(july_rows)},
-        "performance":{"july_only":summarize(trades),"all":summarize(trades),"train_may_june":summarize(train_trades),"validation_july":summarize(validation_trades),"by_strategy":strategy_metrics},"period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"h4_session_reopen_windows_allowed":h4_session_reopen_allowed,"lower_timeframe_stale_windows_skipped":lower_tf_stale_skipped,"h4_stale_over_7_days_skipped":h4_stale_over_7d_skipped,"production_gate_bypassed":production_gate_bypassed,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_usd_per_lot_round_turn":float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN","0")),"contract_size_oz_per_lot":float(os.getenv("BACKTEST_CONTRACT_SIZE","100")),"commission_swap":"commission configurable; swaps still excluded because historical broker schedule/holding-account data were not supplied","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","entry_score_thresholds":"research ablation thresholds 65 standard / 72 structural","production_confluence_thresholds":{"standard":85,"fully_confirmed_breakout":82},"research_confluence_floor":70,"research_allowed_strategies":["BREAKOUT","COMPRESSION_BREAKOUT","EMA_RECLAIM","MOMENTUM_CONTINUATION","LIQUIDITY_SWEEP","PULLBACK"],"research_only_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"production_paused_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"research_filter_selection":"Fixed research rules; July-only trades counted; earlier bars used only for indicator warm-up","research_trigger_engine":"current production strategy classifier with closed-candle structural, pullback, momentum and compression filters; VWAP and range mean reversion remain research-only","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_scan_thresholds":"offline classifier patched to match the declared research ablation; production classifier untouched","research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":production_gate_bypassed,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Configured commission is deducted when supplied; swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","Historical simulation is still not production-approved; demo-only validation and XM broker parity are required before any execution."]}
+        "performance":{"july_only":summarize(trades),"all":summarize(trades),"train_may_june":summarize(train_trades),"validation_july":summarize(validation_trades),"by_strategy":strategy_metrics},"period_utc":{"start":datetime.fromtimestamp(paired[0]["ts"],timezone.utc).isoformat(),"end":datetime.fromtimestamp(paired[-1]["ts"]+60,timezone.utc).isoformat()},"data":{"bid_rows":len(bid),"ask_rows":len(ask),"paired_m1_rows":len(paired),"complete_bars":{k:len(v) for k,v in frames.items()}},"signals_evaluated":signals,"historical_gap_windows_skipped":stale_skipped,"h4_session_reopen_windows_allowed":h4_session_reopen_allowed,"lower_timeframe_stale_windows_skipped":lower_tf_stale_skipped,"h4_stale_over_7_days_skipped":h4_stale_over_7d_skipped,"production_gate_bypassed":production_gate_bypassed,"trades":len(trades),"wins":len(wins),"losses_or_breakeven":len(losses),"win_rate_percent":round(100*len(wins)/len(trades),2) if trades else None,"net_R":round(sum(x["net_R"] for x in trades),3),"expectancy_R":round(sum(x["net_R"] for x in trades)/len(trades),4) if trades else None,"profit_factor":round(gp/gl,3) if gl else ("infinite" if gp else None),"max_drawdown_R":round(dd,3),"monthly_net_R":{k:round(v,3) for k,v in sorted(monthly.items())},"blocked_reasons":dict(blocked),"blocked_detail_counts":dict(blocked_details),"engine_error_details":dict(engine_errors),"diagnostics":{k:(dict(v) if isinstance(v,defaultdict) else v) for k,v in diag.items()},"money_management":{"reference_capital_usd":reference_capital_usd,"risk_per_trade_usd":risk_per_trade_usd,"risk_percent_of_reference_capital":0.5,"daily_accumulated_loss_lock_usd":daily_loss_limit_usd,"pnl_conversion":"net_R multiplied by fixed $0.40 risk per trade; no compounding; gap losses can exceed $0.40"}, "assumptions":{"point":POINT,"slippage_points_each_side":slip_points,"buy_entry":"ASK; exit BID","sell_entry":"BID; exit ASK","same_bar_SL_TP":"SL first","commission_usd_per_lot_round_turn":float(os.getenv("BACKTEST_COMMISSION_USD_PER_LOT_ROUND_TURN","0")),"contract_size_oz_per_lot":float(os.getenv("BACKTEST_CONTRACT_SIZE","100")),"commission_swap":"commission configurable; swaps still excluded because historical broker schedule/holding-account data were not supplied","macro_news":"neutral/advisory stubs; point-in-time historic snapshots unavailable","entry_score_thresholds":"research ablation thresholds 65 standard / 72 structural","production_confluence_thresholds":{"standard":85,"fully_confirmed_breakout":82},"research_confluence_floor":70,"research_allowed_strategies":["BREAKOUT","COMPRESSION_BREAKOUT","EMA_RECLAIM","MOMENTUM_CONTINUATION","LIQUIDITY_SWEEP","PULLBACK"],"expanded_closed_bar_triggers":["8-bar BREAKOUT","8-bar COMPRESSION_BREAKOUT"],"research_only_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"production_paused_strategies":["VWAP_RECLAIM","LIQUIDITY_SWEEP","PULLBACK"],"research_filter_selection":"Fixed research rules; July-only trades counted; earlier bars used only for indicator warm-up","research_trigger_engine":"current production strategy classifier with closed-candle structural, pullback, momentum and compression filters; VWAP and range mean reversion remain research-only","research_spread_atr_max":0.20,"research_extension_atr_max":1.80,"research_scan_thresholds":"offline classifier patched to match the declared research ablation; production classifier untouched","research_quote_distance_atr_max":0.75,"setup_score_minimum_percent":80,"production_entry_gate_bypassed":production_gate_bypassed,"only_closed_bars":True},"limitations":["XAUUSD historical series may differ from XM GOLD server prices/contract specifications.","Macro and news use neutral advisory context because historical point-in-time snapshots were not supplied.","Configured commission is deducted when supplied; swaps, latency, requotes, stop-level rules and partial fills are not included.","Quality scores are not probabilities; historical win rate is not a future guarantee.","Historical simulation is still not production-approved; demo-only validation and XM broker parity are required before any execution."]}
     OUT.mkdir(exist_ok=True)
     (OUT/"summary.json").write_text(json.dumps(report,indent=2,ensure_ascii=False),encoding="utf-8")
     with (OUT/"trades.csv").open("w",newline="",encoding="utf-8") as f:
