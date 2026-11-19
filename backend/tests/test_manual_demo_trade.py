@@ -120,7 +120,7 @@ def test_manual_demo_queue_discards_expired_request(monkeypatch):
 
 
 
-def test_manual_defaults_auto_calculates_lot_sl_tp_at_two_percent(monkeypatch):
+def test_manual_defaults_auto_calculates_lot_sl_tp_with_fixed_80_dollar_cap(monkeypatch):
     _ready_manual_demo(monkeypatch)
     now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
     rows = [
@@ -140,7 +140,7 @@ def test_manual_defaults_auto_calculates_lot_sl_tp_at_two_percent(monkeypatch):
     assert body["stop_loss_points"] > 0
     assert body["take_profit_points"] == body["stop_loss_points"] * 2
     assert body["recommended_lots"] >= 0.01
-    assert body["estimated_risk_percent"] <= 2.0
+    assert body["estimated_risk_percent"] <= 0.5
 
 
 def test_manual_defaults_fail_closed_without_fresh_candles(monkeypatch):
