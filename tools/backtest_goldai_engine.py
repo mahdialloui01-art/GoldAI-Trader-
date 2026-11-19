@@ -174,7 +174,7 @@ def research_entry_candidate_gate(analysis):
     This function is never imported by the production API.
     """
     dossier = analysis.get("technical_dossier") or {}
-    scan = dossier.get("strategy_scan") or {}
+    scan = entry.get("entry_setup_scan") or dossier.get("strategy_scan") or {}
     if not isinstance(dossier, dict) or not isinstance(scan, dict):
         return False, "MISSING_DOSSIER_OR_SCAN", {}
     if scan.get("blockers"):
