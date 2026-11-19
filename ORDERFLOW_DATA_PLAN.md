@@ -24,6 +24,15 @@ GC and XM GOLD are different instruments/venues. Align UTC timestamps and compar
 - Every field carries provenance: observed, vendor-classified, or derived.
 - A missing field remains null/unavailable; never synthesize aggressor side, traded volume, or DOM.
 
+## Implemented in the repository
+
+- The authenticated XM quote endpoint now stores one quote sample at most every 5 seconds in PostgreSQL.
+- Samples include source timestamp, Bid, Ask, Last, spread points, point size and digits.
+- The table is indexed by symbol/time and startup cleanup retains the latest 90 days.
+- `GET /api/v1/learning/orderflow/xm-status` reports sample count, first/last timestamp and crossed quotes.
+- Persistence is best-effort: a database outage does not stop the market quote endpoint. Sampling attempts are throttled during outages.
+- This is sampled quote history, not every MT5 tick, not executed trade volume, and not Market Depth.
+
 ## Current repository tooling
 Run the auditor from the repository root:
 
