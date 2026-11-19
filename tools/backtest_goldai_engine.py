@@ -271,6 +271,43 @@ def research_entry_candidate_gate(analysis):
     }
 
 
+# In the offline lab only, make paused-but-implemented strategies selectable
+# so they receive actual entry/exit simulations. Production classifier and
+# production allow-list remain untouched.
+_PRODUCTION_SETUP_CLASSIFIER = e._classify_entry_setups_for_direction
+_RESEARCH_STRATEGY_PRIORITY = {
+    "BREAKOUT": 7, "COMPRESSION_BREAKOUT": 6, "LIQUIDITY_SWEEP": 5,
+    "EMA_RECLAIM": 4, "MOMENTUM_CONTINUATION": 3, "PULLBACK": 2,
+}
+_RESEARCH_STRATEGY_ALLOWLIST = set(_RESEARCH_STRATEGY_PRIORITY)
+
+def research_setup_classifier(direction, frames, reports, spread_atr_ratio):
+    scan = _PRODUCTION_SETUP_CLASSIFIER(direction, frames, reports, spread_atr_ratio)
+    # Preserve every original safety blocker (spread, volatility, extension).
+    if scan.get("blockers"):
+        return scan
+    candidates = [
+        item for item in (scan.get("candidates") or [])
+        if str(item.get("strategy") or "") in _RESEARCH_STRATEGY_ALLOWLIST
+    ]
+    if not candidates:
+        scan["selected"] = None
+        return scan
+    # Candidate list is already regime-fit ranked by the production classifier.
+    # Selecting a paused candidate here is strictly for offline measurement.
+    selected = candidates[0]
+    scan["selected"] = selected
+    scan["research_only_selection"] = bool(selected.get("research_only"))
+    scan["research_selection_note"] = (
+        "Offline-only selection of a strategy paused in production; this does not change production policy."
+        if selected.get("research_only")
+        else "Offline strategy-lab selection using the production candidate ranking."
+    )
+    return scan
+
+e._classify_entry_setups_for_direction = research_setup_classifier
+
+
 async def run():
     bid,ask=load(BID),load(ASK)
     paired=[]
