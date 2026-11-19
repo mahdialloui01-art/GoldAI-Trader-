@@ -3103,8 +3103,9 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
             fit = 0.35
         elif strategy == "MOMENTUM_CONTINUATION" and aligned_structure and market_regime != "RANGING":
             fit = 0.25
-        elif strategy in {"BREAKOUT", "COMPRESSION_BREAKOUT"} and market_regime in {"TRENDING", "TRENDING_UP", "TRENDING_DOWN"}:
-            fit = 0.35
+        elif strategy in {"BREAKOUT", "COMPRESSION_BREAKOUT"} and market_regime in {"TRENDING", "TRENDING_UP", "TRENDING_DOWN", "NORMAL"}:
+            # A confirmed structural break should outrank an earlier momentum trigger.
+            fit = 1.50 if strategy == "BREAKOUT" else 0.35
         elif strategy == "LIQUIDITY_SWEEP" and market_regime == "RANGING":
             fit = 0.20
         candidate["regime_fit_bonus"] = fit
