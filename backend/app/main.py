@@ -352,7 +352,7 @@ def get_config() -> dict:
         "demo_execution_enabled": settings.demo_execution_enabled,
         "manual_demo_execution_enabled": settings.manual_demo_execution_enabled,
         "demo_risk_per_trade_percent": settings.auto_demo_risk_per_trade_percent,
-        "manual_demo_risk_per_trade_percent": settings.demo_risk_per_trade_percent,
+        "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
         "analysis_engine_version": "0.6.6",
@@ -2141,7 +2141,7 @@ def check_risk(request: RiskCheckRequest) -> RiskCheckResponse:
 
     approved = (
         risk_percent <= settings.max_risk_per_trade_percent
-        and request.daily_loss_percent < settings.max_daily_loss_percent
+        and request.daily_loss_percent < _effective_daily_loss_cap_percent()
     )
     return RiskCheckResponse(
         approved=approved,
@@ -4110,7 +4110,7 @@ async def mt5_demo_signal(
             "reason": "Demo execution has not been explicitly enabled on the server.",
             "execution_enabled": False,
         }
-    if daily_loss_percent >= settings.max_daily_loss_percent:
+    if daily_loss_percent >= _effective_daily_loss_cap_percent():
         return {
             "enabled": True, "decision": "WAIT",
             "reason": "Daily loss limit reached; new entries are locked.",
@@ -4206,7 +4206,7 @@ async def mt5_demo_signal(
         "risk_policy": risk_policy,
         "position_sizing": sizing,
         "daily_loss_percent": daily_loss_percent,
-        "max_daily_loss_percent": settings.max_daily_loss_percent,
+        "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
         "blockers": [],
         "candidate_ready": True,
         "execution_enabled": False,
