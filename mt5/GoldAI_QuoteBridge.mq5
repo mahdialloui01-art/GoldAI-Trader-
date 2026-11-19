@@ -272,7 +272,8 @@ double TodayAccountLossUSD()
       ulong ticket = HistoryDealGetTicket(i);
       if(ticket == 0) continue;
       ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
-      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL) continue;
+      if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL &&
+         type != DEAL_TYPE_COMMISSION && type != DEAL_TYPE_CHARGE) continue;
       realized += HistoryDealGetDouble(ticket, DEAL_PROFIT);
       realized += HistoryDealGetDouble(ticket, DEAL_SWAP);
       realized += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
