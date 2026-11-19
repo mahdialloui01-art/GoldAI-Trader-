@@ -3019,15 +3019,82 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
                     f"تأكيد سحب سيولة ضمن آخر {bars_ago} شمعة مغلقة"
                 )
 
+    # Rolling tick-volume VWAP reclaim: only a closed-candle reclaim in the
+    # higher-timeframe direction qualifies. Zero/missing volume disables this setup.
+    vwap_window = m5[-20:]
+    vwap_volume = sum(int(item.tick_volume or 0) for item in vwap_window)
+    if len(vwap_window) == 20 and vwap_volume > 0 and atr > 0:
+        previous_window = m5[-21:-1]
+        previous_volume = sum(int(item.tick_volume or 0) for item in previous_window)
+        current_vwap = sum(
+            ((float(item.high) + float(item.low) + float(item.close)) / 3.0)
+            * int(item.tick_volume or 0) for item in vwap_window
+        ) / vwap_volume
+        previous_vwap = (
+            sum(((float(item.high) + float(item.low) + float(item.close)) / 3.0)
+                * int(item.tick_volume or 0) for item in previous_window) / previous_volume
+            if len(previous_window) == 20 and previous_volume > 0 else None
+        )
+        current = m5[-1]
+        previous = m5[-2]
+        current_typical = (float(current.high) + float(current.low) + float(current.close)) / 3.0
+        previous_typical = (float(previous.high) + float(previous.low) + float(previous.close)) / 3.0
+        candle_range = max(float(current.high) - float(current.low), 1e-12)
+        close_location = (float(current.close) - float(current.low)) / candle_range
+        if previous_vwap is not None:
+            if bullish:
+                reclaimed_vwap = previous_typical <= previous_vwap and current_typical > current_vwap
+                confirmed = float(current.close) > float(current.open) and close_location >= 0.65
+            else:
+                reclaimed_vwap = previous_typical >= previous_vwap and current_typical < current_vwap
+                confirmed = float(current.close) < float(current.open) and close_location <= 0.35
+            if reclaimed_vwap and confirmed and extension <= 1.0:
+                candidates.append({
+                    "strategy": "VWAP_RECLAIM",
+                    "score": 5,
+                    "max_score": 5,
+                    "evidence": [
+                        "استعادة/فقدان VWAP مرجّح بحجم Tick خلال شمعة M5 مغلقة",
+                        "إغلاق تأكيدي في اتجاه H4/H1 دون مطاردة امتداد سعري",
+                        "VWAP محسوب من Tick Volume للوسيط وليس حجماً مركزياً للسوق",
+                    ],
+                    "vwap_reference": round(current_vwap, 5),
+                    "volume_source": "BROKER_TICK_VOLUME",
+                })
+
+    # Range mean-reversion is exposed for research only until its independent
+    # regime-aware entry and risk path has passed walk-forward validation.
+    if report.get("market_regime") == "RANGING" and len(m5) >= 20:
+        closes20 = [float(item.close) for item in m5[-20:]]
+        mean20 = statistics.mean(closes20)
+        std20 = statistics.pstdev(closes20)
+        if std20 > 0:
+            z_score = (close - mean20) / std20
+            reversal_pattern = pattern in wanted_pattern
+            extreme_for_direction = (z_score <= -2.0) if bullish else (z_score >= 2.0)
+            if extreme_for_direction and reversal_pattern:
+                candidates.append({
+                    "strategy": "RANGE_MEAN_REVERSION",
+                    "score": 4,
+                    "max_score": 5,
+                    "research_only": True,
+                    "evidence": [
+                        "السوق مصنف RANGING وابتعاد الإغلاق عن متوسط 20 شمعة تجاوز انحرافين",
+                        "ظهور نمط شمعة انعكاسي مغلقة؛ المرشح للبحث فقط وليس إشارة تنفيذ",
+                    ],
+                    "z_score": round(z_score, 3),
+                })
+
     # Reversal is deliberately informational only; it cannot override H4/H1 trend bias.
     opposite_structure = "DOWNTREND" if bullish else "UPTREND"
     if report.get("market_structure") == opposite_structure and wanted_sweep in events:
         candidates.append({"strategy": "REVERSAL_WATCH", "score": 3, "max_score": 5,
                            "evidence": ["احتمال انعكاس بعد سحب سيولة؛ لا يدخل عكس اتجاه H4/H1"]})
 
-    strategy_priority = {"BREAKOUT": 6, "COMPRESSION_BREAKOUT": 5, "LIQUIDITY_SWEEP": 4, "EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
+    strategy_priority = {"BREAKOUT": 7, "COMPRESSION_BREAKOUT": 6, "LIQUIDITY_SWEEP": 5, "VWAP_RECLAIM": 4, "EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
     candidates.sort(key=lambda item: (item["score"], strategy_priority.get(item["strategy"], 0)), reverse=True)
-    selected = candidates[0] if candidates else None
+    executable_candidates = [item for item in candidates if not item.get("research_only")]
+    selected = executable_candidates[0] if executable_candidates else None
     blockers = []
     if spread_atr_ratio > 0.15:
         blockers.append("SPREAD_TOO_HIGH")
@@ -3051,6 +3118,8 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
             "momentum_continuation": "strong closed M5 candle through the prior candle extreme with anti-chasing filter",
             "compression_breakout": "five-bar M5 compression followed by a strong closed-candle range break; no intrabar entry",
             "breakout": "confirmed BOS only; no intrabar breakout entries",
+            "vwap_reclaim": "closed-candle reclaim/loss of 20-bar tick-volume VWAP with directional confirmation; broker tick volume is a proxy, not centralized traded volume",
+            "range_mean_reversion": "research-only two-standard-deviation range extreme with reversal candle; not executable pending separate validation",
             "liquidity_sweep": "sweep of opposing liquidity followed by directional close/impulse",
             "reversal_watch": "watchlist only; cannot reverse H4/H1 bias",
         },
@@ -3522,7 +3591,7 @@ def receive_mt5_candles(
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
 _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 82.0
-_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT"}
+_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT", "VWAP_RECLAIM"}
 _DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 
 
@@ -4178,7 +4247,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     selected_candidate = setup_scan.get("selected")
     selected_strategy = (
         selected_candidate.get("strategy")
-        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT")
+        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT", "VWAP_RECLAIM")
         else None
     )
     trigger_direction = bias if selected_strategy else Direction.WAIT
