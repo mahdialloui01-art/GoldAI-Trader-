@@ -3091,8 +3091,42 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         candidates.append({"strategy": "REVERSAL_WATCH", "score": 3, "max_score": 5,
                            "evidence": ["احتمال انعكاس بعد سحب سيولة؛ لا يدخل عكس اتجاه H4/H1"]})
 
-    strategy_priority = {"BREAKOUT": 7, "COMPRESSION_BREAKOUT": 6, "LIQUIDITY_SWEEP": 5, "VWAP_RECLAIM": 4, "EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
-    candidates.sort(key=lambda item: (item["score"], strategy_priority.get(item["strategy"], 0)), reverse=True)
+    # Regime-aware ranking: the same trigger quality is not equally useful in
+    # every market state. This only reorders candidates; it never weakens blockers.
+    market_regime = str(report.get("market_regime", "UNKNOWN")).upper()
+    market_structure = str(report.get("market_structure", "UNKNOWN")).upper()
+    aligned_structure = market_structure == ("UPTREND" if bullish else "DOWNTREND")
+    for candidate in candidates:
+        strategy = candidate.get("strategy", "")
+        fit = 0.0
+        if strategy in {"PULLBACK", "EMA_RECLAIM"} and aligned_structure:
+            fit = 0.35
+        elif strategy == "MOMENTUM_CONTINUATION" and aligned_structure and market_regime != "RANGING":
+            fit = 0.25
+        elif strategy in {"BREAKOUT", "COMPRESSION_BREAKOUT"} and market_regime in {"TRENDING", "TRENDING_UP", "TRENDING_DOWN"}:
+            fit = 0.35
+        elif strategy == "LIQUIDITY_SWEEP" and market_regime == "RANGING":
+            fit = 0.20
+        candidate["regime_fit_bonus"] = fit
+        candidate["market_regime"] = market_regime
+        candidate["market_structure_context"] = market_structure
+
+    # VWAP's first corrected historical replay was negative (27 trades, -9.114R).
+    # Keep it visible for research, but do not route it to execution until it
+    # passes a larger walk-forward sample with costs and independent validation.
+    for candidate in candidates:
+        if candidate.get("strategy") == "VWAP_RECLAIM":
+            candidate["research_only"] = True
+            candidate["research_status"] = "PAUSED_AFTER_NEGATIVE_INITIAL_BACKTEST"
+
+    strategy_priority = {"BREAKOUT": 7, "COMPRESSION_BREAKOUT": 6, "LIQUIDITY_SWEEP": 5, "EMA_RECLAIM": 4, "MOMENTUM_CONTINUATION": 3, "PULLBACK": 2, "VWAP_RECLAIM": 1}
+    candidates.sort(
+        key=lambda item: (
+            float(item.get("score", 0)) + float(item.get("regime_fit_bonus", 0)),
+            strategy_priority.get(item["strategy"], 0),
+        ),
+        reverse=True,
+    )
     executable_candidates = [item for item in candidates if not item.get("research_only")]
     selected = executable_candidates[0] if executable_candidates else None
     blockers = []
@@ -3591,7 +3625,7 @@ def receive_mt5_candles(
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
 _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE = 82.0
-_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT", "VWAP_RECLAIM"}
+_DEMO_ALLOWED_ENTRY_STRATEGIES = {"PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT"}
 _DEMO_STRUCTURAL_ENTRY_STRATEGIES = {"BREAKOUT", "LIQUIDITY_SWEEP"}
 
 
@@ -4247,7 +4281,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     selected_candidate = setup_scan.get("selected")
     selected_strategy = (
         selected_candidate.get("strategy")
-        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT", "VWAP_RECLAIM")
+        if selected_candidate and selected_candidate.get("strategy") in ("PULLBACK", "BREAKOUT", "LIQUIDITY_SWEEP", "EMA_RECLAIM", "MOMENTUM_CONTINUATION", "COMPRESSION_BREAKOUT")
         else None
     )
     trigger_direction = bias if selected_strategy else Direction.WAIT
