@@ -77,7 +77,11 @@ app = FastAPI(
 )
 
 from .news_reaction import router as news_reaction_router
-from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity, save_xm_quote_sample, load_orderflow_snapshot
+from .learning_store import (
+    router as learning_router, ensure_learning_schema, save_opportunity,
+    save_xm_quote_sample, load_orderflow_snapshot,
+    save_mt5_candle_history, load_mt5_candle_history,
+)
 
 app.include_router(news_reaction_router)
 app.include_router(learning_router)
@@ -86,8 +90,9 @@ app.include_router(learning_router)
 @app.on_event("startup")
 def initialize_learning_database() -> None:
     # Database outages must not take the market-analysis API offline.
-    # Learning endpoints report unavailable until PostgreSQL is reachable.
-    ensure_learning_schema()
+    # Restore the last authenticated MT5 OHLC history when PostgreSQL is available.
+    if ensure_learning_schema():
+        _restore_mt5_candle_cache()
 
 
 class Direction(str, Enum):
@@ -390,7 +395,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.8",
+        "analysis_engine_version": "0.6.9",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -410,6 +415,7 @@ def get_config() -> dict:
             "mt5_closed_candle_integrity_and_monotonic_feed",
             "historical_closed_candle_analysis_across_session_breaks",
             "live_quote_freshness_separated_from_historical_technical_analysis",
+            "postgresql_persisted_mt5_closed_candles_90_day_restart_recovery",
             "optional_tick_volume_participation",
             "explainable_weighted_signal_fusion",
             "freshness_adjusted_macro_pressure_gate",
@@ -3927,6 +3933,7 @@ def receive_mt5_candles(
         "received_at": datetime.now(timezone.utc),
         "source": "Authenticated MetaTrader 5 broker candle feed",
     }
+    persisted_bars = save_mt5_candle_history(settings.broker_gold_symbol, normalized)
     return {
         "accepted": True,
         "symbol": settings.broker_gold_symbol.upper(),
@@ -3934,8 +3941,43 @@ def receive_mt5_candles(
         "candle_counts": {frame: len(rows) for frame, rows in normalized.items()},
         "latest_candle_times": {frame: rows[-1].time for frame, rows in normalized.items()},
         "data_quality": quality,
+        "history_persisted": persisted_bars > 0,
+        "history_rows_upserted": persisted_bars,
+        "history_retention_days": 90,
         "execution_enabled": False,
     }
+
+
+def _restore_mt5_candle_cache() -> bool:
+    """Hydrate authenticated candle cache from durable PostgreSQL history on startup."""
+    global _latest_mt5_candles
+    restored = load_mt5_candle_history(
+        settings.broker_gold_symbol, ["M5", "M15", "H1", "H4"], limit=500
+    )
+    if not all(len(restored.get(frame, [])) >= 60 for frame in ("M5", "M15", "H1", "H4")):
+        logger.info("Persisted MT5 candle history is incomplete; waiting for a complete EA batch.")
+        return False
+    try:
+        batch = MT5CandleBatch(
+            symbol=settings.broker_gold_symbol,
+            **{
+                frame.lower(): [Candle(**row) for row in restored[frame]]
+                for frame in ("M5", "M15", "H1", "H4")
+            },
+        )
+        normalized, quality = _validate_mt5_candle_batch(batch)
+        _latest_mt5_candles = {
+            "symbol": settings.broker_gold_symbol.upper(),
+            "timeframes": normalized,
+            "data_quality": quality,
+            "received_at": datetime.now(timezone.utc),
+            "source": "PostgreSQL persisted authenticated MetaTrader 5 candle history",
+        }
+        logger.info("Restored persisted MT5 candle history after API restart.")
+        return True
+    except Exception:
+        logger.exception("Persisted MT5 candle history could not be restored safely.")
+        return False
 
 
 _DEMO_MIN_CONFLUENCE_SCORE = 85.0
