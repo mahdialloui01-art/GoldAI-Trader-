@@ -2852,35 +2852,86 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     wanted_sweep = "SELL_SIDE_LIQUIDITY_SWEEP" if bullish else "BUY_SIDE_LIQUIDITY_SWEEP"
     wanted_pattern = ("BULLISH_ENGULFING", "BULLISH_REJECTION") if bullish else ("BEARISH_ENGULFING", "BEARISH_REJECTION")
     candidates = []
+    # Shared closed-candle quality measurements. These are setup features, not
+    # probabilities; they deliberately reject weak closes and late entries.
+    current = m5[-1]
+    previous = m5[-2]
+    candle_range = max(float(current.high) - float(current.low), 1e-12)
+    body_atr = abs(float(current.close) - float(current.open)) / atr if atr > 0 else 0.0
+    close_location = (float(current.close) - float(current.low)) / candle_range
+    directional_close = (
+        float(current.close) > float(current.open) and close_location >= 0.62
+        if bullish else
+        float(current.close) < float(current.open) and close_location <= 0.38
+    )
+    recent_ranges = [
+        float(item.high) - float(item.low)
+        for item in m5[-11:-1]
+    ]
+    median_recent_range = statistics.median(recent_ranges) if recent_ranges else 0.0
+    range_expansion = candle_range / median_recent_range if median_recent_range > 0 else 0.0
 
-    # Pullback: allow a wider retest zone, but award fewer points near its outer edge.
-    pullback_score = 0
-    if extension <= 0.60:
-        pullback_score += 2
-    elif extension <= 0.85:
-        pullback_score += 1
+    # Pullback must show an actual EMA20 retest followed by a directional close.
+    # Proximity alone is not a pullback: it often labels a trend candle as an entry.
+    ema20_series = _ema_series([float(item.close) for item in m5], 20)
+    recent_pullback_bars = m5[-4:-1]
+    if bullish:
+        ema_retest = any(float(item.low) <= ema20_series[-2] + 0.15 * atr for item in recent_pullback_bars)
+        ema_reclaim_close = float(current.close) > ema20_series[-1]
+    else:
+        ema_retest = any(float(item.high) >= ema20_series[-2] - 0.15 * atr for item in recent_pullback_bars)
+        ema_reclaim_close = float(current.close) < ema20_series[-1]
+
+    # A structural breakout needs more than the BOS flag: displacement and a
+    # close near the candle extreme help filter wick-only/low-energy breaks.
+    swing_level = structure.get("last_confirmed_swing_high" if bullish else "last_confirmed_swing_low")
+    breakout_level = float(swing_level["price"]) if swing_level else None
+    breakout_displacement = (
+        (float(current.close) - breakout_level) / atr if bullish and breakout_level is not None and atr > 0
+        else (breakout_level - float(current.close)) / atr if not bullish and breakout_level is not None and atr > 0
+        else 0.0
+    )
+
+    # Pullback: require a real retest, a reclaim and a directional close.
     matching_confirmation = next((
         item for item in recent_confirmations
         if item["pattern"] in wanted_pattern or item["impulse"] == ("BULLISH" if bullish else "BEARISH")
     ), None)
-    if matching_confirmation:
-        pullback_score += 2
+    pullback_score = 0
+    if ema_retest and ema_reclaim_close and directional_close and body_atr >= 0.15 and extension <= 1.0:
+        pullback_score += 3
     if report.get("market_structure") == ("UPTREND" if bullish else "DOWNTREND"):
         pullback_score += 1
-    if pullback_score:
+    if matching_confirmation and matching_confirmation["bars_ago"] <= 1:
+        pullback_score += 1
+    if pullback_score >= 4:
         candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
-                           "evidence": ["إعادة اختبار قريبة من EMA20" if extension <= 0.60 else "السعر في الطرف الخارجي لمنطقة إعادة الاختبار" if extension <= 0.85 else "السعر بعيد عن منطقة إعادة الاختبار",
-                                        f"تأكيد شمعة مؤيد خلال آخر {matching_confirmation['bars_ago']} شمعة" if matching_confirmation else "تأكيد الشمعة غير مكتمل"]})
+                           "evidence": ["إعادة اختبار فعلية لمنطقة EMA20 خلال آخر ثلاث شمعات",
+                                        "إغلاق استعاد EMA20 مع شمعة اتجاهية مكتملة",
+                                        "تأكيد بنية/زخم الاتجاه الأعلى"]})
 
     # Breakout: only a confirmed close through a previously confirmed swing level.
-    if wanted_bos in events:
+    if (
+        wanted_bos in events
+        and breakout_displacement >= 0.05
+        and directional_close
+        and body_atr >= 0.25
+        and close_location >= 0.68 if bullish else
+        wanted_bos in events
+        and breakout_displacement >= 0.05
+        and directional_close
+        and body_atr >= 0.25
+        and close_location <= 0.32
+    ):
         candidates.append({"strategy": "BREAKOUT", "score": 5, "max_score": 5,
-                           "evidence": ["كسر هيكل مؤكد بإغلاق شمعة مكتملة"]})
+                           "evidence": ["كسر هيكل مؤكد مع إغلاق خارج المستوى",
+                                        "جسم شمعة معتبر وإغلاق قرب الطرف؛ تمت تصفية الاختراقات الضعيفة"]})
 
-    # Liquidity sweep: wick takes the opposing pool then closes back through the level.
-    if wanted_sweep in events and matching_confirmation:
+    # Liquidity sweep: require a real wick through the pool, rejection back
+    # across it and a directional close; a raw sweep tag alone is insufficient.
+    if wanted_sweep in events and matching_confirmation and directional_close and body_atr >= 0.15:
         candidates.append({"strategy": "LIQUIDITY_SWEEP", "score": 5, "max_score": 5,
-                           "evidence": ["سحب سيولة معاكس ثم إغلاق/اندفاع مؤيد"]})
+                           "evidence": ["سحب سيولة معاكس ثم رفض سعري وإغلاق اتجاهي مؤكد"]})
 
     # EMA reclaim: detect a closed-candle reclaim after a shallow pullback.
     # It supplements pullback/BOS logic without allowing an intrabar trigger.
@@ -2931,7 +2982,9 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
             + int(impulse_matches)
             + int(extension <= 0.90)
         )
-        if momentum_score >= 4:
+        # Avoid late impulse entries and require the signal bar to expand
+        # beyond recent typical range, not merely exceed one prior candle.
+        if momentum_score >= 4 and range_expansion >= 1.05 and body_atr >= 0.30:
             candidates.append({
                 "strategy": "MOMENTUM_CONTINUATION",
                 "score": momentum_score, "max_score": 5,
@@ -2959,7 +3012,7 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
             breaks_range = float(current.close) < base_low
             closes_strong = float(current.close) < float(current.open) and close_location <= 0.28
         # Require a genuinely compact pause and a meaningful expansion candle.
-        if base_range_atr <= 1.10 and breaks_range and closes_strong and body_atr >= 0.25:
+        if base_range_atr <= 0.90 and breaks_range and closes_strong and body_atr >= 0.30 and range_expansion >= 1.05:
             candidates.append({
                 "strategy": "COMPRESSION_BREAKOUT", "score": 5, "max_score": 5,
                 "evidence": [
