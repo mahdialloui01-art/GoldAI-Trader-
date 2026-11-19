@@ -77,7 +77,7 @@ app = FastAPI(
 )
 
 from .news_reaction import router as news_reaction_router
-from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity, save_xm_quote_sample
+from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity, save_xm_quote_sample, load_orderflow_snapshot
 
 app.include_router(news_reaction_router)
 app.include_router(learning_router)
@@ -4459,7 +4459,48 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         components["VOLATILITY_CONDITION"] = 0
         blockers.append("التذبذب على H1 مرتفع بشكل غير مناسب للدخول الآمن.")
 
-    score = sum(components.values())
+    # COMEX order flow is optional confirmation; never synthesize it from XM quote ticks.
+    try:
+        orderflow_context = load_orderflow_snapshot("GC", 300)
+    except Exception:
+        orderflow_context = {
+            "source": "COMEX_GC", "delta": None,
+            "delta_status": "UNAVAILABLE_DATABASE_OR_FEED",
+            "depth_status": "UNAVAILABLE", "absorption_candidates": [],
+            "iceberg_candidates": [], "execution_enabled": False,
+        }
+    orderflow_component = 0
+    flow_fresh = (
+        orderflow_context.get("delta_status") == "VALID_EXPLICIT_AGGRESSOR"
+        and orderflow_context.get("freshness_seconds") is not None
+        and orderflow_context["freshness_seconds"] <= 30
+    )
+    tagged_total = (
+        float(orderflow_context.get("tagged_buy_volume") or 0)
+        + float(orderflow_context.get("tagged_sell_volume") or 0)
+    )
+    flow_delta = orderflow_context.get("delta")
+    flow_strength = abs(float(flow_delta)) / tagged_total if tagged_total > 0 and flow_delta is not None else 0
+    if flow_fresh and bias in (Direction.BUY, Direction.SELL) and flow_strength >= 0.25:
+        flow_direction = Direction.BUY if float(flow_delta) > 0 else Direction.SELL
+        if flow_direction == bias:
+            orderflow_component = 5
+            reasons.append("Delta الصفقات المنفذة على COMEX يؤكد الاتجاه الفني ببيانات حديثة وموسومة.")
+        else:
+            orderflow_component = -5
+            reasons.append("Delta COMEX يعاكس الاتجاه الفني؛ خُفّض تقييم الإعداد.")
+    elif orderflow_context.get("delta_status") != "VALID_EXPLICIT_AGGRESSOR":
+        orderflow_context["fusion_status"] = "ADVISORY_ONLY_NO_VERIFIED_DELTA"
+    elif not flow_fresh:
+        orderflow_context["fusion_status"] = "ADVISORY_ONLY_STALE_FLOW"
+    else:
+        orderflow_context["fusion_status"] = "ADVISORY_ONLY_WEAK_OR_NEUTRAL_DELTA"
+    components["ORDER_FLOW_DELTA"] = orderflow_component
+    orderflow_context["fusion_status"] = orderflow_context.get("fusion_status") or (
+        "CONFIRMS_TECHNICAL_BIAS" if orderflow_component > 0 else
+        "CONFLICTS_WITH_TECHNICAL_BIAS" if orderflow_component < 0 else "NO_SCORE_ADJUSTMENT"
+    )
+    score = max(0, min(100, sum(components.values())))
     minimum_score = 82 if selected_strategy in ("BREAKOUT", "LIQUIDITY_SWEEP") else 85
     entry_reference = float(quote["ask"] if bias == Direction.BUY else quote["bid"])
     quote_distance_atr = abs(entry_reference - last.close) / m5_atr if m5_atr > 0 else float("inf")
@@ -4546,6 +4587,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         },
         "market_structure": {"M15": m15_pa, "M5": m5_pa},
         "entry_microstructure": m5_micro,
+        "orderflow_context": orderflow_context,
         "entry_setup_scan": setup_scan,
         "market_regime_H1": h1_regime,
         "spread_atr_ratio_M5": round(spread_atr_ratio, 4),
