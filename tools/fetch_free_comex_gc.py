@@ -43,12 +43,15 @@ def main() -> int:
             return 3
 
         frame = frame.copy()
-        frame.index.name = frame.index.name or "timestamp"
-        frame = frame.reset_index()
         frame.columns = [str(column).strip().lower() for column in frame.columns]
-
         time_column = next((name for name in ("timestamp", "date", "datetime", "time")
                             if name in frame.columns), None)
+        if time_column is None:
+            frame.index.name = frame.index.name or "timestamp"
+            frame = frame.reset_index()
+            frame.columns = [str(column).strip().lower() for column in frame.columns]
+            time_column = next((name for name in ("timestamp", "date", "datetime", "time")
+                                if name in frame.columns), None)
         if time_column is None:
             print("Unexpected FinzData response: no timestamp/date column. No file written.",
                   file=sys.stderr)
