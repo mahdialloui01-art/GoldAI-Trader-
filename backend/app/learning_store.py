@@ -101,14 +101,20 @@ def save_opportunity(analysis: dict[str, Any]) -> bool:
         if created.tzinfo is None:
             created = created.replace(tzinfo=timezone.utc)
         dossier = analysis.get("technical_dossier") or {}
+        entry_engine = analysis.get("entry_engine") or {}
         plan = analysis.get("setup_plan") or {}
         symbol = str(analysis.get("symbol") or "GOLD").upper()
         decision = str(analysis.get("decision") or "WAIT").upper()
         blockers = analysis.get("blockers") or []
+        # Preserve the exact decision-time evidence so closed trades can later be
+        # evaluated against what the engine actually knew, not a reconstructed chart.
         context = {
             "market_data": market,
             "technical_dossier": dossier,
+            "entry_engine": entry_engine,
             "setup_plan": plan,
+            "decision": decision,
+            "blockers": blockers,
             "reasons": analysis.get("reasons") or [],
         }
         fingerprint_source = {
@@ -117,6 +123,10 @@ def save_opportunity(analysis: dict[str, Any]) -> bool:
             "blockers": blockers,
             "latest_candle_times": market.get("latest_candle_times", {}),
             "confluence_score": dossier.get("confluence_score"),
+            "entry_score": entry_engine.get("effective_entry_quality_score_0_to_100",
+                                            entry_engine.get("entry_quality_score_0_to_100")),
+            "entry_direction": entry_engine.get("direction"),
+            "entry_strategy": entry_engine.get("selected_strategy"),
             "strategy": plan.get("strategy") or dossier.get("setup_type"),
         }
         fingerprint = hashlib.sha256(
