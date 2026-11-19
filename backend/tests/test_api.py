@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi.testclient import TestClient
 
 import app.main as main
+import app.learning_store as learning_store
 from app.main import app
 
 client = TestClient(app)
@@ -25,7 +26,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.9"
+    assert body["analysis_engine_version"] == "0.6.10"
     assert body["adaptive_risk_policy"]["enabled"] is True
     assert body["adaptive_risk_policy"]["live_trading_enabled"] is False
     assert "closed_candle_microstructure" in body["analysis_layers"]
@@ -1535,3 +1536,32 @@ def test_mt5_candle_cache_restores_closed_history_after_restart(monkeypatch):
     assert main._restore_mt5_candle_cache() is True
     assert main._latest_mt5_candles["source"].startswith("PostgreSQL")
     assert all(len(main._latest_mt5_candles["timeframes"][frame]) == 60 for frame in restored)
+
+
+
+def test_mt5_candle_history_persistence_uses_connection_execute(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def execute(self, statement, params=None):
+            calls.append((statement, params))
+            return SimpleNamespace(rowcount=1)
+
+    monkeypatch.setattr(learning_store, "_connect", lambda: FakeConnection())
+    candle = SimpleNamespace(
+        time=datetime.now(timezone.utc),
+        open=2300.0, high=2301.0, low=2299.0, close=2300.5,
+        tick_volume=123,
+    )
+    assert learning_store.save_mt5_candle_history("GOLD", {"M5": [candle]}) == 1
+    assert len(calls) == 2
+    assert "INSERT INTO mt5_closed_candles" in calls[0][0]
+    assert "DELETE FROM mt5_closed_candles" in calls[1][0]
