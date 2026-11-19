@@ -390,7 +390,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.7",
+        "analysis_engine_version": "0.6.8",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -408,6 +408,8 @@ def get_config() -> dict:
             "confirmed_market_structure_bos_liquidity_fvg",
             "closed_candle_microstructure",
             "mt5_closed_candle_integrity_and_monotonic_feed",
+            "historical_closed_candle_analysis_across_session_breaks",
+            "live_quote_freshness_separated_from_historical_technical_analysis",
             "optional_tick_volume_participation",
             "explainable_weighted_signal_fusion",
             "freshness_adjusted_macro_pressure_gate",
@@ -536,6 +538,14 @@ def _fresh_mt5_quote() -> dict:
     if age > settings.market_quote_max_age_seconds:
         raise HTTPException(status_code=503, detail="MT5 quote is stale; market signals must remain paused.")
     return {**_latest_mt5_quote, "age_seconds": age}
+
+
+def _optional_fresh_mt5_quote() -> dict | None:
+    """Return a tradable quote when available; historical analysis must not depend on it."""
+    try:
+        return _fresh_mt5_quote()
+    except HTTPException:
+        return None
 
 
 @app.get("/api/v1/market/snapshot")
@@ -1737,7 +1747,7 @@ def market_regime_analysis(request: MarketRegimeRequest) -> dict:
     timeframe = request.timeframe.upper()
     if timeframe not in _TIMEFRAME_SECONDS:
         raise HTTPException(status_code=422, detail="Unsupported timeframe.")
-    quote = _fresh_mt5_quote()
+    quote = _optional_fresh_mt5_quote()
     normalized_times = []
     for candle in request.candles:
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
@@ -1747,14 +1757,16 @@ def market_regime_analysis(request: MarketRegimeRequest) -> dict:
     if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
         raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
     age = (datetime.now(timezone.utc) - normalized_times[-1]).total_seconds()
-    if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
-        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future.")
+    if age < -30:
+        raise HTTPException(status_code=422, detail="Latest candle is from the future.")
     analysis = _market_regime_analysis(request.candles)
     return {
         "symbol": settings.broker_gold_symbol.upper(),
         "timeframe": timeframe,
         **analysis,
-        "broker_spread_points": quote["spread_points"],
+        "broker_spread_points": quote["spread_points"] if quote else None,
+        "analysis_mode": "LIVE_CONTEXT" if quote else "HISTORICAL_CLOSED_MARKET",
+        "latest_candle_age_seconds": max(0, int(age)),
         "generated_at": datetime.now(timezone.utc),
         "execution_enabled": False,
     }
@@ -1768,7 +1780,7 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
         raise HTTPException(status_code=400, detail="Unsupported broker symbol.")
     if timeframe not in _TIMEFRAME_SECONDS:
         raise HTTPException(status_code=422, detail="Unsupported timeframe. Use M1, M5, M15, M30, H1, H4 or D1.")
-    quote = _fresh_mt5_quote()
+    quote = _optional_fresh_mt5_quote()
     candles = request.candles
 
     normalized_times = []
@@ -1790,8 +1802,8 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
         and _ALLOW_H4_SESSION_GAP.get()
         and latest_age <= 7 * 24 * 60 * 60
     )
-    if latest_age < -30 or (latest_age > freshness_limit and not h4_session_gap_allowed):
-        raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is stale or from the future; age_seconds={int(latest_age)}, limit_seconds={freshness_limit}.")
+    if latest_age < -30:
+        raise HTTPException(status_code=422, detail=f"Latest {timeframe} candle is from the future; age_seconds={int(latest_age)}.")
 
     closes = [item.close for item in candles]
     ema20 = _ema_series(closes, 20)[-1]
@@ -1841,13 +1853,15 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
         score -= 1
         reasons.append("آخر شمعة هابطة بجسم قوي نسبياً.")
 
-    spread_price = quote["spread_points"] * quote["point"]
-    spread_atr_ratio = spread_price / atr14 if atr14 > 0 else float("inf")
-    if spread_atr_ratio > 0.15:
+    spread_price = (quote["spread_points"] * quote["point"]) if quote else None
+    spread_atr_ratio = (spread_price / atr14) if quote and atr14 > 0 else None
+    if quote and spread_atr_ratio is not None and spread_atr_ratio > 0.15:
         reasons.append("السبريد مرتفع مقارنة بالتذبذب؛ تم منع إصدار اتجاه تداول.")
         direction = Direction.WAIT
     else:
         direction = Direction.BUY if score >= 4 else Direction.SELL if score <= -4 else Direction.WAIT
+    if not quote:
+        reasons.append("السوق متوقف أو لا يوجد سعر MT5 حديث؛ استمر التحليل التاريخي دون السماح بالتنفيذ.")
     if direction == Direction.WAIT:
         reasons.append("لا توجد موافقات كافية؛ القرار الآمن هو الانتظار.")
 
@@ -1866,8 +1880,11 @@ def technical_analysis(request: TechnicalAnalysisRequest) -> dict:
             "bollinger_upper": round(bb_upper, 5), "bollinger_middle": round(bb_mid, 5),
             "bollinger_lower": round(bb_lower, 5),
         },
-        "broker_quote": {"bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"]},
-        "spread_atr_ratio": round(spread_atr_ratio, 4),
+        "broker_quote": ({"bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"]} if quote else None),
+        "spread_atr_ratio": round(spread_atr_ratio, 4) if spread_atr_ratio is not None else None,
+        "analysis_mode": "LIVE_CONTEXT" if quote else "HISTORICAL_CLOSED_MARKET",
+        "latest_candle_age_seconds": max(0, int(latest_age)),
+        "execution_enabled": False,
         "candle_count": len(candles),
         "reasons": reasons,
         "risk_note": "ATR مقياس للتذبذب وليس وقف خسارة مضموناً. يلزم توافق الأطر الأعلى واختبار المخاطر والأخبار قبل أي صفقة.",
@@ -2316,7 +2333,6 @@ def price_action_analysis(request: PriceActionRequest) -> dict:
     timeframe = request.timeframe.upper()
     if timeframe not in _TIMEFRAME_SECONDS:
         raise HTTPException(status_code=422, detail="Unsupported timeframe.")
-    _fresh_mt5_quote()
     candles = request.candles
     normalized_times = []
     for candle in candles:
@@ -2327,8 +2343,8 @@ def price_action_analysis(request: PriceActionRequest) -> dict:
     if any(current <= previous for previous, current in zip(normalized_times, normalized_times[1:])):
         raise HTTPException(status_code=422, detail="Candle timestamps must be strictly increasing and unique.")
     age = (datetime.now(timezone.utc) - normalized_times[-1]).total_seconds()
-    if age < -30 or age > _TIMEFRAME_SECONDS[timeframe] * 2 + 60:
-        raise HTTPException(status_code=422, detail="Latest candle is stale or from the future.")
+    if age < -30:
+        raise HTTPException(status_code=422, detail="Latest candle is from the future.")
     analysis = _price_action_analysis(candles, request.swing_left, request.swing_right, request.equal_level_tolerance_atr)
     analysis.update({
         "symbol": settings.broker_gold_symbol.upper(),
@@ -2728,7 +2744,7 @@ async def gold_decision_analysis(request: MultiTimeframeAnalysisRequest) -> dict
     components: dict = {}
     blockers: list[str] = []
 
-    # Price/technical components are based exclusively on fresh broker candles and quotes.
+    # Technical components use the latest valid closed broker candles, including during session breaks.
     try:
         mtf = multi_timeframe_analysis(request)
         components["multi_timeframe"] = mtf
@@ -3314,7 +3330,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     # Reuse the existing full decision pipeline; this also validates all four
     # broker candle streams and applies the fail-closed macro/news filters.
     base = await gold_decision_analysis(request)
-    quote = _fresh_mt5_quote()
+    quote = _optional_fresh_mt5_quote()
     blockers = list(base.get("blockers", []))
     reasons = list(base.get("reasons", []))
     mtf = base.get("components", {}).get("multi_timeframe")
@@ -3456,9 +3472,9 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
 
     # Spread is evaluated against M5 ATR, not against a fixed dollar threshold.
     m5_atr = float(frame_reports["M5"]["atr14"])
-    spread_price = float(quote["spread_points"]) * float(quote["point"])
-    spread_atr_ratio = spread_price / m5_atr if m5_atr > 0 else float("inf")
-    if spread_atr_ratio > 0.15:
+    spread_price = (float(quote["spread_points"]) * float(quote["point"])) if quote else None
+    spread_atr_ratio = (spread_price / m5_atr) if quote and m5_atr > 0 else None
+    if quote and spread_atr_ratio is not None and spread_atr_ratio > 0.15:
         blockers.append("SPREAD_TOO_HIGH_FOR_M5_VOLATILITY")
         reasons.append("السبريد مرتفع مقارنة بتذبذب M5؛ تم منع إعداد الدخول.")
         decision = "WAIT"
@@ -3494,8 +3510,9 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     agreement_count = sum(value == expert_direction for value in directional_frames) if expert_direction != "WAIT" else 0
     agreement_percent = round(agreement_count / len(directional_frames) * 100, 1)
 
+    technical_direction_candidate = decision if decision in ("BUY", "SELL") else "WAIT"
     setup_plan = None
-    if decision in ("BUY", "SELL"):
+    if quote and decision in ("BUY", "SELL"):
         entry = float(quote["ask"] if decision == "BUY" else quote["bid"])
         stop_distance = max(1.5 * m5_atr, 3.0 * spread_price)
         m5_structure = _price_action_analysis(request.m5, 3, 3, 0.12)
@@ -3527,7 +3544,15 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
 
     if decision == "WAIT" and "NO_TRADE" not in blockers:
         blockers.append("NO_FULL_CONFLUENCE")
-    strategy_scan = _classify_entry_setups(decision, frames, frame_reports, spread_atr_ratio)
+    strategy_scan = (
+        _classify_entry_setups(decision, frames, frame_reports, spread_atr_ratio)
+        if quote and spread_atr_ratio is not None
+        else {"status": "HISTORICAL_ONLY_NO_LIVE_QUOTE", "execution_enabled": False}
+    )
+    if not quote:
+        blockers.append("MARKET_CLOSED_OR_NO_FRESH_MT5_QUOTE")
+        reasons.append("تم تحليل آخر الشموع المغلقة وحفظ الاتجاه الفني، لكن لا يوجد سعر حي؛ القرار التنفيذي WAIT.")
+        decision = "WAIT"
     grade = (
         "HIGH_CONFLUENCE" if confluence >= 70 else
         "MODERATE_CONFLUENCE" if confluence >= 45 else
@@ -3546,8 +3571,10 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "maximum_absolute_points": round(max_score, 2),
             "confluence_grade": grade,
             "dominant_technical_direction": expert_direction,
+            "technical_direction_candidate": technical_direction_candidate,
+            "analysis_mode": "LIVE_CONTEXT" if quote else "HISTORICAL_CLOSED_MARKET",
             "timeframes": frame_reports,
-            "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4),
+            "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4) if spread_atr_ratio is not None else None,
             "directional_timeframe_agreement_percent": agreement_percent,
             "strategy_scan": strategy_scan,
             "entry_quality": {
@@ -3761,7 +3788,12 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
         "closed_candles_only": True,
         "history_available": True,
         "live_analysis_available": bool(analysis) and not bool(analysis_error),
-        "analysis_status": "LIVE" if analysis and not analysis_error else "PAUSED_STALE_DATA",
+        "historical_analysis_available": bool(analysis) and not bool(analysis_error),
+        "analysis_status": (
+            "LIVE" if analysis and not analysis_error and analysis.get("market_data", {}).get("analysis_mode") == "LIVE_CONTEXT"
+            else "HISTORICAL_MARKET_CLOSED" if analysis and not analysis_error
+            else "PAUSED_INVALID_DATA"
+        ),
         "analysis_unavailable_reason": analysis_error,
         "data_quality": _latest_mt5_candles.get("data_quality", {}),
         "decision": analysis.get("decision", "WAIT"),
@@ -4391,24 +4423,20 @@ async def mt5_demo_signal(
 
 @app.get("/api/v1/analysis/expert/live")
 async def live_expert_technical_analysis() -> dict:
-    """Analyze the latest complete, fresh, authenticated MT5 candle batch."""
+    """Analyze the latest authenticated closed MT5 candle batch, including session gaps."""
     if _latest_mt5_candles is None:
         raise HTTPException(status_code=503, detail="Waiting for the first complete authenticated MT5 candle batch.")
     series = _latest_mt5_candles["timeframes"]
     now = datetime.now(timezone.utc)
     quality = _latest_mt5_candles.get("data_quality", {})
-    # Only the authenticated batch validator can mark a legitimate H4
-    # session-reopen gap. Lower timeframes remain strictly fresh.
-    allow_h4_session_gap = bool(
-        quality.get("H4", {}).get("h4_session_reopen_gap")
-    )
+    # Historical bars remain analyzable during daily breaks, weekends and holidays.
+    # Only future-dated or incomplete bars are rejected; quote freshness is checked
+    # separately and gates execution, never the technical-history calculation.
+    allow_h4_session_gap = bool(quality.get("H4", {}).get("h4_session_reopen_gap"))
     for timeframe, candles in series.items():
         age = (now - candles[-1].time.astimezone(timezone.utc)).total_seconds()
-        freshness_limit = _TIMEFRAME_SECONDS[timeframe] * 2 + 60
-        if timeframe == "H4" and allow_h4_session_gap:
-            freshness_limit = 7 * 24 * 60 * 60
-        if age < -30 or age > freshness_limit:
-            raise HTTPException(status_code=503, detail=f"Cached {timeframe} candles are stale; expert analysis is paused.")
+        if age < -30:
+            raise HTTPException(status_code=503, detail=f"Cached {timeframe} candle is from the future; analysis is unsafe.")
     request = MultiTimeframeAnalysisRequest(
         symbol=_latest_mt5_candles["symbol"],
         m5=series["M5"], m15=series["M15"], h1=series["H1"], h4=series["H4"],
@@ -4416,23 +4444,38 @@ async def live_expert_technical_analysis() -> dict:
     context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
     try:
         result = await expert_technical_analysis(request)
-        try:
-            # The dedicated entry engine is technical-first. Calendar and macro
-            # remain visible as context but cannot veto a strong closed-candle setup.
-            result["entry_engine"] = analyze_entry_plan(request)
-        except HTTPException as entry_error:
+        if _optional_fresh_mt5_quote():
+            try:
+                # Entry engine requires a current broker quote; historical technical
+                # analysis above remains available without one.
+                result["entry_engine"] = analyze_entry_plan(request)
+            except HTTPException as entry_error:
+                result["entry_engine"] = {
+                    "direction": Direction.WAIT,
+                    "selected_strategy": None,
+                    "entry_quality_score_0_to_100": 0,
+                    "setup": None,
+                    "blockers": [f"ENTRY_ENGINE_UNAVAILABLE: {entry_error.detail}"],
+                    "execution_enabled": False,
+                }
+        else:
             result["entry_engine"] = {
                 "direction": Direction.WAIT,
                 "selected_strategy": None,
                 "entry_quality_score_0_to_100": 0,
                 "setup": None,
-                "blockers": [f"ENTRY_ENGINE_UNAVAILABLE: {entry_error.detail}"],
+                "blockers": ["NO_FRESH_MT5_QUOTE_MARKET_CLOSED_OR_FEED_OFFLINE"],
                 "execution_enabled": False,
             }
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result = _reconcile_entry_engine_quality(result)
     result["market_data"] = {
+        "analysis_mode": "LIVE_CONTEXT" if _optional_fresh_mt5_quote() else "HISTORICAL_CLOSED_MARKET",
+        "latest_bar_ages_seconds": {
+            frame: max(0, int((datetime.now(timezone.utc) - rows[-1].time.astimezone(timezone.utc)).total_seconds()))
+            for frame, rows in series.items()
+        },
         "source": _latest_mt5_candles["source"],
         "received_at": _latest_mt5_candles["received_at"],
         "candle_counts": {frame: len(rows) for frame, rows in series.items()},
