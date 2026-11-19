@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     trading_mode: str = "paper"
     live_trading_enabled: bool = False
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
-    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=2.0)
+    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=10.0)
     demo_execution_enabled: bool = False
     manual_demo_execution_enabled: bool = False
-    demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=0.5)  # Manual DEMO only
+    demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=2.0)  # Manual DEMO only; hard-capped at 0.5%.
     auto_demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=0.5)
     risk_capital_usd: float = Field(default=80.0, gt=0, le=80.0)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
@@ -56,6 +56,14 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _effective_daily_loss_cap_percent() -> float:
+    return min(float(settings.max_daily_loss_percent), 2.0)
+
+
+def _effective_manual_risk_cap_percent() -> float:
+    return min(float(settings.demo_risk_per_trade_percent), 0.5)
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
@@ -262,7 +270,7 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
             status_code=422,
             detail=f"Requested risk exceeds configured maximum of {settings.max_risk_per_trade_percent}%.",
         )
-    if request.daily_loss_percent >= settings.max_daily_loss_percent:
+    if request.daily_loss_percent >= _effective_daily_loss_cap_percent():
         return {
             "approved": False, "recommended_lots": 0.0, "risk_amount": 0.0,
             "estimated_risk_percent": 0.0, "account_currency": quote["account_currency"],
@@ -339,7 +347,7 @@ def get_config() -> dict:
         "trading_mode": settings.trading_mode,
         "live_trading_enabled": settings.live_trading_enabled,
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
-        "max_daily_loss_percent": settings.max_daily_loss_percent,
+        "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
         "risk_capital_usd": settings.risk_capital_usd,
         "demo_execution_enabled": settings.demo_execution_enabled,
         "manual_demo_execution_enabled": settings.manual_demo_execution_enabled,
@@ -2126,7 +2134,7 @@ def check_risk(request: RiskCheckRequest) -> RiskCheckResponse:
 
     if risk_percent > settings.max_risk_per_trade_percent:
         reasons.append("Proposed position exceeds the configured per-trade risk limit.")
-    if request.daily_loss_percent >= settings.max_daily_loss_percent:
+    if request.daily_loss_percent >= _effective_daily_loss_cap_percent():
         reasons.append("Daily loss limit reached; trading must remain locked.")
     if not settings.live_trading_enabled:
         reasons.append("Execution is disabled; this service is in analysis/paper mode.")
@@ -3901,7 +3909,7 @@ def manual_demo_trade_defaults() -> dict:
     equity = min(float(quote["account_equity"]), float(settings.risk_capital_usd))
     if not math.isfinite(loss_per_lot) or loss_per_lot <= 0 or equity <= 0:
         raise HTTPException(status_code=503, detail="Broker risk metadata is invalid; manual sizing is paused.")
-    risk_amount = equity * settings.demo_risk_per_trade_percent / 100.0
+    risk_amount = equity * _effective_manual_risk_cap_percent() / 100.0
     raw_lots = risk_amount / (loss_per_lot * 1.05)
     step = Decimal(str(quote["volume_step"]))
     lots = float((Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN) * step)
@@ -3913,7 +3921,7 @@ def manual_demo_trade_defaults() -> dict:
     return {
         "ready": True, "symbol": quote["symbol"], "direction_required": True,
         "recommended_lots": lots, "stop_loss_points": stop_points,
-        "take_profit_points": target_points, "risk_limit_percent": settings.demo_risk_per_trade_percent,
+        "take_profit_points": target_points, "risk_limit_percent": _effective_manual_risk_cap_percent(),
         "estimated_risk_percent": round(estimated_risk, 4),
         "risk_amount": round(lots * loss_per_lot, 2), "account_currency": quote.get("account_currency"),
         "m5_atr": round(atr, int(quote["digits"])), "quote_age_seconds": quote["age_seconds"],
@@ -3949,10 +3957,10 @@ def request_manual_demo_trade(
     risk_amount = lots * loss_per_lot
     equity = min(float(quote["account_equity"]), float(settings.risk_capital_usd))
     risk_percent = risk_amount / equity * 100 if equity > 0 else float("inf")
-    if not math.isfinite(risk_percent) or risk_percent > settings.demo_risk_per_trade_percent + 1e-9:
+    if not math.isfinite(risk_percent) or risk_percent > _effective_manual_risk_cap_percent() + 1e-9:
         raise HTTPException(
             status_code=422,
-            detail=f"Requested lot/stop risks {risk_percent:.3f}% which exceeds the {settings.demo_risk_per_trade_percent:.2f}% DEMO limit. Reduce lots or widen the stop.",
+            detail=f"Requested lot/stop risks {risk_percent:.3f}% which exceeds the {_effective_manual_risk_cap_percent():.2f}% DEMO limit. Reduce lots or widen the stop.",
         )
     _prune_expired_manual_trade_queue()
     if _manual_trade_queue:
@@ -4038,7 +4046,7 @@ def _adaptive_demo_risk_policy(analysis: dict, daily_loss_percent: float) -> dic
         quality_risk = 0.15
         quality_band = "MINIMUM_QUALIFIED"
 
-    daily_limit = float(settings.max_daily_loss_percent)
+    daily_limit = _effective_daily_loss_cap_percent()
     if daily_limit <= 0 or daily_loss_percent >= daily_limit:
         return {
             "approved": False, "risk_percent": 0.0, "quality_score": round(quality, 2),
@@ -4107,7 +4115,7 @@ async def mt5_demo_signal(
             "enabled": True, "decision": "WAIT",
             "reason": "Daily loss limit reached; new entries are locked.",
             "daily_loss_percent": daily_loss_percent,
-            "max_daily_loss_percent": settings.max_daily_loss_percent,
+            "max_daily_loss_percent": _effective_daily_loss_cap_percent(),
             "execution_enabled": False,
         }
 
