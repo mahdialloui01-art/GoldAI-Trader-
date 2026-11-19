@@ -2141,7 +2141,9 @@ def check_risk(request: RiskCheckRequest) -> RiskCheckResponse:
         * request.point_value_per_lot
         * request.proposed_lots
     )
-    risk_percent = estimated_loss / request.account_equity * 100
+    # Risk is always measured against the fixed $80 capital basis, even on a larger DEMO account.
+    risk_base = min(float(request.account_equity), float(settings.risk_capital_usd))
+    risk_percent = estimated_loss / risk_base * 100
     reasons: list[str] = []
 
     if risk_percent > settings.max_risk_per_trade_percent:
