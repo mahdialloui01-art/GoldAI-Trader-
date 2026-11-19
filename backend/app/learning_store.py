@@ -507,33 +507,6 @@ def load_orderflow_snapshot(contract: str = "GC", window_seconds: int = 300) -> 
     )
     return result
 
-@router.get("/orderflow/snapshot")
-def orderflow_snapshot(
-    contract: str = Query(default="GC", min_length=2, max_length=40),
-    window_seconds: int = Query(default=300, ge=60, le=900),
-) -> dict:
-    try:
-        return load_orderflow_snapshot(contract, window_seconds)
-    except Exception as exc:
-        logger.exception("GoldAI order-flow snapshot unavailable")
-        raise HTTPException(status_code=503, detail="Order-flow data is unavailable or the database is not ready.") from exc
-)
-            )
-              AND event_time >= NOW() - (%s * INTERVAL '1 second')
-            ORDER BY event_time DESC
-            LIMIT 10000
-        """, (normalized_contract, normalized_contract, window_seconds)).fetchall()
-    result = build_orderflow_snapshot(
-        rows, now=datetime.now(timezone.utc), window_seconds=window_seconds
-    )
-    result["contract"] = normalized_contract
-    result["history_days_retained"] = 90
-    result["note"] = (
-        "Explicit aggressor-tagged COMEX prints only. Depth/iceberg outputs are "
-        "hypotheses, not observed hidden orders. COMEX is contextual data, not XM execution data."
-    )
-    return result
-
 
 @router.get("/orderflow/snapshot")
 def orderflow_snapshot(
