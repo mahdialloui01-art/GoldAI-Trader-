@@ -67,6 +67,21 @@ def ensure_learning_schema() -> bool:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_journal_time ON trade_journal (deal_time DESC)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_opportunity_log_time ON opportunity_log (created_at DESC)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS xm_quote_samples (
+                    sample_time TIMESTAMPTZ PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    bid NUMERIC(20,8) NOT NULL,
+                    ask NUMERIC(20,8) NOT NULL,
+                    last NUMERIC(20,8) NOT NULL DEFAULT 0,
+                    spread_points NUMERIC(20,8) NOT NULL,
+                    point NUMERIC(20,10) NOT NULL,
+                    digits SMALLINT NOT NULL,
+                    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_xm_quote_samples_symbol_time ON xm_quote_samples (symbol, sample_time DESC)")
+            conn.execute("DELETE FROM xm_quote_samples WHERE sample_time < NOW() - INTERVAL '90 days'")
         return True
     except Exception:
         logger.exception("GoldAI learning database initialization failed")
@@ -272,3 +287,55 @@ def recent_opportunities(limit: int = Query(default=50, ge=1, le=200)) -> dict:
     except Exception as exc:
         logger.exception("GoldAI learning opportunities unavailable")
         raise HTTPException(status_code=503, detail="Learning database is not ready or unavailable.") from exc
+
+
+
+def save_xm_quote_sample(*, symbol: str, timestamp: datetime, bid: float, ask: float,
+                         last: float, spread_points: float, point: float, digits: int) -> bool:
+    """Persist one sampled XM quote; never label tick activity as traded volume or delta."""
+    try:
+        if timestamp.tzinfo is None:
+            return False
+        with _connect() as conn:
+            conn.execute("""
+                INSERT INTO xm_quote_samples
+                    (sample_time, symbol, bid, ask, last, spread_points, point, digits)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (sample_time) DO NOTHING
+            """, (timestamp.astimezone(timezone.utc), symbol.upper(), bid, ask,
+                  last, spread_points, point, digits))
+        return True
+    except Exception:
+        logger.exception("GoldAI XM quote sample persistence failed")
+        return False
+
+
+@router.get("/orderflow/xm-status")
+def xm_orderflow_status() -> dict:
+    """Report durable XM quote sample coverage; no synthetic order-flow metrics."""
+    try:
+        with _connect() as conn:
+            row = conn.execute("""
+                SELECT COUNT(*) AS samples, MIN(sample_time) AS first_sample,
+                       MAX(sample_time) AS last_sample,
+                       COUNT(*) FILTER (WHERE ask < bid) AS crossed_quotes
+                FROM xm_quote_samples
+                WHERE sample_time >= NOW() - INTERVAL '90 days'
+            """).fetchone()
+        return {
+            "source": "XM_MT5",
+            "history_window_days": 90,
+            "samples": int(row["samples"]),
+            "first_sample_utc": row["first_sample"],
+            "last_sample_utc": row["last_sample"],
+            "crossed_quotes": int(row["crossed_quotes"]),
+            "data_type": "sampled_bid_ask_quotes",
+            "actual_aggressor_volume": "UNAVAILABLE",
+            "market_depth": "NOT_CAPTURED",
+            "delta": "NOT_CALCULATED",
+            "retention_days": 90,
+            "execution_enabled": False,
+        }
+    except Exception as exc:
+        logger.exception("GoldAI XM order-flow status unavailable")
+        raise HTTPException(status_code=503, detail="Order-flow database is unavailable.") from exc
