@@ -1434,7 +1434,10 @@ def test_entry_scanner_detects_closed_ema20_reclaim(monkeypatch):
 
 
 def test_demo_quality_gate_accepts_new_strategies_only_with_strong_setup_score():
+    # The legacy strategy scan is not sufficient to authorize a demo order.
+    # A complete, matching dedicated entry-engine decision is required.
     analysis = {
+        "decision": "BUY",
         "technical_dossier": {
             "confluence_score": 86,
             "strategy_scan": {
@@ -1442,6 +1445,19 @@ def test_demo_quality_gate_accepts_new_strategies_only_with_strong_setup_score()
                 "selected": {
                     "strategy": "EMA_RECLAIM", "score": 5, "max_score": 5,
                 },
+            },
+        },
+        "entry_engine": {
+            "direction": "BUY",
+            "selected_strategy": "EMA_RECLAIM",
+            "effective_entry_quality_score_0_to_100": 90,
+            "score_threshold": 85,
+            "blockers": [],
+            "setup": {
+                "strategy": "EMA_RECLAIM",
+                "entry": 2320.0,
+                "stop_loss": 2318.0,
+                "take_profit": 2324.0,
             },
         },
     }
