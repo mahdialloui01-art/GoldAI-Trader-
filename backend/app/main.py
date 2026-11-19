@@ -156,6 +156,7 @@ _live_quote_candles: dict[str, dict] = {}
 
 
 def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
+    """Build in-progress Bid candles and transparent tick-direction proxies from MT5 quotes."""
     ts = timestamp.astimezone(timezone.utc).timestamp()
     frames = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400}
     updated: list[dict] = []
@@ -166,13 +167,35 @@ def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
             current = {
                 "time": datetime.fromtimestamp(bucket, timezone.utc).isoformat(),
                 "open": price, "high": price, "low": price, "close": price,
-                "bucket": bucket, "live": True,
+                "bucket": bucket, "live": True, "tick_count": 1,
+                "uptick_count": 0, "downtick_count": 0, "unchanged_count": 0,
+                "first_tick_at": timestamp.isoformat(), "last_tick_at": timestamp.isoformat(),
             }
             _live_quote_candles[frame] = current
         else:
+            previous = float(current["close"])
+            current["tick_count"] += 1
+            if price > previous:
+                current["uptick_count"] += 1
+            elif price < previous:
+                current["downtick_count"] += 1
+            else:
+                current["unchanged_count"] += 1
             current["high"] = max(current["high"], price)
             current["low"] = min(current["low"], price)
             current["close"] = price
+            current["last_tick_at"] = timestamp.isoformat()
+        directional = current["uptick_count"] + current["downtick_count"]
+        current["tick_direction_pressure_proxy"] = (
+            round((current["uptick_count"] - current["downtick_count"]) / directional * 100, 1)
+            if directional else 0.0
+        )
+        current["tick_pressure_label"] = (
+            "UP_TICK_PRESSURE" if current["tick_direction_pressure_proxy"] > 10 else
+            "DOWN_TICK_PRESSURE" if current["tick_direction_pressure_proxy"] < -10 else
+            "BALANCED_OR_INSUFFICIENT"
+        )
+        current["tick_pressure_is_aggressor_delta"] = False
         updated.append({"timeframe": frame, **{k: v for k, v in current.items() if k != "bucket"}})
     return updated
 
@@ -3566,6 +3589,80 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "automatic_order_placement": False,
         },
         "generated_at": datetime.now(timezone.utc),
+    }
+
+
+@app.get("/api/v1/analysis/live-report")
+async def live_analysis_report() -> dict:
+    """Return a detailed closed-bar expert dossier plus the currently forming MT5 candles."""
+    analysis = await live_expert_technical_analysis()
+    quote = _fresh_mt5_quote()
+    dossier = analysis.get("technical_dossier") or {}
+    frames = dossier.get("timeframes") or {}
+    dominant = str(dossier.get("dominant_technical_direction") or "WAIT")
+    weighted_points = float(dossier.get("weighted_directional_points") or 0.0)
+    max_points = float(dossier.get("maximum_absolute_points") or 0.0)
+    directional_strength = round(min(100.0, abs(weighted_points) / max_points * 100), 1) if max_points > 0 else 0.0
+    candidate = dominant if dominant in ("BUY", "SELL") and directional_strength > 0 else "NEUTRAL"
+    now = datetime.now(timezone.utc)
+    live_candles = []
+    for timeframe, candle in _live_quote_candles.items():
+        item = {key: value for key, value in candle.items() if key != "bucket"}
+        seconds = _TIMEFRAME_SECONDS[timeframe]
+        elapsed = max(0.0, now.timestamp() - float(candle["bucket"]))
+        item["timeframe"] = timeframe
+        item["progress_percent"] = round(min(100.0, elapsed / seconds * 100), 1)
+        item["remaining_seconds"] = max(0, int(seconds - elapsed))
+        item["is_current"] = elapsed < seconds
+        live_candles.append(item)
+    blockers = list(analysis.get("blockers") or [])
+    return {
+        "symbol": quote["symbol"],
+        "generated_at": now.isoformat(),
+        "decision": analysis.get("decision", "WAIT"),
+        "candidate_direction": candidate,
+        "directional_strength_score_0_to_100": directional_strength,
+        "score_semantics": "Directional evidence strength, not a calibrated win probability.",
+        "decision_explanation": (
+            "اتجاه مرشّح صاعد، لكن شروط الدخول غير مكتملة." if candidate == "BUY" and analysis.get("decision") == "WAIT" else
+            "اتجاه مرشّح هابط، لكن شروط الدخول غير مكتملة." if candidate == "SELL" and analysis.get("decision") == "WAIT" else
+            "لا توجد أفضلية اتجاهية كافية حالياً." if candidate == "NEUTRAL" else
+            "اتجاه التحليل وإشارة القرار متوافقان؛ راجع شروط التنفيذ والحواجز."
+        ),
+        "quote": {
+            "bid": quote["bid"], "ask": quote["ask"], "spread_points": quote["spread_points"],
+            "source_timestamp": quote["source_updated_at"], "age_seconds": quote["age_seconds"],
+            "source": "XM MT5 live broker quote",
+        },
+        "live_candles": live_candles,
+        "closed_candle_expert_report": {
+            "confluence_score": dossier.get("confluence_score"),
+            "confluence_grade": dossier.get("confluence_grade"),
+            "timeframe_reports": frames,
+            "entry_engine": analysis.get("entry_engine"),
+            "setup_plan": analysis.get("setup_plan"),
+            "macro_context": analysis.get("macro_context"),
+            "news_context": analysis.get("news_context"),
+            "reasons": analysis.get("reasons", []),
+            "blockers": blockers,
+        },
+        "data_integrity": {
+            "closed_candle_analysis": True,
+            "live_candle_source": "MT5 Bid ticks",
+            "tick_direction_pressure_is_proxy_only": True,
+            "aggressor_delta_available_from_mt5_bid_ticks": False,
+            "comex_orderflow_is_separate": True,
+        },
+        "report_sections": [
+            "الاتجاه العام والأطر الزمنية M5/M15/H1/H4",
+            "الشمعة الحية OHLC وتقدمها وعدد تغيرات السعر",
+            "ضغط تغيرات السعر الصاعدة والهابطة كمؤشر تقريبي فقط",
+            "المؤشرات والزخم والبنية والسيولة ومناطق FVG",
+            "تأكيدات الدخول وجودة الإعداد",
+            "السياق الاقتصادي والأخبار",
+            "القرار النهائي والاتجاه المرشح وأسباب WAIT",
+        ],
+        "execution_enabled": False,
     }
 
 
