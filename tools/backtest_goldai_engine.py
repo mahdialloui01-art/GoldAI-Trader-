@@ -298,8 +298,10 @@ _RESEARCH_STRATEGY_PRIORITY = {
 _RESEARCH_STRATEGY_ALLOWLIST = set(_RESEARCH_STRATEGY_PRIORITY)
 
 def research_setup_classifier(direction, frames, reports, spread_atr_ratio):
-    scan = _PRODUCTION_SETUP_CLASSIFIER(direction, frames, reports, spread_atr_ratio)
-    # Preserve every original safety blocker (spread, volatility, extension).
+    # Alternative research trigger detector: closed M5 candles only.
+    # It deliberately excludes VWAP_RECLAIM from this comparison because the
+    # current replay allow-list is limited to the established six strategies.
+    scan = research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio)
     if scan.get("blockers"):
         return scan
     candidates = [
@@ -309,17 +311,17 @@ def research_setup_classifier(direction, frames, reports, spread_atr_ratio):
     if not candidates:
         scan["selected"] = None
         return scan
-    # Candidate list is already regime-fit ranked by the production classifier.
-    # Selecting a paused candidate here is strictly for offline measurement.
-    selected = candidates[0]
-    scan["selected"] = selected
-    scan["research_only_selection"] = bool(selected.get("research_only"))
+    priority = {"EMA_RECLAIM": 3, "MOMENTUM_CONTINUATION": 2, "PULLBACK": 1}
+    candidates.sort(key=lambda item: priority.get(str(item.get("strategy") or ""), 0), reverse=True)
+    scan["candidates"] = candidates
+    scan["selected"] = candidates[0]
+    scan["research_only_selection"] = True
     scan["research_selection_note"] = (
-        "Offline-only selection of a strategy paused in production; this does not change production policy."
-        if selected.get("research_only")
-        else "Offline strategy-lab selection using the production candidate ranking."
+        "Alternative independent M5 closed-candle trigger detector; "
+        "not the production classifier and not approved for execution."
     )
     return scan
+
 
 e._classify_entry_setups_for_direction = research_setup_classifier
 
