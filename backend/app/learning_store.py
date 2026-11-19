@@ -86,6 +86,22 @@ def ensure_learning_schema() -> bool:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_xm_quote_samples_symbol_time ON xm_quote_samples (symbol, sample_time DESC)")
             conn.execute("DELETE FROM xm_quote_samples WHERE sample_time < NOW() - INTERVAL '90 days'")
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS mt5_closed_candles (
+                    symbol TEXT NOT NULL,
+                    timeframe TEXT NOT NULL,
+                    candle_time TIMESTAMPTZ NOT NULL,
+                    open NUMERIC(20,8) NOT NULL,
+                    high NUMERIC(20,8) NOT NULL,
+                    low NUMERIC(20,8) NOT NULL,
+                    close NUMERIC(20,8) NOT NULL,
+                    tick_volume BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (symbol, timeframe, candle_time)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_mt5_closed_candles_symbol_frame_time ON mt5_closed_candles (symbol, timeframe, candle_time DESC)")
+            conn.execute("DELETE FROM mt5_closed_candles WHERE candle_time < NOW() - INTERVAL '90 days'")
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS comex_market_events (
                     source TEXT NOT NULL,
                     event_id TEXT NOT NULL,
@@ -305,6 +321,65 @@ def recent_opportunities(limit: int = Query(default=50, ge=1, le=200)) -> dict:
         logger.exception("GoldAI learning opportunities unavailable")
         raise HTTPException(status_code=503, detail="Learning database is not ready or unavailable.") from exc
 
+
+
+def save_mt5_candle_history(symbol: str, candles_by_timeframe: dict[str, list[Any]]) -> int:
+    """Persist closed broker OHLC bars so Render restarts cannot erase pre-session context."""
+    rows = []
+    for timeframe, candles in candles_by_timeframe.items():
+        for candle in candles:
+            stamp = candle.time
+            if stamp.tzinfo is None:
+                continue
+            rows.append((
+                symbol.upper(), timeframe.upper(), stamp.astimezone(timezone.utc),
+                float(candle.open), float(candle.high), float(candle.low),
+                float(candle.close), int(getattr(candle, "tick_volume", 0) or 0),
+            ))
+    if not rows:
+        return 0
+    try:
+        with _connect() as conn:
+            conn.executemany("""
+                INSERT INTO mt5_closed_candles
+                    (symbol, timeframe, candle_time, open, high, low, close, tick_volume)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT (symbol, timeframe, candle_time) DO UPDATE SET
+                    open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                    close = EXCLUDED.close, tick_volume = EXCLUDED.tick_volume,
+                    updated_at = NOW()
+            """, rows)
+            conn.execute("DELETE FROM mt5_closed_candles WHERE candle_time < NOW() - INTERVAL '90 days'")
+        return len(rows)
+    except Exception:
+        logger.exception("GoldAI MT5 closed-candle history persistence failed")
+        return 0
+
+
+def load_mt5_candle_history(symbol: str, timeframes: list[str], limit: int = 500) -> dict[str, list[dict]]:
+    """Restore the newest closed bars per timeframe after an API process restart."""
+    restored: dict[str, list[dict]] = {}
+    try:
+        with _connect() as conn:
+            for timeframe in timeframes:
+                rows = conn.execute("""
+                    SELECT candle_time AS time, open, high, low, close, tick_volume
+                    FROM mt5_closed_candles
+                    WHERE symbol = %s AND timeframe = %s
+                      AND candle_time >= NOW() - INTERVAL '90 days'
+                    ORDER BY candle_time DESC
+                    LIMIT %s
+                """, (symbol.upper(), timeframe.upper(), limit)).fetchall()
+                restored[timeframe.upper()] = [
+                    {**dict(row), "open": float(row["open"]), "high": float(row["high"]),
+                     "low": float(row["low"]), "close": float(row["close"]),
+                     "tick_volume": int(row["tick_volume"] or 0)}
+                    for row in reversed(rows)
+                ]
+        return restored
+    except Exception:
+        logger.exception("GoldAI MT5 closed-candle history restore failed")
+        return {}
 
 
 def save_xm_quote_sample(*, symbol: str, timestamp: datetime, bid: float, ask: float,
