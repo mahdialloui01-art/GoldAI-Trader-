@@ -2911,10 +2911,17 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     if matching_confirmation and matching_confirmation["bars_ago"] <= 1:
         pullback_score += 1
     if pullback_score >= 4:
+        pullback_evidence = [
+            "إعادة اختبار فعلية لمنطقة EMA20 خلال آخر ثلاث شمعات",
+            "إغلاق استعاد EMA20 مع شمعة اتجاهية مكتملة",
+            "تأكيد بنية/زخم الاتجاه الأعلى",
+        ]
+        if matching_confirmation:
+            pullback_evidence.append(
+                f"تأكيد شمعة مغلقة ظهر ضمن آخر {matching_confirmation['bars_ago'] + 1} شمعة"
+            )
         candidates.append({"strategy": "PULLBACK", "score": pullback_score, "max_score": 5,
-                           "evidence": ["إعادة اختبار فعلية لمنطقة EMA20 خلال آخر ثلاث شمعات",
-                                        "إغلاق استعاد EMA20 مع شمعة اتجاهية مكتملة",
-                                        "تأكيد بنية/زخم الاتجاه الأعلى"]})
+                           "evidence": pullback_evidence})
 
     # Breakout: only a confirmed close through a previously confirmed swing level.
     if (
@@ -3161,9 +3168,9 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         if strategy in {"PULLBACK", "EMA_RECLAIM"} and aligned_structure:
             fit = 0.35
         elif strategy == "MOMENTUM_CONTINUATION" and aligned_structure and market_regime != "RANGING":
-            # A fresh impulse through the prior candle extreme should outrank
-            # a weaker retest candidate when both occur on the same closed bar.
-            fit = 0.50
+            # Give a fresh impulse a clear ranking edge over a simultaneous
+            # pullback candidate; the underlying setup score is unchanged.
+            fit = 1.50
         elif strategy in {"BREAKOUT", "COMPRESSION_BREAKOUT"} and market_regime in {"TRENDING", "TRENDING_UP", "TRENDING_DOWN", "NORMAL"}:
             # A confirmed structural break should outrank an earlier momentum trigger.
             fit = 1.50 if strategy == "BREAKOUT" else 0.35
