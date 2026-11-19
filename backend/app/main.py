@@ -324,6 +324,8 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
         "contract_size": quote["contract_size"],
         "account_currency": quote["account_currency"],
         "symbol": quote["symbol"],
+        "risk_capital_usd": round(equity, 2),
+        "risk_capital_cap_usd": settings.risk_capital_usd,
         "reason": "Volume rounded down to the broker step; no minimum-lot uplift was applied.",
         "execution_enabled": False,
     }
