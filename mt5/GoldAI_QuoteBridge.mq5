@@ -258,6 +258,7 @@ bool IsDemoAccount()
 
 double TodayAccountLossUSD()
 {
+    if(AccountInfoString(ACCOUNT_CURRENCY) != "USD") return 1000000.0;
    datetime now = TimeTradeServer();
    if(now <= 0) now = TimeCurrent();
    MqlDateTime parts;
@@ -479,8 +480,8 @@ void TryDemoTrade()
       Print("GoldAI auto DEMO skipped: one GOLD position is already open.");
       return;
    }
-   double dailyLoss = TodayAccountLossPercent();
-   if(dailyLoss >= DemoDailyLossLimitPercent)
+   double dailyLoss = TodayAccountLossUSD();
+   if(dailyLoss >= DailyLossLimitUSD)
    {
       Print("GoldAI daily loss lock: ", DoubleToString(dailyLoss, 2), " USD");
       return;
@@ -566,7 +567,7 @@ void TryDemoTrade()
    }
    double equity = AccountInfoDouble(ACCOUNT_EQUITY);
    double maxRiskMoney = equity * DemoMaxRiskPerTradePercent / 100.0;
-   if(equity <= 0 || estimatedStopPnl >= 0 ||
+   if(riskBase <= 0 || estimatedStopPnl >= 0 ||
       (-estimatedStopPnl * 1.05) > maxRiskMoney)
    {
       Print("GoldAI DEMO blocked: independent risk check failed. estimated loss=",
