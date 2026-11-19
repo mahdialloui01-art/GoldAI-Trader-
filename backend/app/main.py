@@ -3600,6 +3600,11 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
     if not math.isfinite(entry_score) or not math.isfinite(entry_threshold):
         return False, "Dedicated entry-engine score is missing or invalid.", {"confluence_score": confluence}
     entry_direction = str(entry.get("direction", "WAIT")).upper()
+    entry_blockers = entry.get("blockers") or []
+    if entry_blockers:
+        return False, "Dedicated entry engine has active entry blockers.", {
+            "confluence_score": confluence, "entry_engine_blockers": entry_blockers,
+        }
     if entry_direction not in ("BUY", "SELL") or str(analysis.get("decision", "WAIT")).upper() != entry_direction:
         return False, "Expert direction and dedicated entry-engine direction do not agree.", {
             "confluence_score": confluence, "entry_engine_direction": entry_direction,
@@ -3632,7 +3637,7 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
 
     # Only a perfect 5/5 confirmed BOS or liquidity sweep earns the 82/100
     # DEMO threshold. Pullbacks and partial structural scores retain 85/100.
-    structural_full_score = strategy in _DEMO_STRUCTURAL_ENTRY_STRATEGIES and setup_score >= setup_max > 0
+    structural_full_score = strategy in _DEMO_STRUCTURAL_ENTRY_STRATEGIES and setup_score >= setup_max and setup_max > 0
     minimum_confluence = _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE if structural_full_score else _DEMO_MIN_CONFLUENCE_SCORE
     if entry_score < entry_threshold:
         return False, f"Dedicated entry-engine quality is below {entry_threshold:.0f}/100.", {
