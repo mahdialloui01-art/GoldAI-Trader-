@@ -10,7 +10,7 @@ from typing import Any
 import psycopg
 from psycopg.rows import dict_row
 from fastapi import APIRouter, Header, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/learning", tags=["learning"])
@@ -82,6 +82,20 @@ def ensure_learning_schema() -> bool:
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_xm_quote_samples_symbol_time ON xm_quote_samples (symbol, sample_time DESC)")
             conn.execute("DELETE FROM xm_quote_samples WHERE sample_time < NOW() - INTERVAL '90 days'")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS comex_market_events (
+                    source TEXT NOT NULL,
+                    event_id TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    event_time TIMESTAMPTZ NOT NULL,
+                    event_type TEXT NOT NULL CHECK (event_type IN ('TRADE','DEPTH')),
+                    payload JSONB NOT NULL,
+                    received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (source, event_id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_comex_events_contract_time ON comex_market_events (contract, event_time DESC)")
+            conn.execute("DELETE FROM comex_market_events WHERE event_time < NOW() - INTERVAL '90 days'")
         return True
     except Exception:
         logger.exception("GoldAI learning database initialization failed")
@@ -339,3 +353,114 @@ def xm_orderflow_status() -> dict:
     except Exception as exc:
         logger.exception("GoldAI XM order-flow status unavailable")
         raise HTTPException(status_code=503, detail="Order-flow database is unavailable.") from exc
+
+
+class ComexMarketEvent(BaseModel):
+    event_id: str = Field(min_length=1, max_length=160)
+    contract: str = Field(min_length=2, max_length=40)
+    timestamp: datetime
+    event_type: str
+    price: float | None = Field(default=None, gt=0)
+    size: float | None = Field(default=None, gt=0)
+    aggressor_side: str | None = None
+    book_side: str | None = None
+    level: int | None = Field(default=None, ge=1, le=50)
+    action: str | None = None
+
+    @model_validator(mode="after")
+    def validate_event(self):
+        self.event_type = self.event_type.upper()
+        if self.event_type == "TRADE":
+            if self.price is None or self.size is None:
+                raise ValueError("TRADE events require price and size")
+            if self.aggressor_side is not None:
+                self.aggressor_side = self.aggressor_side.upper()
+                if self.aggressor_side not in {"BUY", "SELL", "UNKNOWN"}:
+                    raise ValueError("aggressor_side must be BUY, SELL, or UNKNOWN")
+        elif self.event_type == "DEPTH":
+            if self.book_side is None or self.level is None or self.price is None or self.size is None:
+                raise ValueError("DEPTH events require book_side, level, price, and size")
+            self.book_side = self.book_side.upper()
+            if self.book_side not in {"BID", "ASK"}:
+                raise ValueError("book_side must be BID or ASK")
+            if self.action is not None:
+                self.action = self.action.upper()
+                if self.action not in {"UPSERT", "DELETE"}:
+                    raise ValueError("depth action must be UPSERT or DELETE")
+        else:
+            raise ValueError("event_type must be TRADE or DEPTH")
+        if self.timestamp.tzinfo is None:
+            raise ValueError("timestamp must include timezone")
+        return self
+
+
+class ComexMarketEventBatch(BaseModel):
+    source: str = Field(min_length=2, max_length=80)
+    events: list[ComexMarketEvent] = Field(min_length=1, max_length=500)
+
+
+@router.post("/orderflow/comex/batch")
+def ingest_comex_events(batch: ComexMarketEventBatch, authorization: str | None = Header(default=None)) -> dict:
+    """Ingest vendor-licensed GC trades/depth. Requires a separate COMEX_DATA_TOKEN."""
+    import hmac
+    expected = os.getenv("COMEX_DATA_TOKEN", "").strip()
+    supplied = (authorization or "").removeprefix("Bearer ").strip()
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(status_code=401, detail="COMEX data ingestion is not configured or token is invalid.")
+    rows = []
+    for event in batch.events:
+        rows.append((
+            batch.source, event.event_id, event.contract.upper(),
+            event.timestamp.astimezone(timezone.utc), event.event_type,
+            json.dumps(event.model_dump(mode="json"), default=str),
+        ))
+    try:
+        with _connect() as conn:
+            inserted = 0
+            for row in rows:
+                result = conn.execute("""
+                    INSERT INTO comex_market_events
+                        (source, event_id, contract, event_time, event_type, payload)
+                    VALUES (%s,%s,%s,%s,%s,%s::jsonb)
+                    ON CONFLICT (source, event_id) DO NOTHING
+                """, row)
+                inserted += result.rowcount
+        return {
+            "accepted": True, "received": len(rows), "inserted": inserted,
+            "duplicates": len(rows) - inserted,
+            "source": batch.source,
+            "delta_available_only_for_explicit_aggressor_tags": True,
+            "execution_enabled": False,
+        }
+    except Exception as exc:
+        logger.exception("GoldAI COMEX event ingestion failed")
+        raise HTTPException(status_code=503, detail="COMEX event storage is unavailable; retry the batch.") from exc
+
+
+@router.get("/orderflow/comex-status")
+def comex_orderflow_status() -> dict:
+    try:
+        with _connect() as conn:
+            row = conn.execute("""
+                SELECT COUNT(*) AS events,
+                       COUNT(*) FILTER (WHERE event_type = 'TRADE') AS trades,
+                       COUNT(*) FILTER (WHERE event_type = 'DEPTH') AS depth_updates,
+                       MIN(event_time) AS first_event,
+                       MAX(event_time) AS last_event
+                FROM comex_market_events
+                WHERE event_time >= NOW() - INTERVAL '90 days'
+            """).fetchone()
+        return {
+            "source": "COMEX_GC",
+            "history_window_days": 90,
+            "events": int(row["events"]),
+            "trade_events": int(row["trades"]),
+            "depth_updates": int(row["depth_updates"]),
+            "first_event_utc": row["first_event"],
+            "last_event_utc": row["last_event"],
+            "vendor_connection": "NOT_CONFIGURED",
+            "execution_enabled": False,
+        }
+    except Exception as exc:
+        logger.exception("GoldAI COMEX status unavailable")
+        raise HTTPException(status_code=503, detail="COMEX order-flow database is unavailable.") from exc
