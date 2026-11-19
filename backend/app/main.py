@@ -3580,24 +3580,44 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
     scan = dossier.get("strategy_scan")
     if not isinstance(scan, dict):
         return False, "Strategy scan is unavailable.", {"confluence_score": confluence}
-    blockers = scan.get("blockers") or []
-    if blockers:
+    scan_blockers = scan.get("blockers") or []
+    if scan_blockers:
         return False, "Strategy scan has active safety blockers.", {
-            "confluence_score": confluence, "strategy_blockers": blockers,
+            "confluence_score": confluence, "strategy_blockers": scan_blockers,
         }
-    selected = scan.get("selected")
-    if not isinstance(selected, dict):
-        return False, "No confirmed entry strategy is selected.", {
-            "confluence_score": confluence,
+
+    # The dedicated entry engine is authoritative for the trigger and its levels.
+    # Never authorize an order from the older dossier scan alone.
+    entry = analysis.get("entry_engine")
+    if not isinstance(entry, dict):
+        return False, "Dedicated entry engine is unavailable.", {"confluence_score": confluence}
+    try:
+        entry_score = float(entry.get("effective_entry_quality_score_0_to_100",
+                                       entry.get("entry_quality_score_0_to_100")))
+        entry_threshold = float(entry.get("score_threshold") or 85.0)
+    except (TypeError, ValueError):
+        return False, "Dedicated entry-engine score is missing or invalid.", {"confluence_score": confluence}
+    if not math.isfinite(entry_score) or not math.isfinite(entry_threshold):
+        return False, "Dedicated entry-engine score is missing or invalid.", {"confluence_score": confluence}
+    entry_direction = str(entry.get("direction", "WAIT")).upper()
+    if entry_direction not in ("BUY", "SELL") or str(analysis.get("decision", "WAIT")).upper() != entry_direction:
+        return False, "Expert direction and dedicated entry-engine direction do not agree.", {
+            "confluence_score": confluence, "entry_engine_direction": entry_direction,
+            "expert_direction": analysis.get("decision", "WAIT"),
         }
-    strategy = str(selected.get("strategy", "")).upper()
+    entry_setup = entry.get("setup")
+    if not isinstance(entry_setup, dict):
+        return False, "Dedicated entry engine has no confirmed executable setup.", {
+            "confluence_score": confluence, "entry_engine_score": entry_score,
+        }
+    strategy = str(entry.get("selected_strategy", entry_setup.get("strategy", ""))).upper()
     if strategy not in _DEMO_ALLOWED_ENTRY_STRATEGIES:
-        return False, "Selected setup is informational only and cannot authorize entry.", {
+        return False, "Dedicated entry strategy is informational only or unsupported.", {
             "confluence_score": confluence, "selected_strategy": strategy,
         }
     try:
-        setup_score = float(selected.get("score"))
-        setup_max = float(selected.get("max_score"))
+        setup_score = float((scan.get("selected") or {}).get("score", 0))
+        setup_max = float((scan.get("selected") or {}).get("max_score", 0))
     except (TypeError, ValueError):
         setup_score, setup_max = 0.0, 0.0
     if not math.isfinite(setup_score) or not math.isfinite(setup_max) or setup_max <= 0:
@@ -3612,13 +3632,13 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
 
     # Only a perfect 5/5 confirmed BOS or liquidity sweep earns the 82/100
     # DEMO threshold. Pullbacks and partial structural scores retain 85/100.
-    structural_full_score = (
-        strategy in _DEMO_STRUCTURAL_ENTRY_STRATEGIES and setup_score >= setup_max
-    )
-    minimum_confluence = (
-        _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE
-        if structural_full_score else _DEMO_MIN_CONFLUENCE_SCORE
-    )
+    structural_full_score = strategy in _DEMO_STRUCTURAL_ENTRY_STRATEGIES and setup_score >= setup_max > 0
+    minimum_confluence = _DEMO_STRUCTURAL_MIN_CONFLUENCE_SCORE if structural_full_score else _DEMO_MIN_CONFLUENCE_SCORE
+    if entry_score < entry_threshold:
+        return False, f"Dedicated entry-engine quality is below {entry_threshold:.0f}/100.", {
+            "confluence_score": confluence, "entry_engine_score": entry_score,
+            "entry_engine_threshold": entry_threshold, "selected_strategy": strategy,
+        }
     if confluence < minimum_confluence:
         return False, f"Confluence is below the {minimum_confluence:.0f}/100 DEMO entry threshold.", {
             "confluence_score": confluence,
@@ -3629,6 +3649,9 @@ def _demo_candidate_quality_gate(analysis: dict) -> tuple[bool, str, dict]:
         }
     return True, "DEMO entry quality gates passed.", {
         "confluence_score": confluence,
+        "entry_engine_score": entry_score,
+        "entry_engine_threshold": entry_threshold,
+        "entry_engine_direction": entry_direction,
         "minimum_confluence_score": minimum_confluence,
         "selected_strategy": strategy,
         "setup_score": setup_score,
@@ -3916,19 +3939,28 @@ async def mt5_demo_signal(
             "risk_policy": risk_policy,
             "execution_enabled": False,
         }
-    plan = analysis.get("setup_plan")
-    if analysis.get("decision") not in ("BUY", "SELL") or not isinstance(plan, dict):
+    entry_engine = analysis.get("entry_engine") or {}
+    plan = entry_engine.get("setup")
+    if not isinstance(plan, dict):
         return {
             "enabled": True, "decision": "WAIT",
-            "reason": "No fully confirmed expert setup is available.",
-            "blockers": analysis.get("blockers", []),
+            "reason": "Dedicated entry engine did not provide a confirmed setup.",
+            "blockers": entry_engine.get("blockers", analysis.get("blockers", [])),
             "execution_enabled": False,
         }
 
     quote = _fresh_mt5_quote()
     point = float(quote["point"])
-    stop = float(plan["stop_loss_reference"])
+    stop = float(plan["stop_loss"])
     entry = float(plan["entry_reference"])
+    target_map = plan.get("take_profit") or {}
+    target_2r = target_map.get("TP2_2R")
+    if target_2r is None:
+        return {
+            "enabled": True, "decision": "WAIT",
+            "reason": "Dedicated entry engine did not provide a valid 2R target.",
+            "execution_enabled": False,
+        }
     stop_points = abs(entry - stop) / point
     sizing = calculate_position_size(PositionSizeRequest(
         stop_distance_points=stop_points,
@@ -3951,7 +3983,7 @@ async def mt5_demo_signal(
         "generated_at": analysis.get("generated_at"),
         "entry_reference": entry,
         "stop_loss": stop,
-        "take_profit": plan["targets"]["target_2R"],
+        "take_profit": target_2r,
         "risk_reward": "1:2",
         "recommended_lots": sizing["recommended_lots"],
         "risk_percent": risk_policy["risk_percent"],
