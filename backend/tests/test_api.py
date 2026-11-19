@@ -198,7 +198,7 @@ def test_risk_check_blocks_when_daily_loss_limit_is_reached():
             "stop_distance_points": 10,
             "point_value_per_lot": 1,
             "proposed_lots": 0.1,
-            "daily_loss_percent": 10.0,
+            "daily_loss_usd": 15.0,
         },
     )
     assert response.status_code == 200
@@ -738,7 +738,7 @@ def test_position_size_blocks_when_daily_loss_limit_is_reached():
     response = client.post("/api/v1/risk/position-size", json={
         "stop_distance_points": 100,
         "risk_percent": 0.5,
-        "daily_loss_percent": 10.0,
+        "daily_loss_usd": 15.0,
     })
     assert response.status_code == 200
     assert response.json()["recommended_lots"] == 0.0
