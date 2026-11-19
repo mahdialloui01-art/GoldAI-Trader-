@@ -2875,12 +2875,18 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
     # Proximity alone is not a pullback: it often labels a trend candle as an entry.
     ema20_series = _ema_series([float(item.close) for item in m5], 20)
     recent_pullback_bars = m5[-4:-1]
-    if bullish:
-        ema_retest = any(float(item.low) <= ema20_series[-2] + 0.15 * atr for item in recent_pullback_bars)
-        ema_reclaim_close = float(current.close) > ema20_series[-1]
+    # Some callers/tests may supply short or stubbed EMA series. Treat that as
+    # unavailable evidence rather than indexing an empty indicator array.
+    if len(ema20_series) >= 2 and atr > 0:
+        if bullish:
+            ema_retest = any(float(item.low) <= ema20_series[-2] + 0.15 * atr for item in recent_pullback_bars)
+            ema_reclaim_close = float(current.close) > ema20_series[-1]
+        else:
+            ema_retest = any(float(item.high) >= ema20_series[-2] - 0.15 * atr for item in recent_pullback_bars)
+            ema_reclaim_close = float(current.close) < ema20_series[-1]
     else:
-        ema_retest = any(float(item.high) >= ema20_series[-2] - 0.15 * atr for item in recent_pullback_bars)
-        ema_reclaim_close = float(current.close) < ema20_series[-1]
+        ema_retest = False
+        ema_reclaim_close = False
 
     # A structural breakout needs more than the BOS flag: displacement and a
     # close near the candle extreme help filter wick-only/low-energy breaks.
@@ -3155,7 +3161,9 @@ def _classify_entry_setups_for_direction(direction: str, frames: dict[str, list[
         if strategy in {"PULLBACK", "EMA_RECLAIM"} and aligned_structure:
             fit = 0.35
         elif strategy == "MOMENTUM_CONTINUATION" and aligned_structure and market_regime != "RANGING":
-            fit = 0.25
+            # A fresh impulse through the prior candle extreme should outrank
+            # a weaker retest candidate when both occur on the same closed bar.
+            fit = 0.50
         elif strategy in {"BREAKOUT", "COMPRESSION_BREAKOUT"} and market_regime in {"TRENDING", "TRENDING_UP", "TRENDING_DOWN", "NORMAL"}:
             # A confirmed structural break should outrank an earlier momentum trigger.
             fit = 1.50 if strategy == "BREAKOUT" else 0.35
