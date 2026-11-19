@@ -33,6 +33,18 @@ GC and XM GOLD are different instruments/venues. Align UTC timestamps and compar
 - Persistence is best-effort: a database outage does not stop the market quote endpoint. Sampling attempts are throttled during outages.
 - This is sampled quote history, not every MT5 tick, not executed trade volume, and not Market Depth.\n- An authenticated COMEX batch endpoint now accepts vendor-sourced GC trade prints and depth updates, stores raw event payloads with deduplication, and retains 90 days. It requires a separate Render secret named `COMEX_DATA_TOKEN`; no token or paid vendor feed has been configured.
 
+## Free COMEX starter path
+1. Create a no-card FinzData account and obtain a free API key from https://api.finzdata.com. The provider documents a 1,000-call/day free tier; GC free-tier history is limited and must be checked against actual returned coverage.
+2. Install the optional client: `pip install finzdata`.
+3. Set `FINZDATA_API_KEY` in the shell (never commit the key):
+
+```powershell
+$env:FINZDATA_API_KEY = "your_key_here"
+python tools/fetch_free_comex_gc.py --days 90
+```
+
+The collector uses the documented `Client().futures("GC", continuous=True)` interface. FinzData free GC data is daily bars, not tick-by-tick trades or order-book depth; if its actual response covers fewer than 90 days, the output is explicitly incomplete and must not be used as a 90-day backtest dataset. The free account is for personal research/backtesting; confirm provider terms before any commercial use.
+
 ## Current repository tooling
 Run the auditor from the repository root:
 
@@ -53,7 +65,7 @@ Each input is optional, but both are required before the combined-source researc
 
 ## Not yet implemented / required before live collection
 - MT5 EA tick/depth batch transport and durable server-side storage.
-- A licensed COMEX vendor/API credential and contract-month downloader; the ingestion endpoint is ready but no market data provider is connected.
+- A free FinzData API key supplied by the user to run the optional daily-bars collector; the ingestion endpoint for actual trade/depth events still needs a separate licensed feed.
 - Durable raw-data retention and ingestion monitoring.
 - End-to-end reconciliation against XM terminal exports.
 
