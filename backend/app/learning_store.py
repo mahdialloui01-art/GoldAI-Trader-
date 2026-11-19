@@ -4,7 +4,8 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 
 import psycopg
@@ -372,6 +373,17 @@ class ComexMarketEvent(BaseModel):
     @model_validator(mode="after")
     def validate_event(self):
         self.event_type = self.event_type.upper()
+        self.contract = self.contract.strip().upper()
+        if not re.fullmatch(r"GC(?:[FGHJKMNQUVXZ]\\d{1,2})?", self.contract):
+            raise ValueError("contract must be GC or a valid COMEX GC delivery code")
+        stamp = self.timestamp.astimezone(timezone.utc) if self.timestamp.tzinfo else None
+        if stamp is None:
+            raise ValueError("timestamp must include timezone")
+        now = datetime.now(timezone.utc)
+        if stamp < now - timedelta(days=90):
+            raise ValueError("timestamp is outside the retained 90-day window")
+        if stamp > now + timedelta(minutes=5):
+            raise ValueError("timestamp is too far in the future")
         if self.event_type == "TRADE":
             if self.price is None or self.size is None:
                 raise ValueError("TRADE events require price and size")
@@ -391,8 +403,6 @@ class ComexMarketEvent(BaseModel):
                     raise ValueError("depth action must be UPSERT or DELETE")
         else:
             raise ValueError("event_type must be TRADE or DEPTH")
-        if self.timestamp.tzinfo is None:
-            raise ValueError("timestamp must include timezone")
         return self
 
 
@@ -476,11 +486,37 @@ def load_orderflow_snapshot(contract: str = "GC", window_seconds: int = 300) -> 
         rows = conn.execute("""
             SELECT event_time, event_type, payload
             FROM comex_market_events
-            WHERE contract = %s
+            WHERE (
+                contract = %s
+                OR (%s = 'GC' AND contract ~ '^GC[FGHJKMNQUVXZ][0-9]{1,2}
+    result = build_orderflow_snapshot(
+        rows, now=datetime.now(timezone.utc), window_seconds=window_seconds
+    )
+    result["contract"] = normalized_contract
+    result["history_days_retained"] = 90
+    result["note"] = (
+        "Explicit aggressor-tagged COMEX prints only. Depth/iceberg outputs are "
+        "hypotheses, not observed hidden orders. COMEX is contextual data, not XM execution data."
+    )
+    return result
+
+
+@router.get("/orderflow/snapshot")
+def orderflow_snapshot(
+    contract: str = Query(default="GC", min_length=2, max_length=40),
+    window_seconds: int = Query(default=300, ge=60, le=900),
+) -> dict:
+    try:
+        return load_orderflow_snapshot(contract, window_seconds)
+    except Exception as exc:
+        logger.exception("GoldAI order-flow snapshot unavailable")
+        raise HTTPException(status_code=503, detail="Order-flow data is unavailable or the database is not ready.") from exc
+)
+            )
               AND event_time >= NOW() - (%s * INTERVAL '1 second')
             ORDER BY event_time DESC
             LIMIT 10000
-        """, (normalized_contract, window_seconds)).fetchall()
+        """, (normalized_contract, normalized_contract, window_seconds)).fetchall()
     result = build_orderflow_snapshot(
         rows, now=datetime.now(timezone.utc), window_seconds=window_seconds
     )
