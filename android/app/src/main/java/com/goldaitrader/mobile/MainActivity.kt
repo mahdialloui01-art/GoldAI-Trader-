@@ -347,9 +347,33 @@ class MainActivity : ComponentActivity() {
                     candles = "تعذر جلب حالة شموع MT5: ${e.message ?: "خطأ اتصال"}"
                     "تعذر جلب التحليل: ${e.message ?: "خطأ اتصال بالخادم"}"
                 }
+                val liveReportText = try {
+                    val live = request("/api/v1/analysis/live-report")
+                    val candidate = live.optString("candidate_direction", "NEUTRAL")
+                    val strength = live.optDouble("directional_strength_score_0_to_100", 0.0)
+                    val finalDecision = live.optString("decision", "WAIT")
+                    val liveBars = live.optJSONArray("live_candles")
+                    val m5Live = (0 until (liveBars?.length() ?: 0)).mapNotNull { liveBars?.optJSONObject(it) }.firstOrNull { it.optString("timeframe") == "M5" }
+                    val candleText = if (m5Live != null) {
+                        "M5 الحية O=${m5Live.optDouble("open")} H=${m5Live.optDouble("high")} L=${m5Live.optDouble("low")} C=${m5Live.optDouble("close")} — تقدم ${m5Live.optDouble("progress_percent")}% — ticks ${m5Live.optInt("tick_count")} — ضغط تغير السعر ${m5Live.optDouble("tick_direction_pressure_proxy")}% (تقريبي)"
+                    } else "في انتظار أول Tick لتكوين الشمعة الحية"
+                    val report = live.optJSONObject("closed_candle_expert_report")
+                    val frameReports = report?.optJSONObject("timeframe_reports")
+                    val frameText = listOf("M5", "M15", "H1", "H4").joinToString(" | ") { frame ->
+                        val f = frameReports?.optJSONObject(frame)
+                        if (f == null) "$frame: غير متاح" else "$frame ${f.optString("direction", "WAIT")} RSI=${f.optDouble("rsi14", 0.0)} ADX=${f.optDouble("adx14", 0.0)} بنية=${f.optString("market_structure", "غير متاحة")} نظام=${f.optString("market_regime", "غير متاح")}"
+                    }
+                    val reasons = report?.optJSONArray("reasons")
+                    val reasonText = if (reasons != null && reasons.length() > 0) (0 until minOf(5, reasons.length())).joinToString("؛ ") { reasons.optString(it) } else "لا توجد أسباب إضافية"
+                    val blockers = report?.optJSONArray("blockers")
+                    val blockerText = if (blockers != null && blockers.length() > 0) (0 until minOf(5, blockers.length())).joinToString("؛ ") { blockers.optString(it) } else "لا توجد موانع مسجلة"
+                    "الاتجاه المرشح: $candidate — قوة الأدلة: ${"%.1f".format(Locale.US, strength)}/100 — القرار: $finalDecision\n$candleText\nالأطر: $frameText\nالأسباب: $reasonText\nأسباب WAIT/الموانع: $blockerText"
+                } catch (e: Exception) {
+                    "تقرير الشمعة الحية غير متاح: ${e.message ?: "تعذر الاتصال"}"
+                }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
                 val entryPayload = try { request("/api/v1/analysis/expert/live").toString() } catch (_: Exception) { "{}" }
-                listOf(macro, news, engine, headlines, expert, candles, hasCandles.toString(), chartPayload, entryPayload)
+                listOf(macro, news, engine, headlines, "$expert\n$liveReportText", candles, hasCandles.toString(), chartPayload, entryPayload)
             }
             macroSummary = result[0]
             calendarSummary = result[1]
