@@ -40,7 +40,7 @@ def research_reconcile(analysis):
     entry["score_threshold"] = threshold
     entry["score_reconciliation"] = "RESEARCH_ABLATION_RAW_ENTRY_SCORE_WITH_SEPARATE_CONFLUENCE_FLOOR_70"
     if raw < threshold:
-        entry["direction"] = e.Direction.WAIT
+        entry["direction"] = Direction.WAIT
         entry["setup"] = None
         entry.setdefault("blockers", []).append("RESEARCH_ENTRY_SCORE_BELOW_ABLATION_THRESHOLD")
     analysis["entry_engine"] = entry
@@ -58,7 +58,7 @@ _original_entry_source = inspect.getsource(e.analyze_entry_plan)
 _entry_source = _original_entry_source
 _replacements = [
     ("    bias = h4_bias\n",
-     "    if h4_bias == h1_bias:\n        bias = h4_bias\n    elif h4_bias == e.Direction.WAIT:\n        bias = h1_bias\n    elif h1_bias == e.Direction.WAIT:\n        bias = h4_bias\n    elif h4_adx >= h1_adx + 5.0:\n        bias = h4_bias\n    elif h1_adx >= h4_adx + 5.0:\n        bias = h1_bias\n    else:\n        bias = e.Direction.WAIT\n"),
+     "    if h4_bias == h1_bias:\n        bias = h4_bias\n    elif h4_bias == Direction.WAIT:\n        bias = h1_bias\n    elif h1_bias == Direction.WAIT:\n        bias = h4_bias\n    elif h4_adx >= h1_adx + 5.0:\n        bias = h4_bias\n    elif h1_adx >= h4_adx + 5.0:\n        bias = h1_bias\n    else:\n        bias = Direction.WAIT\n"),
     ("    higher_aligned = bias in (Direction.BUY, Direction.SELL) and h1_bias == bias\n",
      "    higher_aligned = bias in (Direction.BUY, Direction.SELL) and (h4_bias == bias or h1_bias == bias)\n    both_higher_aligned = h4_bias == bias and h1_bias == bias\n"),
     ("    if higher_aligned:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 20\n        reasons.append(\"اتجاه H4 وH1 متوافق؛ الإطاران الأعلى يحددان نفس الأفضلية.\")\n    else:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 0\n        blockers.append(\"اتجاه H4 وH1 غير متوافق أو غير واضح.\")\n",
