@@ -25,7 +25,7 @@ def test_config_does_not_expose_secrets():
     body = response.json()
     assert body["trading_mode"] == "paper"
     assert body["live_trading_enabled"] is False
-    assert body["analysis_engine_version"] == "0.6.8"
+    assert body["analysis_engine_version"] == "0.6.9"
     assert body["adaptive_risk_policy"]["enabled"] is True
     assert body["adaptive_risk_policy"]["live_trading_enabled"] is False
     assert "closed_candle_microstructure" in body["analysis_layers"]
@@ -1510,3 +1510,28 @@ def test_entry_scanner_keeps_recent_closed_bos_as_candidate(monkeypatch):
         "BUY", {"M5": candles}, {"M5": report}, 0.05,
     )
     assert any(item["strategy"] == "BREAKOUT" for item in scan["candidates"])
+
+
+def test_mt5_candle_cache_restores_closed_history_after_restart(monkeypatch):
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    restored = {}
+    for timeframe in ("M5", "M15", "H1", "H4"):
+        seconds = main._TIMEFRAME_SECONDS[timeframe]
+        latest_bucket = int(now.timestamp() // seconds) * seconds - seconds
+        latest = datetime.fromtimestamp(latest_bucket, timezone.utc)
+        restored[timeframe] = [
+            {
+                "time": (latest - timedelta(seconds=(59 - index) * seconds)).isoformat(),
+                "open": 2300.0 + index * 0.1,
+                "high": 2300.5 + index * 0.1,
+                "low": 2299.5 + index * 0.1,
+                "close": 2300.1 + index * 0.1,
+                "tick_volume": 100,
+            }
+            for index in range(60)
+        ]
+    monkeypatch.setattr(main, "load_mt5_candle_history", lambda *args, **kwargs: restored)
+    main._latest_mt5_candles = None
+    assert main._restore_mt5_candle_cache() is True
+    assert main._latest_mt5_candles["source"].startswith("PostgreSQL")
+    assert all(len(main._latest_mt5_candles["timeframes"][frame]) == 60 for frame in restored)
