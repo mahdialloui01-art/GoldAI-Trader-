@@ -120,7 +120,7 @@ def build_orderflow_snapshot(events, *, now=None, window_seconds=300, tick_size=
         if count >= 2:
             side, level, price_tick = key
             price = round(price_tick * tick_size, 8)
-            opposing_volume = (sell if side == "ASK" else buy)
+            opposing_volume = (buy if side == "ASK" else sell)
             volume_at_price = sum(
                 row["buy_volume"] + row["sell_volume"]
                 for row in footprint_rows if abs(row["price"] - price) <= tick_size / 2
