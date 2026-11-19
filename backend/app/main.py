@@ -3508,7 +3508,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     agreement_count = sum(value == expert_direction for value in directional_frames) if expert_direction != "WAIT" else 0
     agreement_percent = round(agreement_count / len(directional_frames) * 100, 1)
 
-    technical_direction_candidate = decision if decision in ("BUY", "SELL") else "WAIT"
+    technical_direction_candidate = expert_direction if expert_direction in ("BUY", "SELL") else "WAIT"
     setup_plan = None
     if quote and decision in ("BUY", "SELL"):
         entry = float(quote["ask"] if decision == "BUY" else quote["bid"])
