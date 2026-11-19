@@ -1356,7 +1356,7 @@ def test_adaptive_demo_risk_reduces_after_daily_loss_and_respects_server_cap(mon
         "technical_dossier": {"confluence_score": 93},
         "entry_engine": {"entry_quality_score_0_to_100": 93},
     }
-    reduced = main._adaptive_demo_risk_policy(analysis, 1.0)
+    reduced = main._adaptive_demo_risk_policy(analysis, 7.5)
     assert reduced["risk_percent"] == 0.2
     assert reduced["daily_loss_headroom"] == "REDUCED"
 
@@ -1367,12 +1367,12 @@ def test_adaptive_demo_risk_reduces_after_daily_loss_and_respects_server_cap(mon
 
 
 def test_adaptive_demo_risk_locks_at_daily_loss_limit(monkeypatch):
-    monkeypatch.setattr(main.settings, "max_daily_loss_percent", 2.0)
+    monkeypatch.setattr(main.settings, "max_daily_loss_usd", 15.0)
     analysis = {
         "technical_dossier": {"confluence_score": 99},
         "entry_engine": {"entry_quality_score_0_to_100": 99},
     }
-    result = main._adaptive_demo_risk_policy(analysis, 2.0)
+    result = main._adaptive_demo_risk_policy(analysis, 15.0)
     assert result["approved"] is False
     assert result["risk_percent"] == 0.0
 
