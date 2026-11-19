@@ -264,7 +264,7 @@ double TodayAccountLossUSD()
    TimeToStruct(now, parts);
    parts.hour = 0; parts.min = 0; parts.sec = 0;
    datetime dayStart = StructToTime(parts);
-   if(!HistorySelect(dayStart, now)) return 100.0;
+   if(!HistorySelect(dayStart, now)) return 1000000.0;
    double realized = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
    {
@@ -482,7 +482,7 @@ void TryDemoTrade()
    double dailyLoss = TodayAccountLossPercent();
    if(dailyLoss >= DemoDailyLossLimitPercent)
    {
-      Print("GoldAI daily loss lock: ", DoubleToString(dailyLoss, 2), "%");
+      Print("GoldAI daily loss lock: ", DoubleToString(dailyLoss, 2), " USD");
       return;
    }
    MqlTick tick;
