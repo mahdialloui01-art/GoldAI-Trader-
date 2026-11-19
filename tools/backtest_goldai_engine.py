@@ -66,7 +66,7 @@ _replacements = [
     ("    if micro_matches:\n        reasons.append(\"شكل الشمعة وموقع الإغلاق يدعمان اتجاه الصفقة.\")\n",
      "    if micro_matches:\n        reasons.append(\"شكل الشمعة وموقع الإغلاق يدعمان اتجاه الصفقة.\")\n    m15_retrace_ok = bool(\n        m15_opposes and selected_strategy in (\"PULLBACK\", \"EMA_RECLAIM\")\n        and trigger_direction == bias and micro_matches\n    )\n    if m15_retrace_ok:\n        blockers = [item for item in blockers if item != \"بنية M15 تعاكس اتجاه H4/H1.\"]\n        components[\"M15_MARKET_STRUCTURE\"] = 5\n        reasons.append(\"تعارض M15 مصنف كتراجع مؤقت؛ تأكيد شمعة M5 المكتملة يدعم استمرار الاتجاه.\")\n"),
     ("    minimum_score = 82 if selected_strategy in (\"BREAKOUT\", \"LIQUIDITY_SWEEP\") else 85\n",
-     "    minimum_score = (82 if selected_strategy in (\"BREAKOUT\", \"LIQUIDITY_SWEEP\") else 85)\n    if higher_aligned and not both_higher_aligned:\n        minimum_score = min(minimum_score, 78)\n    if m15_retrace_ok:\n        minimum_score = min(minimum_score, 75)\n"),
+     "    minimum_score = 72 if selected_strategy in (\"BREAKOUT\", \"LIQUIDITY_SWEEP\") else 65\n"),
     ("    elif m15_opposes:\n        final_direction = Direction.WAIT\n",
      "    elif m15_opposes and not m15_retrace_ok:\n        final_direction = Direction.WAIT\n"),
 ]
