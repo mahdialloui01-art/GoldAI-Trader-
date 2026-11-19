@@ -197,7 +197,8 @@ def research_entry_candidate_gate(analysis):
     """
     dossier = analysis.get("technical_dossier") or {}
     entry = analysis.get("entry_engine") or {}
-    scan = entry.get("entry_setup_scan") or dossier.get("strategy_scan") or {}
+    # Match the production gate: setup confirmation is read from the dossier scan.
+    scan = dossier.get("strategy_scan") or {}
     if not isinstance(dossier, dict) or not isinstance(scan, dict):
         return False, "MISSING_DOSSIER_OR_SCAN", {}
     if scan.get("blockers"):
