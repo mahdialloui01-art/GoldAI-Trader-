@@ -39,3 +39,5 @@ jobs:
             data-inspection.json
           if-no-files-found: error
           retention-days: 30
+
+# Re-run historical validation against the repository's paired BID/ASK archive.
