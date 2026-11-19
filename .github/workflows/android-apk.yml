@@ -25,6 +25,8 @@ jobs:
           gradle-version: '8.9'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+      - name: Install Android SDK platform 35
+        run: yes | sdkmanager --licenses >/dev/null && sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Build debug APK
         run: gradle -p android --no-daemon assembleDebug -PGOLDAI_API_BASE_URL=https://goldai-trader-api.onrender.com
       - name: Upload APK
