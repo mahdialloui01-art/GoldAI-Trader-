@@ -361,7 +361,8 @@ async def run():
                 blocked_details["STRATEGY: "+str(item)] += 1
             continue
         en=result.get("entry_engine") or {}; setup=en.get("setup") or {}
-        d=str(en.get("direction","WAIT"))
+        direction_value=en.get("direction","WAIT")
+        d=str(getattr(direction_value,"value",direction_value)).upper()
         if d not in ("BUY","SELL") or not setup:
             blocked["NO_CONFIRMED_SETUP"]+=1; continue
         b,a=nxt["bid"],nxt["ask"]
