@@ -141,7 +141,11 @@ def research_m5_setup_classifier(direction, frames, reports, spread_atr_ratio):
     if blockers: selected=None
     return {"selected":selected,"candidates":candidates,"direction":direction,"spread_to_m5_atr_ratio":round(spread_atr_ratio,4),"m5_extension_from_ema20_atr":round(extension,3),"blockers":blockers,"score_note":"Independent research trigger rules; not calibrated win probability."}
 
-e._classify_entry_setups_for_direction = research_m5_setup_classifier
+# Use the current production strategy classifier for this replay.
+# The earlier narrow experimental override omitted structural strategies and
+# made the backtest unsuitable for comparing the complete strategy portfolio.
+# Keep research_m5_setup_classifier above as a separately inspectable prototype,
+# but do not let it replace production setup detection.
 
 class SimDateTime(REAL_DT):
     @classmethod
