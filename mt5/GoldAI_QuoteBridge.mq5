@@ -258,7 +258,8 @@ bool IsDemoAccount()
 
 double TodayAccountLossUSD()
 {
-    if(AccountInfoString(ACCOUNT_CURRENCY) != "USD") return 1000000.0;
+   // Daily limit is in USD. Fail closed for non-USD accounts or unreadable history.
+   if(AccountInfoString(ACCOUNT_CURRENCY) != "USD") return 1000000.0;
    datetime now = TimeTradeServer();
    if(now <= 0) now = TimeCurrent();
    MqlDateTime parts;
@@ -266,7 +267,8 @@ double TodayAccountLossUSD()
    parts.hour = 0; parts.min = 0; parts.sec = 0;
    datetime dayStart = StructToTime(parts);
    if(!HistorySelect(dayStart, now)) return 1000000.0;
-   double realized = 0.0;
+
+   double realizedNetToday = 0.0;
    for(int i = 0; i < HistoryDealsTotal(); i++)
    {
       ulong ticket = HistoryDealGetTicket(i);
@@ -274,15 +276,15 @@ double TodayAccountLossUSD()
       ENUM_DEAL_TYPE type = (ENUM_DEAL_TYPE)HistoryDealGetInteger(ticket, DEAL_TYPE);
       if(type != DEAL_TYPE_BUY && type != DEAL_TYPE_SELL &&
          type != DEAL_TYPE_COMMISSION && type != DEAL_TYPE_CHARGE) continue;
-      realized += HistoryDealGetDouble(ticket, DEAL_PROFIT);
-      realized += HistoryDealGetDouble(ticket, DEAL_SWAP);
-      realized += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
+      realizedNetToday += HistoryDealGetDouble(ticket, DEAL_PROFIT);
+      realizedNetToday += HistoryDealGetDouble(ticket, DEAL_SWAP);
+      realizedNetToday += HistoryDealGetDouble(ticket, DEAL_COMMISSION);
    }
-   double balance = AccountInfoDouble(ACCOUNT_BALANCE);
-   double startBalance = balance - realized;
-   if(startBalance <= 0) return 100.0;
-   double netToday = realized + AccountInfoDouble(ACCOUNT_EQUITY) - balance;
-   return MathMax(0.0, -netToday / startBalance * 100.0);
+
+   // Include current floating P/L as well as today's realized P/L.
+   double floatingNet = AccountInfoDouble(ACCOUNT_EQUITY) - AccountInfoDouble(ACCOUNT_BALANCE);
+   double netTodayUSD = realizedNetToday + floatingNet;
+   return MathMax(0.0, -netTodayUSD);
 }
 
 int CountOurOpenPositions()
