@@ -197,12 +197,16 @@ def research_entry_candidate_gate(analysis):
     """
     dossier = analysis.get("technical_dossier") or {}
     entry = analysis.get("entry_engine") or {}
-    # Match the production gate: setup confirmation is read from the dossier scan.
-    scan = dossier.get("strategy_scan") or {}
-    if not isinstance(dossier, dict) or not isinstance(scan, dict):
-        return False, "MISSING_DOSSIER_OR_SCAN", {}
+    if not isinstance(dossier, dict) or not isinstance(entry, dict):
+        return False, "MISSING_DOSSIER_OR_ENTRY_ENGINE", {}
+    # Critical alignment fix: the dedicated entry engine owns its own scan.
+    # The dossier strategy_scan belongs to the older expert-direction engine
+    # and may be empty whenever that separate engine says WAIT.
+    scan = entry.get("entry_setup_scan") or {}
+    if not isinstance(scan, dict):
+        return False, "MISSING_ENTRY_ENGINE_SCAN", {}
     if scan.get("blockers"):
-        return False, "STRATEGY_SCAN_BLOCKED", {"strategy_blockers": scan.get("blockers")}
+        return False, "ENTRY_SETUP_SCAN_BLOCKED", {"strategy_blockers": scan.get("blockers")}
     blockers = entry.get("blockers") or []
     if blockers:
         return False, "ENTRY_ENGINE_BLOCKED", {"entry_engine_blockers": blockers}
