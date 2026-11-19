@@ -62,7 +62,7 @@ app = FastAPI(
 )
 
 from .news_reaction import router as news_reaction_router
-from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity
+from .learning_store import router as learning_router, ensure_learning_schema, save_opportunity, save_xm_quote_sample
 
 app.include_router(news_reaction_router)
 app.include_router(learning_router)
@@ -102,6 +102,7 @@ class BrokerQuote(BaseModel):
 
 
 _latest_mt5_quote: dict | None = None
+_last_xm_orderflow_sample_at: datetime | None = None
 _ALLOW_H4_SESSION_GAP: ContextVar[bool] = ContextVar("allow_h4_session_gap", default=False)
 
 
@@ -374,7 +375,7 @@ def get_config() -> dict:
 @app.post("/api/v1/mt5/quote")
 async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Header(default=None)) -> dict:
     """Receive the broker's live GOLD quote from the authenticated MT5 EA."""
-    global _latest_mt5_quote
+    global _latest_mt5_quote, _last_xm_orderflow_sample_at
     expected = settings.mt5_bridge_token
     if not expected or not authorization or not secrets.compare_digest(
         authorization.removeprefix("Bearer ").strip(), expected
@@ -416,6 +417,18 @@ async def receive_mt5_quote(quote: BrokerQuote, authorization: str | None = Head
         "contract_size": quote.contract_size, "account_equity": quote.account_equity,
         "account_currency": quote.account_currency,
     }
+    # Persist a bounded 5-second quote sample for the 90-day research archive.
+    # This is broker quote data only, never executed buyer/seller volume or true delta.
+    sample_time = timestamp.astimezone(timezone.utc)
+    if (_last_xm_orderflow_sample_at is None or
+            (sample_time - _last_xm_orderflow_sample_at).total_seconds() >= 5):
+        if save_xm_quote_sample(
+            symbol=settings.broker_gold_symbol, timestamp=sample_time,
+            bid=quote.bid, ask=quote.ask, last=quote.last,
+            spread_points=quote.spread_points, point=quote.point, digits=quote.digits,
+        ):
+            _last_xm_orderflow_sample_at = sample_time
+
     # MT5 chart OHLC candles are Bid-based; keep the live chart on Bid, not midpoint.
     live_candles = _update_live_quote_candles(timestamp, quote.bid)
     stream_payload = {
