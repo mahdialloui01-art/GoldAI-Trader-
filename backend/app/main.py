@@ -34,11 +34,12 @@ class Settings(BaseSettings):
     trading_mode: str = "paper"
     live_trading_enabled: bool = False
     max_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=1.0)
-    max_daily_loss_percent: float = Field(default=10.0, gt=0, le=10.0)
+    max_daily_loss_percent: float = Field(default=2.0, gt=0, le=2.0)
     demo_execution_enabled: bool = False
     manual_demo_execution_enabled: bool = False
-    demo_risk_per_trade_percent: float = Field(default=2.0, gt=0, le=2.0)  # Manual DEMO only
+    demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=0.5)  # Manual DEMO only
     auto_demo_risk_per_trade_percent: float = Field(default=0.5, gt=0, le=0.5)
+    risk_capital_usd: float = Field(default=80.0, gt=0, le=80.0)
     gold_spot_api_url: str = "https://api.gold-api.com/price/XAU"
     market_quote_max_age_seconds: int = Field(default=300, ge=30, le=3600)
     mt5_bridge_token: str = ""
@@ -269,7 +270,7 @@ def calculate_position_size(request: PositionSizeRequest) -> dict:
             "execution_enabled": False,
         }
 
-    equity = request.account_equity or quote["account_equity"]
+    equity = min(float(request.account_equity or quote["account_equity"]), float(settings.risk_capital_usd))
     price_distance = request.stop_distance_points * quote["point"]
     ticks_to_stop = price_distance / quote["tick_size"]
     loss_per_lot = ticks_to_stop * quote["tick_value_loss"]
@@ -339,6 +340,7 @@ def get_config() -> dict:
         "live_trading_enabled": settings.live_trading_enabled,
         "max_risk_per_trade_percent": settings.max_risk_per_trade_percent,
         "max_daily_loss_percent": settings.max_daily_loss_percent,
+        "risk_capital_usd": settings.risk_capital_usd,
         "demo_execution_enabled": settings.demo_execution_enabled,
         "manual_demo_execution_enabled": settings.manual_demo_execution_enabled,
         "demo_risk_per_trade_percent": settings.auto_demo_risk_per_trade_percent,
@@ -348,10 +350,12 @@ def get_config() -> dict:
         "analysis_engine_version": "0.6.6",
         "adaptive_risk_policy": {
             "enabled": True,
-            "mode": "QUALITY_AND_DAILY_DRAWDOWN",
+            "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
+            "capital_basis_usd": settings.risk_capital_usd,
+            "uses_full_broker_balance": False,
             "auto_demo_risk_bands_percent": [0.15, 0.25, 0.30, 0.40, 0.50],
             "absolute_auto_demo_cap_percent": 0.5,
-            "sizing_inputs": ["MT5 account equity", "XM tick size/value", "broker volume min/max/step", "entry stop distance", "setup quality", "daily loss utilization"],
+            "sizing_inputs": ["min(MT5 account equity, fixed risk capital cap)", "XM tick size/value", "broker volume min/max/step", "entry stop distance", "setup quality", "daily loss utilization"],
             "minimum_lot_uplift": False,
             "live_trading_enabled": False,
         },
@@ -3894,7 +3898,7 @@ def manual_demo_trade_defaults() -> dict:
     stop_points = max(1, math.ceil((1.5 * atr) / point), math.ceil(3.0 * spread_points))
     target_points = stop_points * 2
     loss_per_lot = ((stop_points * point) / float(quote["tick_size"])) * float(quote["tick_value_loss"])
-    equity = float(quote["account_equity"])
+    equity = min(float(quote["account_equity"]), float(settings.risk_capital_usd))
     if not math.isfinite(loss_per_lot) or loss_per_lot <= 0 or equity <= 0:
         raise HTTPException(status_code=503, detail="Broker risk metadata is invalid; manual sizing is paused.")
     risk_amount = equity * settings.demo_risk_per_trade_percent / 100.0
@@ -3902,7 +3906,7 @@ def manual_demo_trade_defaults() -> dict:
     step = Decimal(str(quote["volume_step"]))
     lots = float((Decimal(str(raw_lots)) / step).to_integral_value(rounding=ROUND_DOWN) * step)
     if lots < float(quote["volume_min"]):
-        raise HTTPException(status_code=422, detail="XM minimum lot would exceed the 2% manual risk cap; no safe lot size is available.")
+        raise HTTPException(status_code=422, detail="XM minimum lot would exceed the 0.5% risk cap on the fixed $80 risk capital; no safe lot size is available.")
     max_steps = (Decimal(str(quote["volume_max"])) / step).to_integral_value(rounding=ROUND_DOWN)
     lots = min(lots, float(max_steps * step))
     estimated_risk = lots * loss_per_lot / equity * 100.0
@@ -3913,7 +3917,8 @@ def manual_demo_trade_defaults() -> dict:
         "estimated_risk_percent": round(estimated_risk, 4),
         "risk_amount": round(lots * loss_per_lot, 2), "account_currency": quote.get("account_currency"),
         "m5_atr": round(atr, int(quote["digits"])), "quote_age_seconds": quote["age_seconds"],
-        "method": "SL=max(1.5×M5 ATR, 3×spread); TP=2R; lot rounded down with 5% execution-risk buffer.",
+        "risk_capital_usd": round(equity, 2), "risk_capital_cap_usd": settings.risk_capital_usd,
+        "method": "Fixed $80 risk-capital ceiling; risk 0.5% max per trade; SL=max(1.5×M5 ATR, 3×spread); TP=2R; lot rounded down with 5% execution-risk buffer.",
     }
 
 
@@ -3942,7 +3947,7 @@ def request_manual_demo_trade(
     stop_price_distance = request.stop_loss_points * quote["point"]
     loss_per_lot = (stop_price_distance / quote["tick_size"]) * quote["tick_value_loss"]
     risk_amount = lots * loss_per_lot
-    equity = float(quote["account_equity"])
+    equity = min(float(quote["account_equity"]), float(settings.risk_capital_usd))
     risk_percent = risk_amount / equity * 100 if equity > 0 else float("inf")
     if not math.isfinite(risk_percent) or risk_percent > settings.demo_risk_per_trade_percent + 1e-9:
         raise HTTPException(
@@ -3968,6 +3973,7 @@ def request_manual_demo_trade(
         "accepted": True, "queued": True, "command_id": command_id,
         "direction": command["direction"], "lots": lots,
         "estimated_risk_percent": round(risk_percent, 4),
+        "risk_capital_usd": round(equity, 2),
         "message": "Manual DEMO request queued. The MT5 EA must collect and accept it before an order exists.",
     }
 
