@@ -1,5 +1,5 @@
 from __future__ import annotations
-import asyncio, bisect, csv, json, math, os
+import asyncio, bisect, csv, json, math, os, inspect
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,7 +46,35 @@ def research_reconcile(analysis):
     analysis["entry_engine"] = entry
     return analysis
 
+
 e._reconcile_entry_engine_quality = research_reconcile
+
+# Research-only directional-bias ablation. It does NOT alter backend/app/main.py.
+# H4 remains dominant when both frames agree or when its ADX is clearly stronger;
+# H1 may lead when H4 is neutral or H1 is clearly stronger. A confirmed M5
+# pullback/EMA reclaim can qualify during an M15 counter-swing, but only when
+# the last closed M5 candle confirms the selected direction.
+_original_entry_source = inspect.getsource(e.analyze_entry_plan)
+_entry_source = _original_entry_source
+_replacements = [
+    ("    bias = h4_bias\n",
+     "    if h4_bias == h1_bias:\n        bias = h4_bias\n    elif h4_bias == e.Direction.WAIT:\n        bias = h1_bias\n    elif h1_bias == e.Direction.WAIT:\n        bias = h4_bias\n    elif h4_adx >= h1_adx + 5.0:\n        bias = h4_bias\n    elif h1_adx >= h4_adx + 5.0:\n        bias = h1_bias\n    else:\n        bias = e.Direction.WAIT\n"),
+    ("    higher_aligned = bias in (Direction.BUY, Direction.SELL) and h1_bias == bias\n",
+     "    higher_aligned = bias in (Direction.BUY, Direction.SELL) and (h4_bias == bias or h1_bias == bias)\n    both_higher_aligned = h4_bias == bias and h1_bias == bias\n"),
+    ("    if higher_aligned:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 20\n        reasons.append(\"اتجاه H4 وH1 متوافق؛ الإطاران الأعلى يحددان نفس الأفضلية.\")\n    else:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 0\n        blockers.append(\"اتجاه H4 وH1 غير متوافق أو غير واضح.\")\n",
+     "    if both_higher_aligned:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 20\n        reasons.append(\"اتجاه H4 وH1 متوافق؛ الإطاران الأعلى يحددان نفس الأفضلية.\")\n    elif higher_aligned and (h4_bias == Direction.WAIT or h1_bias == Direction.WAIT):\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 12\n        reasons.append(\"إطار أعلى واحد يحدد الاتجاه والآخر محايد؛ تم اعتماد تأكيد H1/H4 المتاح.\")\n    elif higher_aligned:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 8\n        reasons.append(\"اتجاه H4/H1 متعارض؛ تم ترجيح الإطار ذي ADX الأقوى بفارق واضح.\")\n    else:\n        components[\"H4_H1_DIRECTIONAL_ALIGNMENT\"] = 0\n        blockers.append(\"اتجاه H4 وH1 متعارض دون أفضلية قوة واضحة.\")\n"),
+    ("    if micro_matches:\n        reasons.append(\"شكل الشمعة وموقع الإغلاق يدعمان اتجاه الصفقة.\")\n",
+     "    if micro_matches:\n        reasons.append(\"شكل الشمعة وموقع الإغلاق يدعمان اتجاه الصفقة.\")\n    m15_retrace_ok = bool(\n        m15_opposes and selected_strategy in (\"PULLBACK\", \"EMA_RECLAIM\")\n        and trigger_direction == bias and micro_matches\n    )\n    if m15_retrace_ok:\n        blockers = [item for item in blockers if item != \"بنية M15 تعاكس اتجاه H4/H1.\"]\n        components[\"M15_MARKET_STRUCTURE\"] = 5\n        reasons.append(\"تعارض M15 مصنف كتراجع مؤقت؛ تأكيد شمعة M5 المكتملة يدعم استمرار الاتجاه.\")\n"),
+    ("    minimum_score = 82 if selected_strategy in (\"BREAKOUT\", \"LIQUIDITY_SWEEP\") else 85\n",
+     "    minimum_score = (82 if selected_strategy in (\"BREAKOUT\", \"LIQUIDITY_SWEEP\") else 85)\n    if higher_aligned and not both_higher_aligned:\n        minimum_score = min(minimum_score, 78)\n    if m15_retrace_ok:\n        minimum_score = min(minimum_score, 75)\n"),
+    ("    elif m15_opposes:\n        final_direction = Direction.WAIT\n",
+     "    elif m15_opposes and not m15_retrace_ok:\n        final_direction = Direction.WAIT\n"),
+]
+for old,new in _replacements:
+    if old not in _entry_source:
+        raise RuntimeError("Research patch anchor missing: "+old[:90])
+    _entry_source=_entry_source.replace(old,new,1)
+exec(compile(_entry_source, inspect.getsourcefile(e.analyze_entry_plan) or "<research-entry-ablation>", "exec"), e.__dict__)
 class SimDateTime(REAL_DT):
     @classmethod
     def now(cls,tz=None):
