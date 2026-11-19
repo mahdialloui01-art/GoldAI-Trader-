@@ -119,9 +119,15 @@ async def run():
             ok,reason,details=e._demo_candidate_quality_gate(result)
         except Exception as ex:
             blocked["ENGINE_ERROR_"+type(ex).__name__]+=1
+            detail = getattr(ex, "detail", None) or str(ex) or repr(ex)
+            engine_errors[f"{type(ex).__name__}: {detail}"] += 1
             continue
         if not ok:
             blocked[reason]+=1
+            for item in (details.get("entry_engine_blockers") or []):
+                blocked_details["ENTRY: "+str(item)] += 1
+            for item in (details.get("strategy_blockers") or []):
+                blocked_details["STRATEGY: "+str(item)] += 1
             continue
         en=result.get("entry_engine") or {}; setup=en.get("setup") or {}
         d=str(en.get("direction","WAIT"))
