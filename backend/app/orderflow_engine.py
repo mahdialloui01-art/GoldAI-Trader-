@@ -34,6 +34,7 @@ def build_orderflow_snapshot(events, *, now=None, window_seconds=300, tick_size=
 
     buy = sell = unknown = 0.0
     trade_count = 0
+    tagged_trade_count = 0
     footprint = defaultdict(lambda: {"buy_volume": 0.0, "sell_volume": 0.0, "unknown_volume": 0.0})
     trade_prices = []
     for stamp, kind, payload in recent:
@@ -51,9 +52,11 @@ def build_orderflow_snapshot(events, *, now=None, window_seconds=300, tick_size=
         trade_count += 1
         trade_prices.append(price)
         if side == "BUY":
+            tagged_trade_count += 1
             buy += size
             footprint[bucket]["buy_volume"] += size
         elif side == "SELL":
+            tagged_trade_count += 1
             sell += size
             footprint[bucket]["sell_volume"] += size
         else:
@@ -149,6 +152,7 @@ def build_orderflow_snapshot(events, *, now=None, window_seconds=300, tick_size=
         "window_seconds": window_seconds,
         "event_count": len(recent),
         "trade_count": trade_count,
+        "tagged_trade_count": tagged_trade_count,
         "tagged_buy_volume": round(buy, 6),
         "tagged_sell_volume": round(sell, 6),
         "unknown_aggressor_volume": round(unknown, 6),
