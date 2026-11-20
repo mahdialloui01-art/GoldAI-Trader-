@@ -3427,6 +3427,53 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             frame_score -= 0.25
             evidence.append("حجم التداول النسبي يؤكد ضغط البيع")
 
+        # Deeper per-timeframe price-path validation. This is deliberately
+        # computed independently for M5/M15/H1/H4 so one timeframe cannot
+        # hide weak or contradictory behavior in another.
+        recent_closes = [float(candle.close) for candle in candles[-9:]]
+        close_changes = [
+            recent_closes[index] - recent_closes[index - 1]
+            for index in range(1, len(recent_closes))
+        ]
+        directional_sign = 1.0 if direction == "BUY" else -1.0 if direction == "SELL" else 0.0
+        directional_bars = sum(
+            1 for change in close_changes
+            if change * directional_sign > 0
+        ) if directional_sign else 0
+        persistence_ratio = (
+            directional_bars / len(close_changes) if close_changes and directional_sign else 0.0
+        )
+        path_length = sum(abs(change) for change in close_changes)
+        path_efficiency = (
+            abs(recent_closes[-1] - recent_closes[0]) / path_length
+            if len(recent_closes) > 1 and path_length > 0 else 0.0
+        )
+        normalized_slope = (
+            ((recent_closes[-1] - recent_closes[0]) / atr_value)
+            if len(recent_closes) > 1 and atr_value > 0 else 0.0
+        )
+        slope_confirms = bool(
+            directional_sign and normalized_slope * directional_sign >= 0.20
+        )
+        slope_conflicts = bool(
+            directional_sign and normalized_slope * directional_sign <= -0.20
+        )
+        # Reward persistent directional movement, but penalize a price path
+        # that materially contradicts the indicator direction.
+        path_adjustment = 0.0
+        if slope_confirms and persistence_ratio >= 0.625:
+            path_adjustment = 0.50
+            frame_score += path_adjustment
+            evidence.append("مسار الإغلاقات الأخير يؤكد الاتجاه مع استمرارية سعرية")
+        elif slope_conflicts:
+            path_adjustment = -0.50
+            frame_score += path_adjustment
+            evidence.append("مسار الإغلاقات يعاكس اتجاه المؤشرات؛ خُفّض تقييم هذا الإطار")
+        elif persistence_ratio < 0.375 and directional_sign:
+            evidence.append("استمرارية الحركة ضعيفة؛ الإطار متذبذب رغم ميل المؤشرات")
+        if path_efficiency < 0.20 and len(close_changes) >= 5:
+            evidence.append("كفاءة الحركة منخفضة؛ تداخل الشموع يشير إلى تذبذب/تجميع")
+
         if microstructure["trend_quality"] == "WEAK":
             evidence.append("فصل EMA والزخم النسبي ضعيفان؛ الاتجاه يحتاج حذراً")
         if microstructure["tick_volume"]["state"] == "UNAVAILABLE":
@@ -3464,11 +3511,20 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "recent_fair_value_gaps": structure["fair_value_gaps"],
             "order_block_candidate": structure["order_block_candidate"],
             "microstructure": microstructure,
+            "price_path_validation": {
+                "lookback_closed_bars": len(close_changes),
+                "directional_persistence_ratio": round(persistence_ratio, 3),
+                "path_efficiency_ratio": round(path_efficiency, 3),
+                "slope_in_atr": round(normalized_slope, 3),
+                "slope_confirms_indicator_direction": slope_confirms,
+                "slope_conflicts_with_indicator_direction": slope_conflicts,
+                "score_adjustment": round(path_adjustment, 2),
+            },
             "evidence": evidence,
         }
 
     # Maximum per-frame score includes the two optional microstructure confirmations.
-    max_score = 5.25 * total_weight
+    max_score = 5.75 * total_weight
     confluence = round(min(100.0, abs(weighted_score) / max_score * 100), 1)
     expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
     decision = str(base.get("decision", "WAIT"))
