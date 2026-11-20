@@ -2239,6 +2239,73 @@ def _confirmed_swings(candles: list[Candle], left: int, right: int) -> tuple[lis
     return highs, lows
 
 
+
+def _derive_structural_invalidation(
+    direction: str,
+    reference_price: float,
+    timeframes: dict,
+    spread_price: float = 0.0,
+) -> tuple[float, str, float]:
+    """Choose the nearest confirmed, directionally valid swing; use a bounded ATR fallback."""
+    if direction not in ("BUY", "SELL") or reference_price <= 0:
+        raise ValueError("Invalid direction or reference price")
+
+    candidates = []
+    atr_values = []
+    for timeframe in ("M5", "M15", "H1"):
+        rows = timeframes.get(timeframe) or []
+        if len(rows) < 40:
+            continue
+        # Reject malformed, unsorted, or impossible OHLC batches before using structure.
+        valid = True
+        for index, bar in enumerate(rows):
+            if not (bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high):
+                valid = False
+                break
+            if index and bar.time <= rows[index - 1].time:
+                valid = False
+                break
+        if not valid:
+            continue
+        try:
+            atr = float(_atr_wilder(rows))
+            if not math.isfinite(atr) or atr <= 0:
+                continue
+            atr_values.append((timeframe, atr))
+            highs, lows = _confirmed_swings(rows, 3, 3)
+            swings = lows if direction == "BUY" else highs
+            for swing in swings[-8:]:
+                price = float(swing["price"])
+                distance = reference_price - price if direction == "BUY" else price - reference_price
+                # A stop must sit beyond the market, but not be based on a remote swing.
+                if distance > max(spread_price * 1.5, atr * 0.10) and distance <= atr * 3.5:
+                    candidates.append((distance, timeframe, price, atr, swing["time"]))
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+
+    if candidates:
+        # Prefer the closest meaningful confirmed pivot; timeframe is retained for transparency.
+        distance, timeframe, pivot, atr, pivot_time = min(candidates, key=lambda item: item[0])
+        buffer = max(atr * 0.15, spread_price * 1.5)
+        level = pivot - buffer if direction == "BUY" else pivot + buffer
+        if direction == "BUY" and level >= reference_price:
+            raise ValueError("BUY invalidation is not below reference")
+        if direction == "SELL" and level <= reference_price:
+            raise ValueError("SELL invalidation is not above reference")
+        return level, f"confirmed_{timeframe}_swing_{'low' if direction == 'BUY' else 'high'}_plus_ATR_spread_buffer", atr
+
+    # No confirmed pivot within a sensible distance: use an explicit, bounded ATR protection
+    # level instead of publishing a misleading remote high/low or an empty invalidation.
+    fallback_atr = next((atr for tf, atr in atr_values if tf == "M5"), None)
+    if fallback_atr is None and atr_values:
+        fallback_atr = atr_values[0][1]
+    if fallback_atr is None:
+        raise ValueError("No valid candle timeframe available for invalidation")
+    distance = max(1.25 * fallback_atr, 3.0 * max(spread_price, 0.0))
+    level = reference_price - distance if direction == "BUY" else reference_price + distance
+    return level, "bounded_ATR_fallback_no_confirmed_swing_within_3_5_ATR", fallback_atr
+
+
 def _price_action_analysis(candles: list[Candle], left: int, right: int, equal_tolerance: float) -> dict:
     highs, lows = _confirmed_swings(candles, left, right)
     last = candles[-1]
@@ -3702,48 +3769,51 @@ async def live_analysis_report() -> dict:
     if candidate == "NEUTRAL" and h4_bias == h1_bias and h4_bias in ("BUY", "SELL"):
         candidate = h4_bias
 
-    # Indicative ATR-based path, shown even if final execution decision is WAIT.
+    # Indicative ATR/structure path, shown even if final execution decision is WAIT.
     projection = {
         "status": "UNAVAILABLE",
         "direction": candidate,
         "horizon": "M5-M15 indicative; refreshed with each live report",
-        "basis": "Current MT5 quote midpoint and closed M5 ATR; not a calibrated forecast.",
+        "basis": "No directional candidate or no valid market data.",
     }
     try:
-        m5_rows = (_latest_mt5_candles or {}).get("timeframes", {}).get("M5", [])
+        timeframe_rows = (_latest_mt5_candles or {}).get("timeframes", {})
+        m5_rows = timeframe_rows.get("M5", [])
         if candidate in ("BUY", "SELL") and len(m5_rows) >= 20:
-            m5_atr = float(_atr_wilder(m5_rows))
             midpoint = (
                 (float(quote["bid"]) + float(quote["ask"])) / 2.0
                 if quote else float(m5_rows[-1].close)
             )
-            recent = m5_rows[-12:]
+            if not math.isfinite(midpoint) or midpoint <= 0:
+                raise ValueError("Invalid live reference price")
+            spread_price = max(0.0, float(quote["ask"]) - float(quote["bid"])) if quote else 0.0
+            invalidation, structure_basis, stop_atr = _derive_structural_invalidation(
+                candidate, midpoint, timeframe_rows, spread_price
+            )
+            m5_atr = float(_atr_wilder(m5_rows))
+            targets = (
+                [midpoint - m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
+                if candidate == "SELL"
+                else [midpoint + m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
+            )
             digits = int(quote.get("digits") or 2) if quote else 2
-            if m5_atr > 0:
-                if candidate == "SELL":
-                    targets = [midpoint - m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
-                    invalidation = max(float(bar.high) for bar in recent) + 0.20 * m5_atr
-                    structure_basis = "recent_M5_swing_high_plus_ATR_buffer"
-                else:
-                    targets = [midpoint + m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
-                    invalidation = min(float(bar.low) for bar in recent) - 0.20 * m5_atr
-                    structure_basis = "recent_M5_swing_low_minus_ATR_buffer"
-                projection = {
-                    "status": "ESTIMATE",
-                    "direction": candidate,
-                    "reference_price": round(midpoint, digits),
-                    "target_1": round(targets[0], digits),
-                    "target_2": round(targets[1], digits),
-                    "target_3": round(targets[2], digits),
-                    "near_target_zone": [round(min(targets[0], targets[1]), digits), round(max(targets[0], targets[1]), digits)],
-                    "invalidation_level": round(invalidation, digits),
-                    "atr_m5": round(m5_atr, digits),
-                    "structure_basis": structure_basis,
-                    "horizon": "M5-M15 indicative; refreshed with each live report",
-                    "basis": "Current MT5 quote midpoint when available; otherwise last closed M5 close. ATR projection is indicative, not a calibrated forecast.",
-                }
-    except (KeyError, TypeError, ValueError, ZeroDivisionError):
-        pass
+            projection = {
+                "status": "ESTIMATE",
+                "direction": candidate,
+                "reference_price": round(midpoint, digits),
+                "target_1": round(targets[0], digits),
+                "target_2": round(targets[1], digits),
+                "target_3": round(targets[2], digits),
+                "near_target_zone": [round(min(targets[0], targets[1]), digits), round(max(targets[0], targets[1]), digits)],
+                "invalidation_level": round(invalidation, digits),
+                "atr_m5": round(m5_atr, digits),
+                "invalidation_atr": round(stop_atr, digits),
+                "structure_basis": structure_basis,
+                "horizon": "M5-M15 indicative; refreshed with each live report",
+                "basis": "Nearest confirmed M5/M15/H1 swing with volatility/spread buffer; bounded ATR fallback when no suitable swing exists. Indicative, not a calibrated forecast.",
+            }
+    except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError) as exc:
+        logger.warning("Could not derive a validated projection/invalidation: %s", exc)
 
     now = datetime.now(timezone.utc)
     live_candles = []
