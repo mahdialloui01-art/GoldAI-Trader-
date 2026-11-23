@@ -3709,9 +3709,10 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         range_valid = bool(
             range_direction in {"BUY", "SELL"} and quote and m5_confirmed
             and price_in_zone and range_rr >= 1.0 and not hard_blockers
-            and spread_atr_ratio is not None and spread_atr_ratio <= 0.15
+            and quote is not None
+            and ((float(quote["spread_points"]) * float(quote["point"])) / m5_atr) <= 0.15
             and m5_report["market_regime"] != "HIGH_VOLATILITY"
-            and m5_extension <= 1.5
+            and float(m5_report["price_extension_from_ema20_atr"]) <= 1.5
         )
         range_signal = {
             "status": "QUALIFIED_RANGE_SETUP" if range_valid else "RANGE_SETUP_WAIT",
