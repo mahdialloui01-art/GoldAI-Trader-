@@ -55,3 +55,17 @@ def test_broken_support_does_not_show_buy_reversal():
     assert result["status"] == "ZONE_BROKEN_WAIT"
     assert result["direction"] == "BUY"
     assert result["entry_authorized"] is False
+
+
+def test_strong_opposing_h1_and_h4_keep_reversal_in_wait_state():
+    market, quote, m5 = _inputs()
+    for frame in ("H1", "H4"):
+        market["timeframes"][frame] = {
+            "available": True, "atr14": 1.5, "support": 100.2, "resistance": 110.2,
+            "bullish_rejection": True, "bearish_rejection": False,
+            "regime": "TREND_DOWN", "adx14": 35,
+        }
+    result = analyze_support_resistance_reversal(market, quote, m5)
+    assert result["status"] == "HIGHER_TIMEFRAME_PRESSURE_WAIT"
+    assert result["higher_timeframe_conflict"] is True
+    assert result["entry_authorized"] is False
