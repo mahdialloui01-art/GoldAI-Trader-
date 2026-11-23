@@ -39,6 +39,7 @@ def analyze_support_resistance_reversal(
     frames = market_analysis.get("timeframes", {})
     m15 = frames.get("M15", {})
     h1 = frames.get("H1", {})
+    h4 = frames.get("H4", {})
     if not m15.get("available") or not h1.get("available"):
         return {**empty, "status": "DATA_INSUFFICIENT", "reason": "يلزم توفر M15 وH1."}
 
@@ -61,8 +62,10 @@ def analyze_support_resistance_reversal(
     resistance_zone = (resistance - 0.35 * atr, resistance + 0.10 * atr)
     support_distance = abs(price - support)
     resistance_distance = abs(price - resistance)
-    support_near = support_distance <= 0.65 * atr
-    resistance_near = resistance_distance <= 0.65 * atr
+    # A slightly wider watch radius catches approaches to a boundary early;
+    # the stricter entry-zone and closed-candle confirmations remain mandatory.
+    support_near = support_distance <= 0.80 * atr
+    resistance_near = resistance_distance <= 0.80 * atr
 
     # If price is between both zones, prefer the closer valid boundary.
     side = None
@@ -92,6 +95,11 @@ def analyze_support_resistance_reversal(
     h1_agrees = h1_distance <= max(0.75 * atr, 0.35 * h1_atr)
     m15_rejection = bool(m15.get("bullish_rejection") if is_support else m15.get("bearish_rejection"))
     h1_rejection = bool(h1.get("bullish_rejection") if is_support else h1.get("bearish_rejection"))
+    h4_rejection = bool(h4.get("bullish_rejection") if is_support else h4.get("bearish_rejection"))
+    opposing_regime = "TREND_DOWN" if is_support else "TREND_UP"
+    h1_strong_opposition = h1.get("regime") == opposing_regime and _number(h1.get("adx14")) >= 24
+    h4_strong_opposition = h4.get("regime") == opposing_regime and _number(h4.get("adx14")) >= 28
+    strong_higher_timeframe_opposition = h1_strong_opposition and h4_strong_opposition
 
     micro = m5_report.get("microstructure", {})
     pattern = str(micro.get("closed_candle_pattern", ""))
@@ -113,7 +121,7 @@ def analyze_support_resistance_reversal(
 
     # Dedicated 0-100 setup-strength score; deliberately not merged into main score.
     score = 0
-    proximity_ratio = max(0.0, 1.0 - (support_distance if is_support else resistance_distance) / (0.65 * atr))
+    proximity_ratio = max(0.0, 1.0 - (support_distance if is_support else resistance_distance) / (0.80 * atr))
     score += round(20 * proximity_ratio)
     score += 20 if h1_agrees else 0
     score += 20 if m15_rejection else 0
@@ -121,7 +129,10 @@ def analyze_support_resistance_reversal(
     score += 15 if m5_confirmation else 0
     score += 5 if in_zone else 0
     score += 5 if m5_regime_ok and m5_extension <= 1.5 and spread_ok and not_broken else 0
-    score = min(100, score)
+    # Strong counter-trend pressure lowers reversal quality; simultaneous
+    # H1+H4 opposition is a hard wait, not an automatic reversal entry.
+    score -= 10 if h4_strong_opposition else 0
+    score = max(0, min(100, score))
 
     if is_support:
         stop = support - 0.40 * atr
@@ -141,6 +152,8 @@ def analyze_support_resistance_reversal(
 
     if not not_broken:
         status = "ZONE_BROKEN_WAIT"
+    elif strong_higher_timeframe_opposition:
+        status = "HIGHER_TIMEFRAME_PRESSURE_WAIT"
     elif in_zone and score >= 70 and m15_rejection and m5_confirmation and valid_safety:
         status = "CONFIRMED_REVERSAL_CANDIDATE"
     elif in_zone and score >= 55 and valid_safety:
@@ -169,6 +182,9 @@ def analyze_support_resistance_reversal(
             "m15_rejection": m15_rejection,
             "h1_rejection": h1_rejection,
             "h1_level_alignment": h1_agrees,
+            "h4_rejection": h4_rejection,
+            "h1_strong_opposition": h1_strong_opposition,
+            "h4_strong_opposition": h4_strong_opposition,
             "m5_confirmation": m5_confirmation,
             "m5_pattern": pattern,
             "price_inside_zone": in_zone,
@@ -177,6 +193,7 @@ def analyze_support_resistance_reversal(
             "anti_chasing_ok": m5_extension <= 1.5,
             "boundary_not_broken": not_broken,
         },
+        "higher_timeframe_conflict": strong_higher_timeframe_opposition,
         "entry_authorized": False,
         "execution_policy": "research_alert_only_no_order_authorization",
         "independent_from_primary_signal": True,
