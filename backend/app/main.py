@@ -3674,6 +3674,8 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
     decision = str(base.get("decision", "WAIT"))
 
+    m5_report = frame_reports["M5"]
+    m5_atr = float(m5_report["atr14"])
     # Independent range-reversion lane: a validated M15 edge rejection may
     # contribute to the final signal even when trend alignment is neutral.
     # It cannot bypass spread, volatility, stale-quote, or other hard blockers.
@@ -3815,6 +3817,23 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "warning": "مستويات حسابية مرجعية وليست أوامر أو ضماناً للتنفيذ أو الربح. يجب إعادة حساب الحجم وفق مواصفات عقد XM.",
         }
 
+    if range_signal.get("status") == "QUALIFIED_RANGE_SETUP" and decision == range_signal.get("direction"):
+        setup_plan = {
+            "direction": decision,
+            "entry_reference": range_signal.get("entry_reference"),
+            "entry_zone": range_signal.get("entry_zone"),
+            "stop_loss_reference": range_signal.get("stop_invalidation"),
+            "targets": {
+                "target_1_range_midpoint": range_signal.get("target_1"),
+                "target_2_opposite_range_edge": range_signal.get("target_2"),
+            },
+            "risk_reward_to_target_2": range_signal.get("reward_risk_to_target_2"),
+            "stop_method": "M15 range boundary invalidation with ATR buffer",
+            "status": "PAPER_RESEARCH_ONLY",
+            "strategy": "RANGE_EDGE_REJECTION",
+            "warning": "فرصة بحثية ورقية؛ لا تضمن الربح ولا تسمح بالتنفيذ الحقيقي.",
+        }
+
     if decision == "WAIT" and "NO_TRADE" not in blockers:
         blockers.append("NO_FULL_CONFLUENCE")
     strategy_scan = (
@@ -3850,6 +3869,8 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "spread_to_m5_atr_ratio": round(spread_atr_ratio, 4) if spread_atr_ratio is not None else None,
             "directional_timeframe_agreement_percent": agreement_percent,
             "strategy_scan": strategy_scan,
+            "market_regime": range_analysis,
+            "range_signal": range_signal,
             "entry_quality": {
                 "m5_price_extension_from_ema20_atr": round(m5_extension, 3),
                 "m5_extension_limit_atr": 1.5,
@@ -3871,6 +3892,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
                 "broker spread normalized by M5 ATR",
                 "anti-chasing entry filter using M5 EMA20 extension, ATR and RSI extremes",
                 "separate timeframe agreement and confluence diagnostics",
+                "independent range-edge rejection signal lane with M5 confirmation and minimum 1:1 reward/risk",
                 "macro context and news advisory/risk gates",
             ],
             "limitations": [
