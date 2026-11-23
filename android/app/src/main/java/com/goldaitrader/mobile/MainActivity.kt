@@ -430,7 +430,7 @@ class MainActivity : ComponentActivity() {
                         val levels = if (m15?.optBoolean("available") == true) {
                             "M15 دعم ${m15.optDouble("support")} / مقاومة ${m15.optDouble("resistance")} / ADX ${m15.optDouble("adx14")}; H1=${h1?.optString("regime", "غير متاح")}"
                         } else "مستويات M15 غير متاحة"
-                        "${regime.optString("summary")}\nالحالة: $state — إجماع النطاق: ${regime.optDouble("range_consensus_0_to_100")}/100\n$levels\n$ candidateText\nالاختراق: ${regime.optString("breakout_state")}\nتحليل معلوماتي فقط؛ لا يفتح الصفقات ولا يغير شروط الدخول."
+                        "${regime.optString("summary")}\nالحالة: $state — إجماع النطاق: ${regime.optDouble("range_consensus_0_to_100")}/100\n$levels\n$candidateText\nالاختراق: ${regime.optString("breakout_state")}\nتحليل معلوماتي فقط؛ لا يفتح الصفقات ولا يغير شروط الدخول."
                     }
                 } catch (e: Exception) { "تحليل النطاق غير متاح: ${e.message ?: "تعذر الاتصال"}" }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
