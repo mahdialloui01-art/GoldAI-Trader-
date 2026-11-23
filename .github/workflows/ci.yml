@@ -2,7 +2,7 @@ name: Backend and Android CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/early-reversal-detector]
   pull_request:
     branches: [main, feature/h4-live-momentum-context]
   schedule:
