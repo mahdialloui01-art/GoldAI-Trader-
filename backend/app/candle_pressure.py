@@ -25,6 +25,7 @@ def classify_candle(candle: dict, *, previous_tick_volumes=None, live=False) -> 
         return {
             "status": "INVALID_OR_FLAT_CANDLE", "buyer_strength": None,
             "seller_strength": None, "dominant_side": "UNKNOWN",
+            "pressure_strength": None, "pressure_quality": "UNAVAILABLE",
             "score_type": "OHLC_PRESSURE_PROXY_NOT_AGGRESSOR_DELTA",
         }
 
