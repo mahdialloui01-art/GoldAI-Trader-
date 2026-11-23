@@ -77,7 +77,7 @@ def detect_range_market(candles: list[Any], digits: int = 2) -> dict:
     if atr <= 0:
         return _empty("ATR غير صالح.")
     window = 48
-    hh, ll = max(highs[-window:]), min(lows[-window:])
+    hh, ll = max(highs[-window-1:-1]), min(lows[-window-1:-1])
     width = hh - ll
     width_atr = width / atr
     adx = _adx(highs, lows, closes)
