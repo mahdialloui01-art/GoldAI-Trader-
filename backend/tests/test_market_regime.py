@@ -47,3 +47,18 @@ def test_range_classifier_never_suggests_range_trade_in_trend():
     assert result["market_regime"] in {"TREND_UP", "TRANSITION"}
     assert result["range_entry_candidates"] == []
     assert result["execution_enabled"] is False
+
+
+def test_m15_range_edge_is_retained_when_higher_frames_are_not_range():
+    frames = {name: _range_candles() for name in ("M5", "M15", "H1", "H4")}
+    trend = []
+    for i in range(100):
+        close = 2400 + i * 0.8
+        trend.append({"open": close - 0.2, "high": close + 0.5, "low": close - 0.5, "close": close})
+    frames["H1"] = trend
+    frames["H4"] = trend
+    result = analyze_market_regime(frames)
+    assert result["timeframes"]["M15"]["regime"] == "RANGE"
+    assert result["range_entry_candidates"]
+    assert result["range_entry_candidates"][0]["timeframe"] == "M15"
+    assert result["execution_enabled"] is False
