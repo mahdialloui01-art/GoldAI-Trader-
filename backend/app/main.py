@@ -3673,7 +3673,71 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     confluence = round(min(100.0, abs(weighted_score) / max_score * 100), 1)
     expert_direction = "BUY" if weighted_score > 0 else "SELL" if weighted_score < 0 else "WAIT"
     decision = str(base.get("decision", "WAIT"))
-    if expert_direction not in ("BUY", "SELL") or expert_direction != decision or confluence < 45:
+
+    # Independent range-reversion lane: a validated M15 edge rejection may
+    # contribute to the final signal even when trend alignment is neutral.
+    # It cannot bypass spread, volatility, stale-quote, or other hard blockers.
+    range_analysis = analyze_market_regime(frames)
+    range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
+    range_candidates = range_analysis.get("range_entry_candidates", [])
+    if range_analysis.get("market_regime") == "RANGE" and range_candidates:
+        candidate = range_candidates[0]
+        range_direction = str(candidate.get("direction", "WAIT"))
+        m5_pattern = str(m5_report["microstructure"].get("closed_candle_pattern", ""))
+        m5_bull_confirm = m5_pattern in {"BULLISH_ENGULFING", "BULLISH_REJECTION"} or m5_report["microstructure"].get("impulse_direction") == "BULLISH"
+        m5_bear_confirm = m5_pattern in {"BEARISH_ENGULFING", "BEARISH_REJECTION"} or m5_report["microstructure"].get("impulse_direction") == "BEARISH"
+        m5_confirmed = m5_bull_confirm if range_direction == "BUY" else m5_bear_confirm if range_direction == "SELL" else False
+        range_entry = float(quote["ask"] if range_direction == "BUY" else quote["bid"]) if quote and range_direction in {"BUY", "SELL"} else None
+        zone = candidate.get("entry_zone") or []
+        stop_level = float(candidate.get("stop_invalidation") or 0.0)
+        target_2 = float(candidate.get("target_2") or 0.0)
+        risk_distance = (range_entry - stop_level) if range_direction == "BUY" and range_entry is not None else (stop_level - range_entry) if range_entry is not None else 0.0
+        reward_distance = (target_2 - range_entry) if range_direction == "BUY" and range_entry is not None else (range_entry - target_2) if range_entry is not None else 0.0
+        range_rr = reward_distance / risk_distance if risk_distance > 0 and reward_distance > 0 else 0.0
+        zone_low, zone_high = (float(zone[0]), float(zone[1])) if len(zone) == 2 else (0.0, 0.0)
+        price_in_zone = range_entry is not None and zone_low <= range_entry <= zone_high
+        hard_blockers = set(blockers) - {
+            "NO_FULL_CONFLUENCE", "MULTI_TIMEFRAME_NOT_ALIGNED",
+            "EXPERT_CONFLUENCE_NOT_CONFIRMED", "LOW_CONFLUENCE",
+        }
+        range_score = 35
+        range_score += 20 if float(range_analysis.get("range_consensus_0_to_100", 0)) >= 70 else 10
+        range_score += 20 if m5_confirmed else 0
+        range_score += 10 if price_in_zone else 0
+        range_score += 15 if range_rr >= 1.5 else 8 if range_rr >= 1.0 else 0
+        range_score = min(85, range_score)
+        range_valid = bool(
+            range_direction in {"BUY", "SELL"} and quote and m5_confirmed
+            and price_in_zone and range_rr >= 1.0 and not hard_blockers
+            and spread_atr_ratio is not None and spread_atr_ratio <= 0.15
+            and m5_report["market_regime"] != "HIGH_VOLATILITY"
+            and m5_extension <= 1.5
+        )
+        range_signal = {
+            "status": "QUALIFIED_RANGE_SETUP" if range_valid else "RANGE_SETUP_WAIT",
+            "direction": range_direction, "score": range_score,
+            "range_consensus_0_to_100": range_analysis.get("range_consensus_0_to_100"),
+            "entry_zone": zone, "entry_reference": round(range_entry, quote["digits"]) if range_entry is not None else None,
+            "stop_invalidation": round(stop_level, quote["digits"]) if stop_level else None,
+            "target_1": candidate.get("target_1"), "target_2": candidate.get("target_2"),
+            "reward_risk_to_target_2": round(range_rr, 2),
+            "m5_confirmation": m5_pattern, "price_inside_entry_zone": price_in_zone,
+            "hard_blockers": sorted(hard_blockers), "entry_authorized": False,
+            "policy": "independent_range_lane_paper_candidate_only",
+        }
+        if range_valid:
+            decision = range_direction
+            expert_direction = range_direction
+            confluence = max(confluence, float(range_score))
+            blockers = [item for item in blockers if item not in {
+                "NO_FULL_CONFLUENCE", "MULTI_TIMEFRAME_NOT_ALIGNED",
+                "EXPERT_CONFLUENCE_NOT_CONFIRMED", "LOW_CONFLUENCE",
+            }]
+            reasons.append("محرك الاتجاه العرضي أكد ارتداد M15 عند حافة النطاق مع تأكيد M5 وعائد/مخاطرة مقبول؛ استُخدم مسار مستقل دون اشتراط توافق الاتجاهات الكبرى.")
+        else:
+            reasons.append("تم رصد إعداد عرضي محتمل، لكنه لم يجتز تأكيد M5 أو منطقة الدخول أو العائد/المخاطرة أو فلاتر السلامة.")
+
+    if expert_direction not in ("BUY", "SELL") or (expert_direction != decision and range_signal.get("status") != "QUALIFIED_RANGE_SETUP") or confluence < 45:
         blockers.append("EXPERT_CONFLUENCE_NOT_CONFIRMED")
         reasons.append("طبقة التوافق المتقدم لا تؤكد اتجاه القرار الأساسي؛ تم تحويل القرار إلى WAIT.")
         decision = "WAIT"
