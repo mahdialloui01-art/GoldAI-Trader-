@@ -3875,8 +3875,19 @@ async def live_analysis_report() -> dict:
                 else [midpoint + m5_atr * multiple for multiple in (0.75, 1.5, 2.25)]
             )
             digits = int(quote.get("digits") or 2) if quote else 2
+            invalidation_distance = (
+                midpoint - invalidation if candidate == "BUY" else invalidation - midpoint
+            )
+            target_2_reward = abs(targets[1] - midpoint)
+            reward_risk_2 = target_2_reward / invalidation_distance if invalidation_distance > 0 else 0.0
+            geometry_ok = (
+                math.isfinite(invalidation_distance)
+                and invalidation_distance > 0
+                and invalidation_distance <= 2.5 * m5_atr
+                and reward_risk_2 >= 1.0
+            )
             projection = {
-                "status": "ESTIMATE",
+                "status": "ESTIMATE" if geometry_ok else "RISK_GEOMETRY_REJECTED",
                 "direction": candidate,
                 "reference_price": round(midpoint, digits),
                 "target_1": round(targets[0], digits),
@@ -3884,11 +3895,20 @@ async def live_analysis_report() -> dict:
                 "target_3": round(targets[2], digits),
                 "near_target_zone": [round(min(targets[0], targets[1]), digits), round(max(targets[0], targets[1]), digits)],
                 "invalidation_level": round(invalidation, digits),
+                "invalidation_distance_price": round(invalidation_distance, digits),
+                "invalidation_distance_atr_m5": round(invalidation_distance / m5_atr, 3) if m5_atr > 0 else None,
+                "target_2_reward_risk": round(reward_risk_2, 2),
+                "maximum_invalidation_atr_m5": 2.5,
                 "atr_m5": round(m5_atr, digits),
-                "invalidation_atr": round(stop_atr, digits),
                 "structure_basis": structure_basis,
                 "horizon": "M5-M15 indicative; refreshed with each live report",
-                "basis": "Nearest confirmed M5/M15/H1 swing with volatility/spread buffer; bounded ATR fallback when no suitable swing exists. Indicative, not a calibrated forecast.",
+                "basis": "Nearest directionally valid confirmed swing, capped by M5 ATR; bounded local ATR fallback only when no nearby swing exists.",
+                "quality_note": (
+                    "Geometry passes local invalidation and minimum 1:1 reward/risk to target 2; still not an entry authorization."
+                    if geometry_ok else
+                    "رفض السيناريو: وقف الإبطال بعيد أو العائد إلى المخاطرة أقل من 1:1 حتى الهدف الثاني؛ لا تعتبره فرصة دخول."
+                ),
+                "entry_authorized": False,
             }
     except (KeyError, TypeError, ValueError, ZeroDivisionError, OverflowError) as exc:
         logger.warning("Could not derive a validated projection/invalidation: %s", exc)
