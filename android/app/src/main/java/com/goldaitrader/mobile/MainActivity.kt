@@ -399,10 +399,10 @@ class MainActivity : ComponentActivity() {
                         val target = r.opt("reference_target_level")?.takeUnless { it == JSONObject.NULL }?.toString() ?: "—"
                         val invalidation = r.opt("invalidation_level")?.takeUnless { it == JSONObject.NULL }?.toString() ?: "—"
                         val signals = r.optJSONArray("signals")
-                        val evidence = if (signals != null && signals.length() > 0) (0 until minOf(6, signals.length())).joinToString("\n") { "• \${signals.optString(it)}" } else "لم تظهر أدلة انعكاس كافية بعد."
-                        "\${r.optString("summary", "لا يوجد تفسير")}\nالمرحلة: $stage — الاتجاه: $direction — نقاط الأدلة: \${"%.1f".format(Locale.US, score)}/100 (ليست نسبة نجاح)\nمستوى مرجعي: $target — إبطال السيناريو: $invalidation\n\${r.optString("live_h4_note", "زخم H4 الحي غير متاح")}\n$evidence\nمراقبة معلوماتية فقط؛ لا تغيّر اتجاه المحرك ولا تسمح بفتح صفقة."
+                        val evidence = if (signals != null && signals.length() > 0) (0 until minOf(6, signals.length())).joinToString("\n") { "• ${signals.optString(it)}" } else "لم تظهر أدلة انعكاس كافية بعد."
+                        "${r.optString("summary", "لا يوجد تفسير")}\nالمرحلة: $stage — الاتجاه: $direction — نقاط الأدلة: ${"%.1f".format(Locale.US, score)}/100 (ليست نسبة نجاح)\nمستوى مرجعي: $target — إبطال السيناريو: $invalidation\n${r.optString("live_h4_note", "زخم H4 الحي غير متاح")}\n$evidence\nمراقبة معلوماتية فقط؛ لا تغيّر اتجاه المحرك ولا تسمح بفتح صفقة."
                     }
-                } catch (e: Exception) { "كاشف الانعكاس غير متاح: \${e.message ?: "تعذر الاتصال"}" }
+                } catch (e: Exception) { "كاشف الانعكاس غير متاح: ${e.message ?: "تعذر الاتصال"}" }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
                 val entryPayload = try { request("/api/v1/analysis/expert/live").toString() } catch (_: Exception) { "{}" }
                 listOf(macro, news, engine, headlines, "$expert\n$liveReportText", candles, hasCandles.toString(), chartPayload, entryPayload, reversal)
