@@ -25,6 +25,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .xoomar_calendar import load_xoomar_high_impact_events
 from .reversal_detector import detect_early_reversal
 from .market_regime import analyze_market_regime
+from .support_resistance_reversal import analyze_support_resistance_reversal
 
 logger = logging.getLogger(__name__)
 
@@ -3680,6 +3681,9 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     # contribute to the final signal even when trend alignment is neutral.
     # It cannot bypass spread, volatility, stale-quote, or other hard blockers.
     range_analysis = analyze_market_regime(frames)
+    # Separate support/resistance reversal alerts; this result never mutates
+    # primary decision, confluence, blockers, or execution permissions.
+    sr_reversal_signal = analyze_support_resistance_reversal(range_analysis, quote, m5_report)
     range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
     range_candidates = range_analysis.get("range_entry_candidates", [])
     if range_analysis.get("market_regime") == "RANGE" and range_candidates:
@@ -3871,6 +3875,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "strategy_scan": strategy_scan,
             "market_regime": range_analysis,
             "range_signal": range_signal,
+            "support_resistance_reversal_signal": sr_reversal_signal,
             "entry_quality": {
                 "m5_price_extension_from_ema20_atr": round(m5_extension, 3),
                 "m5_extension_limit_atr": 1.5,
