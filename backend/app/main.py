@@ -24,6 +24,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
 from .reversal_detector import detect_early_reversal
+from .candle_pressure import classify_candle, classify_candle_series
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,18 @@ def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
             "BALANCED_OR_INSUFFICIENT"
         )
         current["tick_pressure_is_aggressor_delta"] = False
-        updated.append({"timeframe": frame, **{k: v for k, v in current.items() if k != "bucket"}})
+        pressure = classify_candle(current, live=True)
+        updated.append({
+            "timeframe": frame,
+            **{k: v for k, v in current.items() if k != "bucket"},
+            "buyer_strength": pressure["buyer_strength"],
+            "seller_strength": pressure["seller_strength"],
+            "dominant_side": pressure["dominant_side"],
+            "pressure_strength": pressure["pressure_strength"],
+            "pressure_quality": pressure["pressure_quality"],
+            "score_type": pressure["score_type"],
+            "pressure_is_aggressor_delta": False,
+        })
     return updated
 
 
@@ -396,7 +408,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.12",
+        "analysis_engine_version": "0.6.13",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -424,6 +436,7 @@ def get_config() -> dict:
             "closed_candle_entry_confirmation_and_anti_chasing",
             "live_h4_quote_candle_momentum_advisory",
             "independent_early_reversal_detector_divergence_choch_sweep_multitimeframe",
+            "per_candle_buyer_seller_pressure_from_ohlc_and_live_tick_direction_proxy",
             "news_and_macro_context_advisory_not_technical_entry_veto",
             "legacy_signal_fusion_macro_news_fail_closed_gate",
         ],
@@ -4010,6 +4023,10 @@ async def live_analysis_chart(timeframe: str = "ALL") -> dict:
         "setup_plan": analysis.get("setup_plan"),
         "strategy_scan": strategy_scan,
         "candles_by_timeframe": candles_by_timeframe,
+        "candle_pressure_by_timeframe": {
+            frame: classify_candle_series(candles_by_timeframe[frame])
+            for frame in frames
+        },
         "reports_by_timeframe": reports_by_timeframe,
         "limitations": dossier.get("limitations", []),
         "execution_enabled": False,
