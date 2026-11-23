@@ -383,8 +383,9 @@ class MainActivity : ComponentActivity() {
                 } catch (e: Exception) {
                     "تقرير الشمعة الحية غير متاح: ${e.message ?: "تعذر الاتصال"}"
                 }
+                val entryPayload = try { request("/api/v1/analysis/expert/live").toString() } catch (_: Exception) { "{}" }
                 val reversal = try {
-                    val r = request("/api/v1/analysis/expert/live").optJSONObject("early_reversal")
+                    val r = JSONObject(entryPayload).optJSONObject("early_reversal")
                     if (r == null) "الخادم لم يرسل بيانات كاشف الانعكاس؛ يلزم نشر Backend المحدّث."
                     else {
                         val stage = when (r.optString("stage")) {
@@ -404,7 +405,6 @@ class MainActivity : ComponentActivity() {
                     }
                 } catch (e: Exception) { "كاشف الانعكاس غير متاح: ${e.message ?: "تعذر الاتصال"}" }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
-                val entryPayload = try { request("/api/v1/analysis/expert/live").toString() } catch (_: Exception) { "{}" }
                 listOf(macro, news, engine, headlines, "$expert\n$liveReportText", candles, hasCandles.toString(), chartPayload, entryPayload, reversal)
             }
             macroSummary = result[0]
