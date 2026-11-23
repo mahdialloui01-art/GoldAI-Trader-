@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
+from .reversal_detector import detect_early_reversal
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +396,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.11",
+        "analysis_engine_version": "0.6.12",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -422,6 +423,7 @@ def get_config() -> dict:
             "explainable_entry_setup_engine_sweep_breakout_pullback",
             "closed_candle_entry_confirmation_and_anti_chasing",
             "live_h4_quote_candle_momentum_advisory",
+            "independent_early_reversal_detector_divergence_choch_sweep_multitimeframe",
             "news_and_macro_context_advisory_not_technical_entry_veto",
             "legacy_signal_fusion_macro_news_fail_closed_gate",
         ],
@@ -4707,6 +4709,10 @@ async def live_expert_technical_analysis() -> dict:
                 "blockers": ["NO_FRESH_MT5_QUOTE_MARKET_CLOSED_OR_FEED_OFFLINE"],
                 "execution_enabled": False,
             }
+        # Isolated monitor: informational only, never changes the trade decision.
+        entry_h4 = (result.get("entry_engine") or {}).get("higher_timeframe", {}).get("H4", {})
+        live_h4_for_reversal = entry_h4.get("live_momentum") if isinstance(entry_h4, dict) else None
+        result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result = _reconcile_entry_engine_quality(result)
