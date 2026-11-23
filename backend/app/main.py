@@ -24,6 +24,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
 from .reversal_detector import detect_early_reversal
+from .market_regime import analyze_market_regime
 
 logger = logging.getLogger(__name__)
 
@@ -4713,6 +4714,8 @@ async def live_expert_technical_analysis() -> dict:
         entry_h4 = (result.get("entry_engine") or {}).get("higher_timeframe", {}).get("H4", {})
         live_h4_for_reversal = entry_h4.get("live_momentum") if isinstance(entry_h4, dict) else None
         result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
+        # Independent range/trend classifier; informational only and never changes entry gates.
+        result["market_regime"] = analyze_market_regime(series)
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result = _reconcile_entry_engine_quality(result)

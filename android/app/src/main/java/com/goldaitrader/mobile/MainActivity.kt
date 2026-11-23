@@ -87,6 +87,7 @@ class MainActivity : ComponentActivity() {
     private var newsHeadlinesSummary by mutableStateOf("في انتظار العناوين الرسمية")
     private var expertSummary by mutableStateOf("لم يتم جلب التحليل بعد")
     private var reversalSummary by mutableStateOf("في انتظار تحليل بوادر الانعكاس")
+    private var rangeSummary by mutableStateOf("في انتظار تصنيف حالة السوق")
     private var candleSummary by mutableStateOf("لم يتم فحص استقبال الشموع")
     private var candlesReceived by mutableStateOf(false)
     private var chartRowsByFrame by mutableStateOf<Map<String, List<ChartCandle>>>(emptyMap())
@@ -126,6 +127,7 @@ class MainActivity : ComponentActivity() {
                     newsHeadlinesSummary = newsHeadlinesSummary,
                     expertSummary = expertSummary,
                     reversalSummary = reversalSummary,
+                    rangeSummary = rangeSummary,
                     candleSummary = candleSummary,
                     candlesReceived = candlesReceived,
                     chartRowsByFrame = chartRowsByFrame,
@@ -404,8 +406,35 @@ class MainActivity : ComponentActivity() {
                         "${r.optString("summary", "لا يوجد تفسير")}\nالمرحلة: $stage — الاتجاه: $direction — نقاط الأدلة: ${"%.1f".format(Locale.US, score)}/100 (ليست نسبة نجاح)\nمستوى مرجعي: $target — إبطال السيناريو: $invalidation\n${r.optString("live_h4_note", "زخم H4 الحي غير متاح")}\n$evidence\nمراقبة معلوماتية فقط؛ لا تغيّر اتجاه المحرك ولا تسمح بفتح صفقة."
                     }
                 } catch (e: Exception) { "كاشف الانعكاس غير متاح: ${e.message ?: "تعذر الاتصال"}" }
+                val rangeSummaryText = try {
+                    val regime = JSONObject(entryPayload).optJSONObject("market_regime")
+                    if (regime == null) "الخادم لم يرسل تصنيف السوق؛ يلزم نشر Backend المحدّث."
+                    else {
+                        val state = when (regime.optString("market_regime")) {
+                            "RANGE" -> "عرضي"
+                            "TREND_UP" -> "اتجاه صاعد"
+                            "TREND_DOWN" -> "اتجاه هابط"
+                            "TRANSITION" -> "انتقالي / غير محسوم"
+                            else -> "غير معروف"
+                        }
+                        val watch = regime.optString("range_trade_watch", "NO_RANGE_ENTRY")
+                        val candidates = regime.optJSONArray("range_entry_candidates")
+                        val candidateText = if (candidates != null && candidates.length() > 0) {
+                            val c = candidates.optJSONObject(0) ?: JSONObject()
+                            val zone = c.optJSONArray("entry_zone")
+                            "فرصة ${c.optString("direction")} — منطقة ${zone?.optDouble(0)} إلى ${zone?.optDouble(1)} — إبطال ${c.optDouble("stop_invalidation")} — هدف1 ${c.optDouble("target_1")} — هدف2 ${c.optDouble("target_2")} — ${c.optString("confirmation")}"
+                        } else "لا توجد صفقة مؤكدة الآن؛ حالة المراقبة: $watch"
+                        val frames = regime.optJSONObject("timeframes")
+                        val m15 = frames?.optJSONObject("M15")
+                        val h1 = frames?.optJSONObject("H1")
+                        val levels = if (m15?.optBoolean("available") == true) {
+                            "M15 دعم ${m15.optDouble("support")} / مقاومة ${m15.optDouble("resistance")} / ADX ${m15.optDouble("adx14")}; H1=${h1?.optString("regime", "غير متاح")}"
+                        } else "مستويات M15 غير متاحة"
+                        "${regime.optString("summary")}\nالحالة: $state — إجماع النطاق: ${regime.optDouble("range_consensus_0_to_100")}/100\n$levels\n$candidateText\nالاختراق: ${regime.optString("breakout_state")}\nتحليل معلوماتي فقط؛ لا يفتح الصفقات ولا يغير شروط الدخول."
+                    }
+                } catch (e: Exception) { "تحليل النطاق غير متاح: ${e.message ?: "تعذر الاتصال"}" }
                 val chartPayload = try { request("/api/v1/analysis/chart?timeframe=ALL").toString() } catch (_: Exception) { "{}" }
-                listOf(macro, news, engine, headlines, "$expert\n$liveReportText", candles, hasCandles.toString(), chartPayload, entryPayload, reversal)
+                listOf(macro, news, engine, headlines, "$expert\n$liveReportText", candles, hasCandles.toString(), chartPayload, entryPayload, reversal, rangeSummaryText)
             }
             macroSummary = result[0]
             calendarSummary = result[1]
@@ -413,6 +442,7 @@ class MainActivity : ComponentActivity() {
             newsHeadlinesSummary = result[3]
             expertSummary = result[4]
             reversalSummary = result[9]
+            rangeSummary = result[10]
             candleSummary = result[5]
             candlesReceived = result[6] == "true"
             try {
@@ -593,6 +623,7 @@ private fun GoldAiApp(
     newsHeadlinesSummary: String,
     expertSummary: String,
     reversalSummary: String,
+    rangeSummary: String,
     candleSummary: String,
     candlesReceived: Boolean,
     chartRowsByFrame: Map<String, List<ChartCandle>>,
@@ -633,7 +664,7 @@ private fun GoldAiApp(
                 TopHeader()
                 when (selectedTab) {
                     AppTab.HOME -> HomePage(goldPrice, quoteStatus, quoteReceived, onRefreshGold, manualTradeStatus, onManualTrade)
-                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, reversalSummary, chartRowsByFrame, chartReportsByFrame, chartMeta, selectedChartFrame, onSelectChartFrame)
+                    AppTab.ANALYSIS -> AnalysisPage(candlesReceived, candleSummary, macroSummary, calendarSummary, newsEngineSummary, newsHeadlinesSummary, expertSummary, reversalSummary, rangeSummary, chartRowsByFrame, chartReportsByFrame, chartMeta, selectedChartFrame, onSelectChartFrame)
                     AppTab.RISK -> RiskPage()
                     AppTab.SYSTEM -> SystemPage(backendStatus, quoteReceived, onCheckBackend, onRefreshGold)
                 }
@@ -857,6 +888,7 @@ private fun AnalysisPage(
     newsHeadlinesSummary: String,
     expertSummary: String,
     reversalSummary: String,
+    rangeSummary: String,
     chartRowsByFrame: Map<String, List<ChartCandle>>,
     chartReportsByFrame: Map<String, String>,
     chartMeta: String,
@@ -898,6 +930,7 @@ private fun AnalysisPage(
     AnalysisCard("08", "Official Economic Headlines", "آخر العناوين من BLS والاحتياطي الفيدرالي", newsHeadlinesSummary)
     AnalysisCard("09", "Expert GOLD Technical Engine", "توافق M5/M15/H1/H4 • السيولة • BOS • FVG • خطة المخاطر", expertSummary)
     AnalysisCard("10", "Early Reversal Detector", "دايفرجنس RSI • تحوّل MACD • CHoCH/BOS • سحب السيولة • توافق M5/M15/H1/H4", reversalSummary)
+    AnalysisCard("11", "Range & Entry Zone Engine", "ADX • EMA slope • Efficiency Ratio • حدود الدعم والمقاومة • رفض السعر • الاختراق الكاذب", rangeSummary)
     Text("البيانات الاقتصادية والأخبار تُعرض فقط إذا نجح الاتصال بمصادرها. تحليل الشموع لا يعمل قبل وصول OHLC حديث من MT5 Desktop/VPS.", color = Muted, fontSize = 11.sp)
 }
 
