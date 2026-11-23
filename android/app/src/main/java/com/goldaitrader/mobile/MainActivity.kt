@@ -359,12 +359,16 @@ class MainActivity : ComponentActivity() {
                     val strength = live.optDouble("directional_strength_score_0_to_100", 0.0)
                     val finalDecision = live.optString("decision", "WAIT")
                     val projection = live.optJSONObject("price_projection")
-                    val projectionText = if (projection?.optString("status") == "ESTIMATE") {
-                        val dir = projection.optString("direction", candidate)
-                        val directionArabic = if (dir == "SELL") "هبوط متوقع" else "صعود متوقع"
-                        "$directionArabic — السعر المرجعي ${projection.optDouble("reference_price")} — الأهداف: ${projection.optDouble("target_1")} ثم ${projection.optDouble("target_2")} ثم ${projection.optDouble("target_3")} — إبطال السيناريو عند ${projection.optDouble("invalidation_level")} — أفق تقديري M5-M15"
-                    } else {
-                        "مسار السعر غير متاح حالياً؛ لا توجد أفضلية اتجاهية كافية."
+                    val projectionText = when (projection?.optString("status")) {
+                        "ESTIMATE" -> {
+                            val dir = projection.optString("direction", candidate)
+                            val directionArabic = if (dir == "SELL") "هبوط مرجعي" else "صعود مرجعي"
+                            "$directionArabic — المرجعي ${projection.optDouble("reference_price")} — الأهداف ${projection.optDouble("target_1")} / ${projection.optDouble("target_2")} / ${projection.optDouble("target_3")} — الإبطال ${projection.optDouble("invalidation_level")} (المسافة ${projection.optDouble("invalidation_distance_price")} = ${projection.optDouble("invalidation_distance_atr_m5")} ATR) — عائد/مخاطرة TP2: ${projection.optDouble("target_2_reward_risk")} — ${projection.optString("quality_note")}"
+                        }
+                        "RISK_GEOMETRY_REJECTED" -> {
+                            "سيناريو ${projection.optString("direction")} مرفوض هندسياً — المرجعي ${projection.optDouble("reference_price")} — الإبطال ${projection.optDouble("invalidation_level")} — مسافة الإبطال ${projection.optDouble("invalidation_distance_price")} (${projection.optDouble("invalidation_distance_atr_m5")} ATR) — عائد/مخاطرة TP2: ${projection.optDouble("target_2_reward_risk")} — ${projection.optString("quality_note")}"
+                        }
+                        else -> "مسار السعر غير متاح حالياً؛ لا توجد أفضلية اتجاهية كافية أو بيانات M5 صالحة."
                     }
                     val liveBars = live.optJSONArray("live_candles")
                     val m5Live = (0 until (liveBars?.length() ?: 0)).mapNotNull { liveBars?.optJSONObject(it) }.firstOrNull { it.optString("timeframe") == "M5" }
