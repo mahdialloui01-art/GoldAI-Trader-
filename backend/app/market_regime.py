@@ -183,13 +183,16 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
     else:
         overall = "TRANSITION"
 
-    # Use M15 as the working execution-analysis frame; H1 must agree with range classification.
+    # M15 is the execution-analysis frame for range edges. Do not require the
+    # aggregate regime or H1 to also be RANGE: a valid M15 boundary rejection
+    # can occur while higher frames are trending or transitioning. The caller
+    # applies a separate strong-opposition safety check before qualifying it.
     m15 = details.get("M15", {})
     h1 = details.get("H1", {})
     candidates = []
-    if overall == "RANGE" and m15.get("range_setup") and h1.get("regime") == "RANGE":
+    if m15.get("available") and m15.get("regime") == "RANGE" and m15.get("range_setup"):
         candidates.append({"timeframe": "M15", **m15["range_setup"]})
-    if overall == "RANGE" and not candidates:
+    if m15.get("available") and m15.get("regime") == "RANGE" and not candidates:
         if m15.get("near_support"):
             watch = "WAIT_FOR_BULLISH_REJECTION_AT_SUPPORT"
         elif m15.get("near_resistance"):
@@ -211,8 +214,8 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
         "breakout_state": breakout, "range_trade_watch": watch,
         "range_entry_candidates": candidates,
         "summary": (
-            "السوق عرضي: ننتظر رفضاً مؤكداً عند أحد الحدين ولا ندخل من منتصف النطاق."
-            if overall == "RANGE" else
+            "إطار M15 في نطاق؛ ننتظر رفضاً مؤكداً عند أحد الحدين ولا ندخل من منتصف النطاق."
+            if m15.get("available") and m15.get("regime") == "RANGE" else
             "اتجاه صاعد؛ لا نستخدم استراتيجية البيع من المقاومة داخل النطاق."
             if overall == "TREND_UP" else
             "اتجاه هابط؛ لا نستخدم استراتيجية الشراء من الدعم داخل النطاق."
