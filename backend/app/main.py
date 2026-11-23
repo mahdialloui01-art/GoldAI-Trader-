@@ -1281,6 +1281,70 @@ def _atr_wilder(candles: list[Candle], period: int = 14) -> float:
     return value
 
 
+
+def _reopen_gap_guard(
+    candles: list[Candle],
+    timeframe_seconds: int = 300,
+    min_gap_seconds: int = 900,
+    significant_gap_atr: float = 0.5,
+    confirmation_bars: int = 3,
+) -> dict:
+    """Detect a price discontinuity after a candle-time gap and wait for closed-bar confirmation."""
+    if len(candles) < 2:
+        return {"detected": False, "guard_active": False, "status": "INSUFFICIENT_CANDLES"}
+
+    normalized_times = [
+        (item.time if item.time.tzinfo else item.time.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+        for item in candles
+    ]
+    gap_index = None
+    gap_seconds = 0.0
+    for index in range(1, len(candles)):
+        seconds = (normalized_times[index] - normalized_times[index - 1]).total_seconds()
+        if seconds > max(min_gap_seconds, timeframe_seconds * 3):
+            gap_index, gap_seconds = index, seconds
+
+    if gap_index is None:
+        return {"detected": False, "guard_active": False, "status": "NO_TIME_GAP"}
+
+    previous = candles[gap_index - 1]
+    reopened = candles[gap_index]
+    price_gap = float(reopened.open) - float(previous.close)
+    gap_direction = "BULLISH" if price_gap > 0 else "BEARISH" if price_gap < 0 else "FLAT"
+    pre_gap = candles[max(0, gap_index - 40):gap_index]
+    atr_before_gap = _atr_wilder(pre_gap) if len(pre_gap) >= 15 else None
+    gap_atr_ratio = abs(price_gap) / atr_before_gap if atr_before_gap and atr_before_gap > 0 else None
+    bars_after_reopen = len(candles) - gap_index - 1
+    significant = gap_atr_ratio is None or gap_atr_ratio >= significant_gap_atr
+    guard_active = bool(significant and bars_after_reopen < confirmation_bars)
+    if not significant:
+        status = "SMALL_PRICE_GAP_NO_BLOCK"
+    elif gap_atr_ratio is None:
+        status = "ATR_UNAVAILABLE_WAITING_FOR_CLOSED_BARS" if guard_active else "ATR_UNAVAILABLE_CONFIRMATION_WINDOW_PASSED"
+    elif guard_active:
+        status = "SIGNIFICANT_REOPEN_GAP_WAITING_FOR_CONFIRMATION"
+    else:
+        status = "REOPEN_GAP_CONFIRMATION_WINDOW_COMPLETE"
+
+    gap_type = "WEEKEND_OR_LONG_CLOSURE" if gap_seconds >= 48 * 3600 else "SESSION_REOPEN" if gap_seconds >= 6 * 3600 else "MISSING_CANDLE_INTERVAL"
+    return {
+        "detected": True,
+        "gap_type": gap_type,
+        "gap_seconds": round(gap_seconds),
+        "gap_price": round(price_gap, 5),
+        "gap_direction": gap_direction,
+        "atr_before_gap": round(atr_before_gap, 5) if atr_before_gap is not None else None,
+        "gap_atr_ratio": round(gap_atr_ratio, 3) if gap_atr_ratio is not None else None,
+        "significant_gap_threshold_atr": significant_gap_atr,
+        "bars_after_reopen": bars_after_reopen,
+        "required_closed_bars": confirmation_bars,
+        "guard_active": guard_active,
+        "status": status,
+        "execution_enabled": False,
+    }
+
+
+
 def _rsi_wilder_series(values: list[float], period: int = 14) -> list[float | None]:
     result: list[float | None] = [None] * len(values)
     changes = [values[i] - values[i - 1] for i in range(1, len(values))]
@@ -4701,6 +4765,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     m5_pa = _price_action_analysis(request.m5, 3, 3, 0.12)
     m5_micro = _candle_microstructure_analysis(request.m5)
     m5_atr = _atr_wilder(request.m5)
+    reopen_gap_guard = _reopen_gap_guard(request.m5)
     m5_closes = [item.close for item in request.m5]
     m5_ema20 = _ema_series(m5_closes, 20)[-1]
     last = request.m5[-1]
@@ -4713,6 +4778,9 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     reasons: list[str] = []
     blockers: list[str] = []
     components: dict[str, int] = {}
+    if reopen_gap_guard.get("guard_active"):
+        blockers.append("REOPEN_PRICE_GAP_UNCONFIRMED: ننتظر اكتمال ثلاث شموع M5 مغلقة بعد فجوة الافتتاح قبل السماح بإشارة دخول.")
+        reasons.append("تم رصد فجوة سعرية بعد انقطاع زمني؛ لا يتم مطاردة أول حركة حتى تؤكدها ثلاث شموع M5 مغلقة.")
 
     higher_aligned = bias in (Direction.BUY, Direction.SELL) and h1_bias == bias
     if higher_aligned:
@@ -4899,6 +4967,8 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         final_direction = Direction.WAIT
     elif trigger_direction != bias:
         final_direction = Direction.WAIT
+    elif reopen_gap_guard.get("guard_active"):
+        final_direction = Direction.WAIT
     elif spread_atr_ratio > 0.15 or volatility_ratio > 1.8 or quote_distance_atr > 0.50 or m5_extension_atr > 1.50:
         final_direction = Direction.WAIT
     elif score < minimum_score:
@@ -4970,6 +5040,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         },
         "market_structure": {"M15": m15_pa, "M5": m5_pa},
         "entry_microstructure": m5_micro,
+        "reopen_gap_guard": reopen_gap_guard,
         "orderflow_context": orderflow_context,
         "entry_setup_scan": setup_scan,
         "market_regime_H1": h1_regime,
