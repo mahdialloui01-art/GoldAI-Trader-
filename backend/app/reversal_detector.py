@@ -162,12 +162,13 @@ def detect_early_reversal(frames: dict[str, list[Any]], live_h4: dict[str, Any] 
     supporting_m15_h1 = all(details[name].get("available") and details[name].get("bullish_score" if direction == "BUY" else "bearish_score", 0) >= 25 for name in ("M15", "H1")) if direction != "WAIT" else False
     h4_live_note = "غير متاح؛ لم يضف أي نقاط"
     if live_h4 and live_h4.get("status") == "AVAILABLE" and direction in ("BUY", "SELL"):
-        live_direction = str(live_h4.get("direction", "WAIT")).upper()
+        live_direction = str(live_h4.get("direction", live_h4.get("bias", "WAIT"))).upper()
         if live_direction == direction:
             score = min(100.0, score + 3.0)
             h4_live_note = "زخم H4 الحي يؤيد بوادر الانعكاس (+3 نقاط استشارية)"
         elif live_direction in ("BUY", "SELL"):
             h4_live_note = "زخم H4 الحي يعاكس بوادر الانعكاس؛ يلزم الحذر"
+        scores[direction] = round(score, 1)
     has_structure_break = any(bool(details[name].get("bullish_choch" if direction == "BUY" else "bearish_choch")) for name in ("M15", "H1", "H4")) if direction != "WAIT" else False
     if direction == "WAIT" or score < 25:
         stage = "NO_EARLY_SIGNAL"
