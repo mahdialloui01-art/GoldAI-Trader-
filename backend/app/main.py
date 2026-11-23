@@ -4760,7 +4760,7 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         return bias, ema20_value, ema50_value, adx_value, plus_di_value, minus_di_value
 
     h4_bias, h4_ema20, h4_ema50, h4_adx, h4_plus_di, h4_minus_di = trend_bias(request.h4)
-    h1_bias, h1_ema20, h1_ema50, h1_plus_di, h1_minus_di = trend_bias(request.h1)
+    h1_bias, h1_ema20, h1_ema50, h1_adx, h1_plus_di, h1_minus_di = trend_bias(request.h1)
     bias = h4_bias
 
     # Use the authenticated MT5 Bid-built in-progress H4 candle as advisory momentum.
