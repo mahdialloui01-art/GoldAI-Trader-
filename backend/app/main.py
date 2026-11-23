@@ -4686,13 +4686,6 @@ async def live_expert_technical_analysis() -> dict:
     context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
     try:
         result = await expert_technical_analysis(request)
-        # Independent diagnostics only: never modifies the primary direction,
-        # entry quality, WAIT blockers, or any execution/risk gate.
-        live_h4_for_reversal = (
-            (result.get("higher_timeframe") or {}).get("H4", {}).get("live_momentum")
-            if isinstance(result.get("higher_timeframe"), dict) else None
-        )
-        result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
         if _optional_fresh_mt5_quote():
             try:
                 # Entry engine requires a current broker quote; historical technical
@@ -4716,6 +4709,10 @@ async def live_expert_technical_analysis() -> dict:
                 "blockers": ["NO_FRESH_MT5_QUOTE_MARKET_CLOSED_OR_FEED_OFFLINE"],
                 "execution_enabled": False,
             }
+        # Isolated monitor: informational only, never changes the trade decision.
+        entry_h4 = (result.get("entry_engine") or {}).get("higher_timeframe", {}).get("H4", {})
+        live_h4_for_reversal = entry_h4.get("live_momentum") if isinstance(entry_h4, dict) else None
+        result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result = _reconcile_entry_engine_quality(result)
