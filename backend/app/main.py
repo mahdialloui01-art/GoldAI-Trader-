@@ -73,7 +73,7 @@ def _effective_manual_risk_cap_percent() -> float:
 app = FastAPI(
     title="GoldAI Trader API",
     description="Demo-first XM GOLD analysis and risk-control service.",
-    version="0.6.7",
+    version="0.6.8",
 )
 
 from .news_reaction import router as news_reaction_router
@@ -395,7 +395,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.10",
+        "analysis_engine_version": "0.6.11",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -421,6 +421,7 @@ def get_config() -> dict:
             "freshness_adjusted_macro_pressure_gate",
             "explainable_entry_setup_engine_sweep_breakout_pullback",
             "closed_candle_entry_confirmation_and_anti_chasing",
+            "live_h4_quote_candle_momentum_advisory",
             "news_and_macro_context_advisory_not_technical_entry_veto",
             "legacy_signal_fusion_macro_news_fail_closed_gate",
         ],
@@ -4761,6 +4762,73 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     h4_bias, h4_ema20, h4_ema50, h4_adx, h4_plus_di, h4_minus_di = trend_bias(request.h4)
     h1_bias, h1_ema20, h1_ema50, h1_adx, h1_plus_di, h1_minus_di = trend_bias(request.h1)
     bias = h4_bias
+
+    # Use the authenticated MT5 Bid-built in-progress H4 candle as advisory momentum.
+    # The closed H4 series remains the directional anchor; a forming candle never
+    # overrides it or independently authorizes an entry.
+    live_h4_context: dict = {
+        "status": "UNAVAILABLE",
+        "bias": Direction.WAIT,
+        "tick_count": 0,
+        "last_tick_age_seconds": None,
+        "component_points": 0,
+        "is_closed": False,
+        "source": "AUTHENTICATED_MT5_BID_QUOTES",
+    }
+    live_h4 = _live_quote_candles.get("H4")
+    if live_h4 and quote.get("age_seconds", settings.market_quote_max_age_seconds + 1) <= settings.market_quote_max_age_seconds:
+        try:
+            live_time = datetime.fromisoformat(str(live_h4["time"]).replace("Z", "+00:00"))
+            last_tick_time = datetime.fromisoformat(str(live_h4["last_tick_at"]).replace("Z", "+00:00"))
+            if live_time.tzinfo is None:
+                live_time = live_time.replace(tzinfo=timezone.utc)
+            if last_tick_time.tzinfo is None:
+                last_tick_time = last_tick_time.replace(tzinfo=timezone.utc)
+            last_tick_age = max(0, int((datetime.now(timezone.utc) - last_tick_time.astimezone(timezone.utc)).total_seconds()))
+            closed_h4_time = request.h4[-1].time
+            if closed_h4_time.tzinfo is None:
+                closed_h4_time = closed_h4_time.replace(tzinfo=timezone.utc)
+            tick_count = int(live_h4.get("tick_count") or 0)
+            if (
+                live_time.astimezone(timezone.utc) > closed_h4_time.astimezone(timezone.utc)
+                and last_tick_age <= settings.market_quote_max_age_seconds
+                and tick_count >= 3
+            ):
+                forming_h4 = Candle(
+                    time=live_time,
+                    open=float(live_h4["open"]),
+                    high=float(live_h4["high"]),
+                    low=float(live_h4["low"]),
+                    close=float(live_h4["close"]),
+                )
+                live_h4_bias, live_h4_ema20, live_h4_ema50, live_h4_adx, live_h4_plus_di, live_h4_minus_di = trend_bias(request.h4 + [forming_h4])
+                live_component = (
+                    4 if bias in (Direction.BUY, Direction.SELL) and live_h4_bias == bias
+                    else -4 if bias in (Direction.BUY, Direction.SELL) and live_h4_bias in (Direction.BUY, Direction.SELL) and live_h4_bias != bias
+                    else 0
+                )
+                live_h4_context = {
+                    "status": "AVAILABLE",
+                    "bias": live_h4_bias,
+                    "ema20": round(live_h4_ema20, 5),
+                    "ema50": round(live_h4_ema50, 5),
+                    "adx14": round(live_h4_adx, 2),
+                    "plus_di": round(live_h4_plus_di, 2),
+                    "minus_di": round(live_h4_minus_di, 2),
+                    "tick_count": tick_count,
+                    "last_tick_age_seconds": last_tick_age,
+                    "component_points": live_component,
+                    "is_closed": False,
+                    "source": "AUTHENTICATED_MT5_BID_QUOTES",
+                }
+            else:
+                live_h4_context.update({
+                    "status": "INSUFFICIENT_OR_NOT_CURRENT",
+                    "tick_count": tick_count,
+                    "last_tick_age_seconds": last_tick_age,
+                })
+        except (KeyError, TypeError, ValueError, ArithmeticError):
+            live_h4_context["status"] = "INVALID_LIVE_CANDLE"
     m15_pa = _price_action_analysis(request.m15, 3, 3, 0.12)
     m5_pa = _price_action_analysis(request.m5, 3, 3, 0.12)
     m5_micro = _candle_microstructure_analysis(request.m5)
@@ -4789,6 +4857,12 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
     else:
         components["H4_H1_DIRECTIONAL_ALIGNMENT"] = 0
         blockers.append("اتجاه H4 وH1 غير متوافق أو غير واضح.")
+
+    components["H4_LIVE_MOMENTUM"] = int(live_h4_context.get("component_points") or 0)
+    if components["H4_LIVE_MOMENTUM"] > 0:
+        reasons.append("زخم شمعة H4 الحية يؤيد اتجاه H4 المغلقة؛ استُخدم كتأكيد مساعد فقط.")
+    elif components["H4_LIVE_MOMENTUM"] < 0:
+        reasons.append("زخم شمعة H4 الحية يعاكس اتجاه H4 المغلقة؛ خُفّض التقييم دون إلغاء الاتجاه وحده.")
 
     h1_di_aligned = (
         (bias == Direction.BUY and h1_plus_di > h1_minus_di)
@@ -5035,7 +5109,14 @@ def analyze_entry_plan(request: MultiTimeframeAnalysisRequest) -> dict:
         "score_note": "درجة توافق قواعد داخلية غير معايرة؛ ليست احتمال ربح أو نسبة نجاح.",
         "score_components": components,
         "higher_timeframe": {
-            "H4": {"bias": h4_bias, "ema20": round(h4_ema20, 5), "ema50": round(h4_ema50, 5), "adx14": round(h4_adx, 2)},
+            "H4": {
+                "bias": h4_bias,
+                "ema20": round(h4_ema20, 5),
+                "ema50": round(h4_ema50, 5),
+                "adx14": round(h4_adx, 2),
+                "closed_candle": True,
+                "live_momentum": live_h4_context,
+            },
             "H1": {"bias": h1_bias, "ema20": round(h1_ema20, 5), "ema50": round(h1_ema50, 5), "adx14": round(h1_adx, 2)},
         },
         "market_structure": {"M15": m15_pa, "M5": m5_pa},
