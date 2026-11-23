@@ -24,6 +24,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
 from .reversal_detector import detect_early_reversal
+from .range_detector import detect_range_market
 
 logger = logging.getLogger(__name__)
 
@@ -396,7 +397,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.12",
+        "analysis_engine_version": "0.6.13",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -4713,6 +4714,8 @@ async def live_expert_technical_analysis() -> dict:
         entry_h4 = (result.get("entry_engine") or {}).get("higher_timeframe", {}).get("H4", {})
         live_h4_for_reversal = entry_h4.get("live_momentum") if isinstance(entry_h4, dict) else None
         result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
+        # Independent sideways-regime and range-edge setup diagnostics; never overrides entry engine.
+        result["range_market"] = detect_range_market(series.get("M5", []), digits=2)
     finally:
         _ALLOW_H4_SESSION_GAP.reset(context_token)
     result = _reconcile_entry_engine_quality(result)
