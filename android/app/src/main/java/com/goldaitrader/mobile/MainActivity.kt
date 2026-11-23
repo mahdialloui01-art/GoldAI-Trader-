@@ -50,7 +50,34 @@ private val Green = Color(0xFF39D6A0)
 private val Red = Color(0xFFFF7373)
 private val Blue = Color(0xFF69B7FF)
 
-private data class ChartCandle(val time: String, val open: Double, val high: Double, val low: Double, val close: Double)
+private data class ChartCandle(
+    val time: String, val open: Double, val high: Double, val low: Double, val close: Double,
+    val live: Boolean = false, val tickCount: Int = 0, val uptickCount: Int = 0,
+    val downtickCount: Int = 0, val tickVolume: Long = 0L
+)
+
+private fun candlePressureLines(candles: List<ChartCandle>): String {
+    val rows = candles.takeLast(12)
+    if (rows.isEmpty()) return "بانتظار بيانات الشموع."
+    return rows.asReversed().joinToString("\n") { candle ->
+        val span = (candle.high - candle.low).coerceAtLeast(0.0)
+        if (span <= 0.0) return@joinToString "شمعة ${candle.time}: نطاق غير كافٍ للحساب"
+        val closeLocation = ((candle.close - candle.low) / span).coerceIn(0.0, 1.0)
+        val body = ((candle.close - candle.open) / span).coerceIn(-1.0, 1.0)
+        val upper = (candle.high - maxOf(candle.open, candle.close)).coerceAtLeast(0.0) / span
+        val lower = (minOf(candle.open, candle.close) - candle.low).coerceAtLeast(0.0) / span
+        val structureBuy = 0.50 * closeLocation + 0.30 * ((body + 1.0) / 2.0) + 0.20 * ((1.0 + lower - upper) / 2.0)
+        val directional = candle.uptickCount + candle.downtickCount
+        val tickBuy = if (directional > 0) candle.uptickCount.toDouble() / directional else 0.5
+        val combined = if (candle.live && directional > 0) 0.70 * structureBuy + 0.30 * tickBuy else structureBuy
+        val buyers = (combined * 100.0).toInt().coerceIn(0, 100)
+        val sellers = 100 - buyers
+        val side = when { buyers >= 58 -> "المشترون أقوى"; sellers >= 58 -> "البائعون أقوى"; else -> "توازن" }
+        val liveTag = if (candle.live) "🟢 حي" else "مغلقة"
+        val timeTag = candle.time.take(16).replace("T", " ")
+        "$liveTag • $timeTag  |  شراء $buyers/100 — بيع $sellers/100  |  $side"
+    }
+}
 
 private fun mergeChartCandles(base: List<ChartCandle>, updates: List<ChartCandle>): List<ChartCandle> {
     // Compare instants, not raw ISO strings: MT5/REST and the live stream may encode UTC differently.
@@ -181,7 +208,11 @@ class MainActivity : ComponentActivity() {
                                 if (frame.isBlank() || time.isBlank()) continue
                                 val candle = ChartCandle(
                                     time, item.optDouble("open"), item.optDouble("high"),
-                                    item.optDouble("low"), item.optDouble("close")
+                                    item.optDouble("low"), item.optDouble("close"),
+                                    live = item.optBoolean("live", true),
+                                    tickCount = item.optInt("tick_count", 0),
+                                    uptickCount = item.optInt("uptick_count", 0),
+                                    downtickCount = item.optInt("downtick_count", 0)
                                 )
                                 nextRows[frame] = mergeChartCandles(nextRows[frame].orEmpty(), listOf(candle))
                             }
@@ -425,7 +456,11 @@ class MainActivity : ComponentActivity() {
                     val rows = candleObject?.optJSONArray(frame)
                     if (rows != null) parsedRows[frame] = (0 until rows.length()).mapNotNull { i ->
                         val item = rows.optJSONObject(i) ?: return@mapNotNull null
-                        ChartCandle(item.optString("time", ""), item.optDouble("open"), item.optDouble("high"), item.optDouble("low"), item.optDouble("close"))
+                        ChartCandle(
+                            item.optString("time", ""), item.optDouble("open"), item.optDouble("high"),
+                            item.optDouble("low"), item.optDouble("close"),
+                            live = false, tickVolume = item.optLong("tick_volume", 0L)
+                        )
                     }
                     val report = reportObject?.optJSONObject(frame)
                     if (report != null) {
@@ -880,6 +915,9 @@ private fun AnalysisPage(
             else Text("بانتظار شموع كافية لهذا الإطار من MT5.", color = Muted, modifier = Modifier.padding(vertical = 30.dp))
             val lastClose = chartRows.lastOrNull()?.close?.toString() ?: "—"
             Text("آخر إغلاق: $lastClose", color = Muted, fontSize = 11.sp)
+            Text("قوة المشترين والبائعين — لكل شمعة", color = Gold, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(candlePressureLines(chartRows), color = Color.White, fontSize = 11.sp, lineHeight = 18.sp)
+            Text("القياس مبني على OHLC؛ الشمعة الحية تضيف اتجاه تغيّر Bid. ليس Delta حقيقياً ولا حجم صفقات منفذة.", color = Muted, fontSize = 10.sp)
             Text(chartReportsByFrame[selectedChartFrame] ?: "لم يصل التقرير الفني لهذا الإطار.", color = Color.White, fontSize = 11.sp)
         }
     }
