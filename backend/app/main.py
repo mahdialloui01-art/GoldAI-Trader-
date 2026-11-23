@@ -2320,11 +2320,12 @@ def _derive_structural_invalidation(
 
     candidates = []
     atr_values = []
+    # M5 ATR is the common risk ruler. Higher-timeframe volatility must never
+    # make a local M5/M15 invalidation dozens of dollars away from the setup.
     for timeframe in ("M5", "M15", "H1"):
         rows = timeframes.get(timeframe) or []
         if len(rows) < 40:
             continue
-        # Reject malformed, unsorted, or impossible OHLC batches before using structure.
         valid = True
         for index, bar in enumerate(rows):
             if not (bar.low <= min(bar.open, bar.close) <= max(bar.open, bar.close) <= bar.high):
@@ -2340,38 +2341,47 @@ def _derive_structural_invalidation(
             if not math.isfinite(atr) or atr <= 0:
                 continue
             atr_values.append((timeframe, atr))
+        except (TypeError, ValueError, KeyError, IndexError):
+            continue
+
+    m5_atr = next((atr for tf, atr in atr_values if tf == "M5"), None)
+    if m5_atr is None:
+        raise ValueError("M5 ATR unavailable; refusing remote invalidation")
+
+    max_stop_distance = 2.5 * m5_atr
+    min_pivot_distance = max(spread_price * 1.5, 0.10 * m5_atr)
+    for timeframe in ("M5", "M15", "H1"):
+        rows = timeframes.get(timeframe) or []
+        atr = next((value for tf, value in atr_values if tf == timeframe), None)
+        if atr is None:
+            continue
+        try:
             highs, lows = _confirmed_swings(rows, 3, 3)
             swings = lows if direction == "BUY" else highs
             for swing in swings[-8:]:
                 price = float(swing["price"])
                 distance = reference_price - price if direction == "BUY" else price - reference_price
-                # A stop must sit beyond the market, but not be based on a remote swing.
-                if distance > max(spread_price * 1.5, atr * 0.10) and distance <= atr * 3.5:
-                    candidates.append((distance, timeframe, price, atr, swing["time"]))
+                # Every candidate is capped against M5 ATR, even when discovered on H1.
+                if min_pivot_distance < distance <= max_stop_distance:
+                    timeframe_rank = {"M5": 0, "M15": 1, "H1": 2}[timeframe]
+                    candidates.append((distance, timeframe_rank, timeframe, price, swing["time"]))
         except (TypeError, ValueError, KeyError, IndexError):
             continue
 
     if candidates:
-        # Prefer the closest meaningful confirmed pivot; timeframe is retained for transparency.
-        distance, timeframe, pivot, atr, pivot_time = min(candidates, key=lambda item: item[0])
-        buffer = max(atr * 0.15, spread_price * 1.5)
+        distance, _, timeframe, pivot, pivot_time = min(candidates, key=lambda item: (item[0], item[1]))
+        buffer = max(m5_atr * 0.15, spread_price * 1.5)
         level = pivot - buffer if direction == "BUY" else pivot + buffer
-        if direction == "BUY" and level >= reference_price:
-            raise ValueError("BUY invalidation is not below reference")
-        if direction == "SELL" and level <= reference_price:
-            raise ValueError("SELL invalidation is not above reference")
-        return level, f"confirmed_{timeframe}_swing_{'low' if direction == 'BUY' else 'high'}_plus_ATR_spread_buffer", atr
+        final_distance = reference_price - level if direction == "BUY" else level - reference_price
+        if final_distance <= 0 or final_distance > max_stop_distance:
+            raise ValueError("Structural invalidation exceeds the M5 risk-distance cap")
+        return level, f"confirmed_{timeframe}_swing_plus_M5_ATR_spread_buffer", m5_atr
 
-    # No confirmed pivot within a sensible distance: use an explicit, bounded ATR protection
-    # level instead of publishing a misleading remote high/low or an empty invalidation.
-    fallback_atr = next((atr for tf, atr in atr_values if tf == "M5"), None)
-    if fallback_atr is None and atr_values:
-        fallback_atr = atr_values[0][1]
-    if fallback_atr is None:
-        raise ValueError("No valid candle timeframe available for invalidation")
-    distance = max(1.25 * fallback_atr, 3.0 * max(spread_price, 0.0))
+    distance = max(1.25 * m5_atr, 3.0 * max(spread_price, 0.0))
+    if distance > max_stop_distance:
+        raise ValueError("Spread/volatility makes a safe bounded invalidation impossible")
     level = reference_price - distance if direction == "BUY" else reference_price + distance
-    return level, "bounded_ATR_fallback_no_confirmed_swing_within_3_5_ATR", fallback_atr
+    return level, "bounded_M5_ATR_fallback_no_nearby_confirmed_swing", m5_atr
 
 
 def _price_action_analysis(candles: list[Candle], left: int, right: int, equal_tolerance: float) -> dict:
