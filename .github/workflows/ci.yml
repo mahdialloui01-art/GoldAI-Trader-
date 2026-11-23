@@ -2,9 +2,9 @@ name: Backend and Android CI
 
 on:
   push:
-    branches: [main, feature/early-reversal-detector, feature/range-market-entry-engine, feature/range-signal-fusion-v1]
+    branches: [main, feature/early-reversal-detector, feature/range-market-entry-engine, feature/range-signal-fusion-v1, feature/independent-sr-reversal-signals]
   pull_request:
-    branches: [main, feature/h4-live-momentum-context, feature/range-signal-fusion-v1]
+    branches: [main, feature/h4-live-momentum-context, feature/range-signal-fusion-v1, feature/independent-sr-reversal-signals]
   schedule:
     - cron: "2/5 * * * *"
   workflow_dispatch:
