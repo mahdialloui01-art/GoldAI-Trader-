@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .xoomar_calendar import load_xoomar_high_impact_events
+from .reversal_detector import detect_early_reversal
 
 logger = logging.getLogger(__name__)
 
@@ -395,7 +396,7 @@ def get_config() -> dict:
         "manual_demo_risk_per_trade_percent": _effective_manual_risk_cap_percent(),
         "manual_demo_trading_configured": len(settings.manual_trade_pin.strip()) >= 16,
         "supported_initial_symbol": settings.broker_gold_symbol,
-        "analysis_engine_version": "0.6.11",
+        "analysis_engine_version": "0.6.12",
         "adaptive_risk_policy": {
             "enabled": True,
             "mode": "QUALITY_AND_DAILY_DRAWDOWN_FIXED_CAPITAL",
@@ -422,6 +423,7 @@ def get_config() -> dict:
             "explainable_entry_setup_engine_sweep_breakout_pullback",
             "closed_candle_entry_confirmation_and_anti_chasing",
             "live_h4_quote_candle_momentum_advisory",
+            "independent_early_reversal_detector_divergence_choch_sweep_multitimeframe",
             "news_and_macro_context_advisory_not_technical_entry_veto",
             "legacy_signal_fusion_macro_news_fail_closed_gate",
         ],
@@ -4684,6 +4686,13 @@ async def live_expert_technical_analysis() -> dict:
     context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
     try:
         result = await expert_technical_analysis(request)
+        # Independent diagnostics only: never modifies the primary direction,
+        # entry quality, WAIT blockers, or any execution/risk gate.
+        live_h4_for_reversal = (
+            (result.get("higher_timeframe") or {}).get("H4", {}).get("live_momentum")
+            if isinstance(result.get("higher_timeframe"), dict) else None
+        )
+        result["early_reversal"] = detect_early_reversal(series, live_h4_for_reversal)
         if _optional_fresh_mt5_quote():
             try:
                 # Entry engine requires a current broker quote; historical technical
