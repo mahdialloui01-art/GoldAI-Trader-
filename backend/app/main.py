@@ -3686,7 +3686,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     sr_reversal_signal = analyze_support_resistance_reversal(range_analysis, quote, m5_report)
     range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
     range_candidates = range_analysis.get("range_entry_candidates", [])
-    if range_analysis.get("market_regime") == "RANGE" and range_candidates:
+    if range_candidates:
         candidate = range_candidates[0]
         range_direction = str(candidate.get("direction", "WAIT"))
         m5_pattern = str(m5_report["microstructure"].get("closed_candle_pattern", ""))
@@ -3706,6 +3706,16 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "NO_FULL_CONFLUENCE", "MULTI_TIMEFRAME_NOT_ALIGNED",
             "EXPERT_CONFLUENCE_NOT_CONFIRMED", "LOW_CONFLUENCE",
         }
+        regime_frames = range_analysis.get("timeframes", {})
+        opposing_regime = "TREND_DOWN" if range_direction == "BUY" else "TREND_UP"
+        h1_context = regime_frames.get("H1", {})
+        h4_context = regime_frames.get("H4", {})
+        strong_higher_opposition = bool(
+            h1_context.get("regime") == opposing_regime
+            and float(h1_context.get("adx14") or 0) >= 24
+            and h4_context.get("regime") == opposing_regime
+            and float(h4_context.get("adx14") or 0) >= 28
+        )
         range_score = 35
         range_score += 20 if float(range_analysis.get("range_consensus_0_to_100", 0)) >= 70 else 10
         range_score += 20 if m5_confirmed else 0
@@ -3715,6 +3725,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         range_valid = bool(
             range_direction in {"BUY", "SELL"} and quote and m5_confirmed
             and price_in_zone and range_rr >= 1.0 and not hard_blockers
+            and not strong_higher_opposition
             and quote is not None
             and ((float(quote["spread_points"]) * float(quote["point"])) / m5_atr) <= 0.15
             and m5_report["market_regime"] != "HIGH_VOLATILITY"
@@ -3729,7 +3740,9 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "target_1": candidate.get("target_1"), "target_2": candidate.get("target_2"),
             "reward_risk_to_target_2": round(range_rr, 2),
             "m5_confirmation": m5_pattern, "price_inside_entry_zone": price_in_zone,
-            "hard_blockers": sorted(hard_blockers), "entry_authorized": False,
+            "hard_blockers": sorted(hard_blockers),
+            "strong_higher_timeframe_opposition": strong_higher_opposition,
+            "entry_authorized": False,
             "policy": "independent_range_lane_paper_candidate_only",
         }
         if range_valid:
@@ -3742,7 +3755,10 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             }]
             reasons.append("محرك الاتجاه العرضي أكد ارتداد M15 عند حافة النطاق مع تأكيد M5 وعائد/مخاطرة مقبول؛ استُخدم مسار مستقل دون اشتراط توافق الاتجاهات الكبرى.")
         else:
-            reasons.append("تم رصد إعداد عرضي محتمل، لكنه لم يجتز تأكيد M5 أو منطقة الدخول أو العائد/المخاطرة أو فلاتر السلامة.")
+            if strong_higher_opposition:
+                reasons.append("ارتداد M15 يعاكس اتجاهاً قوياً ومتوافقاً على H1 وH4؛ تم إبقاؤه للمراقبة دون تأهيل.")
+            else:
+                reasons.append("تم رصد إعداد عرضي محتمل، لكنه لم يجتز تأكيد M5 أو منطقة الدخول أو العائد/المخاطرة أو فلاتر السلامة.")
 
     if expert_direction not in ("BUY", "SELL") or (expert_direction != decision and range_signal.get("status") != "QUALIFIED_RANGE_SETUP") or confluence < 45:
         blockers.append("EXPERT_CONFLUENCE_NOT_CONFIRMED")
