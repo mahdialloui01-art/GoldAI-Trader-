@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, feature/h4-live-momentum-context]
   schedule:
     - cron: "2/5 * * * *"
   workflow_dispatch:
