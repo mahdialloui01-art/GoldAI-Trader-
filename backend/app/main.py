@@ -204,6 +204,15 @@ def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
         )
         current["tick_pressure_is_aggressor_delta"] = False
         pressure = classify_candle(current, live=True)
+        current.update({
+            "buyer_strength": pressure["buyer_strength"],
+            "seller_strength": pressure["seller_strength"],
+            "dominant_side": pressure["dominant_side"],
+            "pressure_strength": pressure["pressure_strength"],
+            "pressure_quality": pressure["pressure_quality"],
+            "score_type": pressure["score_type"],
+            "pressure_is_aggressor_delta": False,
+        })
         updated.append({
             "timeframe": frame,
             **{k: v for k, v in current.items() if k != "bucket"},
