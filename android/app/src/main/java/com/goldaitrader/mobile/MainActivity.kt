@@ -57,7 +57,7 @@ private data class ChartCandle(
 )
 
 private fun candlePressureLines(candles: List<ChartCandle>): String {
-    val rows = candles.takeLast(12)
+    val rows = candles.takeLast(100)
     if (rows.isEmpty()) return "بانتظار بيانات الشموع."
     return rows.asReversed().joinToString("\n") { candle ->
         val span = (candle.high - candle.low).coerceAtLeast(0.0)
