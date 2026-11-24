@@ -3684,7 +3684,44 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     # Separate support/resistance reversal alerts; this result never mutates
     # primary decision, confluence, blockers, or execution permissions.
     sr_reversal_signal = analyze_support_resistance_reversal(range_analysis, quote, m5_report)
-    range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
+    breakout_state = str(range_analysis.get("breakout_state", "NO_CONFIRMED_BREAKOUT"))
+    regime_frames_for_breakout = range_analysis.get("timeframes", {})
+    breakout_frames = [
+        (name, info) for name, info in regime_frames_for_breakout.items()
+        if info.get("available") and (
+            info.get("confirmed_upside_breakout") or info.get("confirmed_downside_breakout")
+        )
+    ]
+    breakout_signal = {
+        "state": breakout_state,
+        "status": "BREAKOUT_DETECTED_WAIT_RETEST"
+        if breakout_state in {"UPSIDE_BREAKOUT_CONFIRMED", "DOWNSIDE_BREAKOUT_CONFIRMED"}
+        else "CONFLICTING_TIMEFRAME_BREAKOUTS"
+        if breakout_state == "CONFLICTING_BREAKOUTS"
+        else "NO_CONFIRMED_BREAKOUT",
+        "direction": "BUY" if breakout_state == "UPSIDE_BREAKOUT_CONFIRMED" else
+                     "SELL" if breakout_state == "DOWNSIDE_BREAKOUT_CONFIRMED" else "WAIT",
+        "timeframes": [name for name, _ in breakout_frames],
+        "reference_support": next((info.get("breakout_reference_support") for _, info in breakout_frames if info.get("confirmed_downside_breakout")), None),
+        "reference_resistance": next((info.get("breakout_reference_resistance") for _, info in breakout_frames if info.get("confirmed_upside_breakout")), None),
+        "entry_authorized": False,
+        "next_step": "WAIT_FOR_RETEST_AND_M5_CONFIRMATION",
+        "note": "الكسر مؤكد على شمعة مغلقة؛ لا دخول قبل إعادة الاختبار وتأكيد M5 وفلاتر المخاطر."
+        if breakout_state in {"UPSIDE_BREAKOUT_CONFIRMED", "DOWNSIDE_BREAKOUT_CONFIRMED"}
+        else "لا يوجد كسر مؤكد متوافق؛ لا تستنتج الدخول من الظل وحده.",
+    }
+    range_signal = (
+        {
+            "status": breakout_signal["status"],
+            "direction": breakout_signal["direction"],
+            "score": 0,
+            "entry_authorized": False,
+            "breakout": breakout_signal,
+            "policy": "breakout_detection_only_wait_for_retest",
+        }
+        if breakout_signal["status"] != "NO_CONFIRMED_BREAKOUT"
+        else {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
+    )
     range_candidates = range_analysis.get("range_entry_candidates", [])
     if range_candidates:
         candidate = range_candidates[0]
@@ -3890,6 +3927,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "directional_timeframe_agreement_percent": agreement_percent,
             "strategy_scan": strategy_scan,
             "market_regime": range_analysis,
+            "breakout_signal": breakout_signal,
             "range_signal": range_signal,
             "support_resistance_reversal_signal": sr_reversal_signal,
             "entry_quality": {

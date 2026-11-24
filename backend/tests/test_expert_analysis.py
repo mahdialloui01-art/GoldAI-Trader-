@@ -155,6 +155,64 @@ def test_expert_endpoint_builds_reference_plan_only_after_all_gates_pass(monkeyp
     assert body["policy"]["execution_enabled"] is False
 
 
+def test_expert_dossier_surfaces_confirmed_breakout_in_primary_range_signal(monkeypatch):
+    main._latest_mt5_quote = {
+        "symbol": "GOLD", "bid": 2300.0, "ask": 2300.2, "last": 0,
+        "mid": 2300.1, "spread_points": 20, "digits": 2, "point": 0.01,
+        "source": "MetaTrader 5 broker feed",
+        "source_updated_at": datetime.now(timezone.utc),
+        "age_seconds": 0, "quote_type": "broker_bid_ask", "tradable_quote": True,
+    }
+
+    async def fake_gold_decision(request):
+        timeframes = {
+            frame: {"direction": "WAIT", "indicators": {"rsi14_wilder": 50.0, "macd_histogram": 0.0}}
+            for frame in ("M5", "M15", "H1", "H4")
+        }
+        return {
+            "decision": "WAIT", "status": "NO_TRADE", "blockers": ["NO_FULL_CONFLUENCE"],
+            "reasons": [], "components": {"multi_timeframe": {"timeframes": timeframes}},
+            "policy": {"mode": "PAPER_ONLY", "live_trading_enabled": False, "execution_enabled": False},
+        }
+
+    def fake_regime(frames):
+        return {
+            "status": "AVAILABLE", "market_regime": "TRANSITION",
+            "breakout_state": "DOWNSIDE_BREAKOUT_CONFIRMED",
+            "range_trade_watch": "DOWNSIDE_BREAKOUT_CONFIRMED",
+            "range_consensus_0_to_100": 0,
+            "range_entry_candidates": [],
+            "timeframes": {
+                "M15": {
+                    "available": True, "confirmed_downside_breakout": True,
+                    "confirmed_upside_breakout": False,
+                    "breakout_reference_support": 2299.0,
+                    "breakout_reference_resistance": 2310.0,
+                }
+            },
+            "execution_enabled": False,
+        }
+
+    monkeypatch.setattr(main, "gold_decision_analysis", fake_gold_decision)
+    monkeypatch.setattr(main, "analyze_market_regime", fake_regime)
+    payload = {
+        "symbol": "GOLD",
+        "m5": _candles(80, 300), "m15": _candles(80, 900),
+        "h1": _candles(80, 3600), "h4": _candles(80, 14400),
+    }
+    response = client.post("/api/v1/analysis/expert", json=payload)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    dossier = body["technical_dossier"]
+    assert dossier["breakout_signal"]["state"] == "DOWNSIDE_BREAKOUT_CONFIRMED"
+    assert dossier["breakout_signal"]["status"] == "BREAKOUT_DETECTED_WAIT_RETEST"
+    assert dossier["breakout_signal"]["direction"] == "SELL"
+    assert dossier["range_signal"]["status"] == "BREAKOUT_DETECTED_WAIT_RETEST"
+    assert dossier["breakout_signal"]["entry_authorized"] is False
+    assert body["decision"] == "WAIT"
+    assert body["policy"]["execution_enabled"] is False
+
+
 def test_mt5_candle_feed_requires_bridge_authentication(monkeypatch):
     monkeypatch.setattr(main.settings, "mt5_bridge_token", "a-long-test-bridge-token-123")
     payload = {
