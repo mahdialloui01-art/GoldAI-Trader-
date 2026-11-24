@@ -31,6 +31,44 @@ def test_range_classifier_finds_range_and_edge_setup_without_execution():
             assert item["range_score_0_to_100"] <= 100
 
 
+def test_closed_candle_downside_breakout_is_not_hidden_by_range_recalculation():
+    rows = _range_candles()[:-1]
+    prior_lows = [row["low"] for row in rows[-48:]]
+    prior_closes = [row["close"] for row in rows[-48:]]
+    support = sorted(prior_lows)[int((len(prior_lows) - 1) * 0.08)]
+    # A decisive closed candle below the prior range boundary.
+    close = support - 1.8
+    rows.append({
+        "open": close + 0.9,
+        "high": close + 1.0,
+        "low": close - 0.2,
+        "close": close,
+    })
+    result = analyze_market_regime({name: rows for name in ("M5", "M15", "H1", "H4")})
+    assert result["breakout_state"] == "DOWNSIDE_BREAKOUT_CONFIRMED"
+    assert result["range_trade_watch"] == "DOWNSIDE_BREAKOUT_CONFIRMED"
+    assert result["timeframes"]["M15"]["confirmed_downside_breakout"] is True
+    assert result["timeframes"]["M15"]["breakout_reference_support"] < prior_closes[-1]
+    assert result["execution_enabled"] is False
+
+
+def test_deep_wick_that_closes_back_inside_range_is_not_confirmed_breakout():
+    rows = _range_candles()[:-1]
+    prior_lows = [row["low"] for row in rows[-48:]]
+    support = sorted(prior_lows)[int((len(prior_lows) - 1) * 0.08)]
+    close = support + 0.3
+    rows.append({
+        "open": close + 0.05,
+        "high": close + 0.2,
+        "low": support - 2.0,
+        "close": close,
+    })
+    result = analyze_market_regime({name: rows for name in ("M5", "M15", "H1", "H4")})
+    assert result["breakout_state"] != "DOWNSIDE_BREAKOUT_CONFIRMED"
+    assert result["timeframes"]["M15"]["confirmed_downside_breakout"] is False
+    assert result["execution_enabled"] is False
+
+
 def test_range_classifier_fails_closed_on_insufficient_history():
     result = analyze_market_regime({name: _range_candles(30) for name in ("M5", "M15", "H1", "H4")})
     assert result["status"] == "UNAVAILABLE"
