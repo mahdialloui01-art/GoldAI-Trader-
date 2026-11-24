@@ -96,7 +96,10 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
         adx = _adx(highs, lows, closes)
         e20, e50 = _ema(closes, 20), _ema(closes, 50)
         lookback = 48
-        rh, rl, rc = highs[-lookback:], lows[-lookback:], closes[-lookback:]
+        # Freeze the reference range using completed candles BEFORE the latest
+        # candle. Including the breakout candle in its own boundary calculation
+        # moves the boundary in the direction of the break and can hide it.
+        rh, rl, rc = highs[-(lookback + 1):-1], lows[-(lookback + 1):-1], closes[-(lookback + 1):-1]
         upper, lower = _quantile(rh, 0.92), _quantile(rl, 0.08)
         width = upper - lower
         efficiency = abs(rc[-1] - rc[0]) / max(sum(abs(b - a) for a, b in zip(rc, rc[1:])), 1e-9)
@@ -129,8 +132,18 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
         bear_rejection = resistance_touch and close_location <= 0.38 and upper_wick >= 0.25 * candle_range
 
         prior_inside = lower <= closes[-2] <= upper
-        bull_break = prior_inside and price > upper + 0.12 * atr and close_location >= 0.70
-        bear_break = prior_inside and price < lower - 0.12 * atr and close_location <= 0.30
+        body_fraction = abs(price - last_open) / candle_range
+        # Confirm only a CLOSED candle beyond the frozen boundary, with ATR
+        # clearance and a directional candle body/close to reduce false breaks.
+        breakout_buffer = 0.10 * atr
+        bull_break = (
+            prior_inside and price > upper + breakout_buffer
+            and close_location >= 0.68 and body_fraction >= 0.40
+        )
+        bear_break = (
+            prior_inside and price < lower - breakout_buffer
+            and close_location <= 0.32 and body_fraction >= 0.40
+        )
         near_support = abs(price - lower) <= 0.40 * atr or support_touch
         near_resistance = abs(upper - price) <= 0.40 * atr or resistance_touch
 
@@ -159,8 +172,12 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
             "price": round(price, 5), "near_support": near_support,
             "near_resistance": near_resistance, "bullish_rejection": bull_rejection,
             "bearish_rejection": bear_rejection, "confirmed_upside_breakout": bull_break,
-            "confirmed_downside_breakout": bear_break, "range_setup": setup,
-            "weight": weight,
+            "confirmed_downside_breakout": bear_break,
+            "breakout_reference_support": round(lower, 5),
+            "breakout_reference_resistance": round(upper, 5),
+            "breakout_body_fraction": round(body_fraction, 3),
+            "breakout_buffer": round(breakout_buffer, 5),
+            "range_setup": setup, "weight": weight,
         }
 
     available = {k: v for k, v in details.items() if v.get("available")}
@@ -192,7 +209,25 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
     candidates = []
     if m15.get("available") and m15.get("regime") == "RANGE" and m15.get("range_setup"):
         candidates.append({"timeframe": "M15", **m15["range_setup"]})
-    if m15.get("available") and m15.get("regime") == "RANGE" and not candidates:
+
+    upside_frames = [k for k, v in available.items() if v.get("confirmed_upside_breakout")]
+    downside_frames = [k for k, v in available.items() if v.get("confirmed_downside_breakout")]
+    if upside_frames and downside_frames:
+        breakout = "CONFLICTING_BREAKOUTS"
+    elif upside_frames:
+        breakout = "UPSIDE_BREAKOUT_CONFIRMED"
+    elif downside_frames:
+        breakout = "DOWNSIDE_BREAKOUT_CONFIRMED"
+    else:
+        breakout = "NO_CONFIRMED_BREAKOUT"
+
+    # A confirmed break must not be hidden behind a range-edge WAIT state.
+    # This remains diagnostic and does not authorize an order.
+    if breakout in {"UPSIDE_BREAKOUT_CONFIRMED", "DOWNSIDE_BREAKOUT_CONFIRMED"}:
+        watch = breakout
+    elif breakout == "CONFLICTING_BREAKOUTS":
+        watch = "WAIT_FOR_TIMEFRAME_ALIGNMENT"
+    elif m15.get("available") and m15.get("regime") == "RANGE" and not candidates:
         if m15.get("near_support"):
             watch = "WAIT_FOR_BULLISH_REJECTION_AT_SUPPORT"
         elif m15.get("near_resistance"):
@@ -201,12 +236,6 @@ def analyze_market_regime(frames: dict[str, list[Any]]) -> dict[str, Any]:
             watch = "WAIT_FOR_RANGE_EDGE"
     else:
         watch = "NO_RANGE_ENTRY"
-    if any(v.get("confirmed_upside_breakout") for v in available.values()):
-        breakout = "UPSIDE_BREAKOUT_CONFIRMED"
-    elif any(v.get("confirmed_downside_breakout") for v in available.values()):
-        breakout = "DOWNSIDE_BREAKOUT_CONFIRMED"
-    else:
-        breakout = "NO_CONFIRMED_BREAKOUT"
 
     return {
         "status": "AVAILABLE", "market_regime": overall,
