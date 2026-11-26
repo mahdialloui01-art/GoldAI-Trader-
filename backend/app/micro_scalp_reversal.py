@@ -24,7 +24,7 @@ def _clamp(value: float, low: float, high: float) -> float:
 def analyze_micro_scalp_reversal(
     frames: dict[str, list[Any]], quote: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Return a short-horizon reversal candidate using only closed M5 candles."""
+    """Return a short-horizon reversal candidate using closed M1 candles with M5/M15 context."""
     empty = {
         "status": "NO_SETUP", "direction": "WAIT", "score": 0,
         "score_type": "HEURISTIC_SETUP_STRENGTH_NOT_WIN_PROBABILITY",
@@ -33,9 +33,10 @@ def analyze_micro_scalp_reversal(
     }
     if not quote:
         return {**empty, "status": "DATA_INSUFFICIENT", "reason": "يلزم سعر MT5 حي."}
-    rows = frames.get("M5") or []
+    signal_timeframe = "M1" if frames.get("M1") else "M5"
+    rows = frames.get(signal_timeframe) or []
     if len(rows) < 35:
-        return {**empty, "status": "DATA_INSUFFICIENT", "reason": "يلزم 35 شمعة M5 مغلقة على الأقل."}
+        return {**empty, "status": "DATA_INSUFFICIENT", "reason": "يلزم 35 شمعة M1 مغلقة على الأقل."}
     try:
         opens = [_v(x, "open") for x in rows]
         highs = [_v(x, "high") for x in rows]
@@ -56,7 +57,8 @@ def analyze_micro_scalp_reversal(
     if atr <= 0:
         return {**empty, "status": "DATA_INSUFFICIENT", "reason": "ATR غير صالح."}
 
-    # Compare the latest CLOSED candle with the preceding 12 closed candles.
+    # M1 drives the trigger; M5 and M15 remain context only.
+    # Compare the latest CLOSED M1 candle with the preceding 12 closed M1 candles.
     last = len(rows) - 1
     prior_low, prior_high = min(lows[last-12:last]), max(highs[last-12:last])
     candle_range = max(highs[last] - lows[last], 1e-9)
@@ -86,6 +88,14 @@ def analyze_micro_scalp_reversal(
     engulf = bull_engulf if is_buy else bear_engulf
     reclaim = closes[last] > prior_low if is_buy else closes[last] < prior_high
     # M15 provides context, not a rigid same-direction requirement.
+    m5 = frames.get("M5") or []
+    m5_support = m5_resistance = None
+    if len(m5) >= 12:
+        try:
+            m5_support = min(_v(x, "low") for x in m5[-12:-1])
+            m5_resistance = max(_v(x, "high") for x in m5[-12:-1])
+        except (TypeError, ValueError, AttributeError):
+            pass
     m15 = frames.get("M15") or []
     m15_support = m15_resistance = None
     if len(m15) >= 20:
@@ -135,7 +145,7 @@ def analyze_micro_scalp_reversal(
     return {
         "status": status, "direction": direction, "score": score,
         "score_type": "HEURISTIC_SETUP_STRENGTH_NOT_WIN_PROBABILITY",
-        "timeframe": "M5_CLOSED_CANDLES", "current_price": rnd(price),
+        "timeframe": f"{signal_timeframe}_CLOSED_CANDLES", "current_price": rnd(price),
         "entry_reference": rnd(entry) if status == "CONFIRMED_MICRO_REVERSAL_CANDIDATE" else None,
         "entry_zone": [rnd(entry - 0.12*atr), rnd(entry + 0.12*atr)],
         "stop_invalidation": rnd(stop), "target": rnd(target),
@@ -145,6 +155,8 @@ def analyze_micro_scalp_reversal(
             "liquidity_sweep": sweep, "rejection_candle": rejection,
             "engulfing_confirmation": engulf, "close_reclaimed_prior_extreme": reclaim,
             "spread_ok": spread_ok, "anti_chasing_ok": not_chasing,
+            "m5_support": rnd(m5_support) if m5_support is not None else None,
+            "m5_resistance": rnd(m5_resistance) if m5_resistance is not None else None,
             "m15_support": rnd(m15_support) if m15_support is not None else None,
             "m15_resistance": rnd(m15_resistance) if m15_resistance is not None else None,
         },
