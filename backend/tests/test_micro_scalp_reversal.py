@@ -17,10 +17,11 @@ def _bars():
 
 def test_micro_reversal_is_independent_and_never_authorizes_execution():
     result = analyze_micro_scalp_reversal(
-        {"M5": _bars(), "M15": []},
+        {"M1": _bars(), "M5": _bars(), "M15": []},
         {"bid": 100.8, "ask": 100.85, "point": 0.01, "spread_points": 5, "digits": 2},
     )
     assert result["direction"] == "BUY"
+    assert result["timeframe"] == "M1_CLOSED_CANDLES"
     assert result["evidence"]["liquidity_sweep"] is True
     assert result["entry_authorized"] is False
     assert result["execution_enabled"] is False
@@ -29,4 +30,4 @@ def test_micro_reversal_is_independent_and_never_authorizes_execution():
 
 def test_micro_reversal_fails_closed_without_fresh_quote_or_candles():
     assert analyze_micro_scalp_reversal({"M5": _bars()}, None)["status"] == "DATA_INSUFFICIENT"
-    assert analyze_micro_scalp_reversal({"M5": _bars()[:20]}, {"bid": 1, "ask": 1.01})["status"] == "DATA_INSUFFICIENT"
+    assert analyze_micro_scalp_reversal({"M1": _bars()[:20]}, {"bid": 1, "ask": 1.01})["status"] == "DATA_INSUFFICIENT"

@@ -167,7 +167,7 @@ _live_quote_candles: dict[str, dict] = {}
 def _update_live_quote_candles(timestamp: datetime, price: float) -> list[dict]:
     """Build in-progress Bid candles and transparent tick-direction proxies from MT5 quotes."""
     ts = timestamp.astimezone(timezone.utc).timestamp()
-    frames = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400}
+    frames = {"M1": 60, "M5": 300, "M15": 900, "H1": 3600, "H4": 14400}
     updated: list[dict] = []
     for frame, seconds in frames.items():
         bucket = int(ts // seconds) * seconds
@@ -1226,6 +1226,7 @@ class MarketRegimeRequest(BaseModel):
 
 class MultiTimeframeAnalysisRequest(BaseModel):
     symbol: str = "GOLD"
+    m1: list[Candle] | None = Field(default=None, min_length=60, max_length=500)
     m5: list[Candle] = Field(min_length=60, max_length=500)
     m15: list[Candle] = Field(min_length=60, max_length=500)
     h1: list[Candle] = Field(min_length=60, max_length=500)
@@ -3507,6 +3508,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
         "M5": request.m5, "M15": request.m15,
         "H1": request.h1, "H4": request.h4,
     }
+    micro_frames = {**frames, "M1": request.m1 or []}
     weights = {"M5": 1.0, "M15": 1.5, "H1": 2.0, "H4": 2.5}
     frame_reports: dict[str, dict] = {}
     weighted_score = 0.0
@@ -3686,7 +3688,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     # primary decision, confluence, blockers, or execution permissions.
     sr_reversal_signal = analyze_support_resistance_reversal(range_analysis, quote, m5_report)
     # Independent short-horizon reversal lane; informational only, never changes primary gates.
-    micro_scalp_signal = analyze_micro_scalp_reversal(frames, quote)
+    micro_scalp_signal = analyze_micro_scalp_reversal(micro_frames, quote)
     range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
     range_candidates = range_analysis.get("range_entry_candidates", [])
     if range_candidates:
@@ -4093,9 +4095,9 @@ async def live_analysis_report() -> dict:
 async def live_analysis_chart(timeframe: str = "ALL") -> dict:
     """Return cached MT5 history even when live analysis is paused by stale data."""
     requested = timeframe.upper().strip()
-    allowed = {"M5", "M15", "H1", "H4", "ALL"}
+    allowed = {"M1", "M5", "M15", "H1", "H4", "ALL"}
     if requested not in allowed:
-        raise HTTPException(status_code=400, detail="timeframe must be M5, M15, H1, H4 or ALL.")
+        raise HTTPException(status_code=400, detail="timeframe must be M1, M5, M15, H1, H4 or ALL.")
     if _latest_mt5_candles is None:
         raise HTTPException(status_code=503, detail="Waiting for authenticated MT5 candles.")
 
@@ -4165,13 +4167,15 @@ _latest_mt5_candles: dict | None = None
 
 
 class MT5CandleBatch(MultiTimeframeAnalysisRequest):
-    """Closed broker candles streamed by the MT5 EA; same GOLD-only timeframe contract."""
+    """Closed broker candles streamed by the MT5 EA; M1 is optional for legacy cache restore."""
 
 
 def _validate_mt5_candle_batch(batch: MT5CandleBatch) -> tuple[dict, dict]:
     """Validate closed broker bars and return non-blocking session-gap diagnostics."""
     now = datetime.now(timezone.utc)
     series = {"M5": batch.m5, "M15": batch.m15, "H1": batch.h1, "H4": batch.h4}
+    if batch.m1:
+        series = {"M1": batch.m1, **series}
     normalized: dict[str, list[Candle]] = {}
     quality: dict[str, dict] = {}
     for timeframe, candles in series.items():
@@ -4243,7 +4247,7 @@ def receive_mt5_candles(
     batch: MT5CandleBatch,
     authorization: str | None = Header(default=None),
 ) -> dict:
-    """Receive authenticated closed GOLD candles for M5/M15/H1/H4 from the MT5 EA."""
+    """Receive authenticated closed GOLD candles for M1/M5/M15/H1/H4 from the MT5 EA."""
     global _latest_mt5_candles
     expected = settings.mt5_bridge_token
     if not expected or not authorization or not secrets.compare_digest(
@@ -4252,6 +4256,8 @@ def receive_mt5_candles(
         raise HTTPException(status_code=401, detail="Invalid or unconfigured MT5 bridge token.")
     if batch.symbol.upper() != settings.broker_gold_symbol.upper():
         raise HTTPException(status_code=400, detail=f"Only {settings.broker_gold_symbol} candles are accepted.")
+    if not batch.m1 or len(batch.m1) < 60:
+        raise HTTPException(status_code=422, detail="At least 60 closed M1 candles are required from the updated MT5 bridge.")
     normalized, quality = _validate_mt5_candle_batch(batch)
     # Never let a delayed/replayed request roll the live cache back to older bars.
     if _latest_mt5_candles is not None:
@@ -4288,19 +4294,18 @@ def _restore_mt5_candle_cache() -> bool:
     """Hydrate authenticated candle cache from durable PostgreSQL history on startup."""
     global _latest_mt5_candles
     restored = load_mt5_candle_history(
-        settings.broker_gold_symbol, ["M5", "M15", "H1", "H4"], limit=500
+        settings.broker_gold_symbol, ["M1", "M5", "M15", "H1", "H4"], limit=500
     )
     if not all(len(restored.get(frame, [])) >= 60 for frame in ("M5", "M15", "H1", "H4")):
         logger.info("Persisted MT5 candle history is incomplete; waiting for a complete EA batch.")
         return False
     try:
-        batch = MT5CandleBatch(
-            symbol=settings.broker_gold_symbol,
-            **{
-                frame.lower(): [Candle(**row) for row in restored[frame]]
-                for frame in ("M5", "M15", "H1", "H4")
-            },
-        )
+        restored_frames = ("M1", "M5", "M15", "H1", "H4")
+        batch_data = {
+            frame.lower(): [Candle(**row) for row in restored.get(frame, [])]
+            for frame in restored_frames if len(restored.get(frame, [])) >= 60
+        }
+        batch = MT5CandleBatch(symbol=settings.broker_gold_symbol, **batch_data)
         normalized, quality = _validate_mt5_candle_batch(batch)
         _latest_mt5_candles = {
             "symbol": settings.broker_gold_symbol.upper(),
@@ -4824,7 +4829,7 @@ async def live_expert_technical_analysis() -> dict:
             raise HTTPException(status_code=503, detail=f"Cached {timeframe} candle is from the future; analysis is unsafe.")
     request = MultiTimeframeAnalysisRequest(
         symbol=_latest_mt5_candles["symbol"],
-        m5=series["M5"], m15=series["M15"], h1=series["H1"], h4=series["H4"],
+        m1=series.get("M1"), m5=series["M5"], m15=series["M15"], h1=series["H1"], h4=series["H4"],
     )
     context_token = _ALLOW_H4_SESSION_GAP.set(allow_h4_session_gap)
     try:
