@@ -3,7 +3,7 @@
 #include <Trade/Trade.mqh>
 CTrade trade;
 #property version   "2.2"
-#property description "Streams XM GOLD Bid/Ask and closed M5/M15/H1/H4 candles to GoldAI Trader."
+#property description "Streams XM GOLD Bid/Ask and closed M1/M5/M15/H1/H4 candles to GoldAI Trader."
 
 input string BackendUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/quote";
 input string CandleDataUrl = "https://goldai-trader-api.onrender.com/api/v1/mt5/candles";
@@ -229,19 +229,20 @@ bool SendCandleBatch()
    if(serverNow <= 0) serverNow = TimeCurrent();
    int serverUtcOffset = (int)(serverNow - TimeGMT());
 
+   string m1 = BuildCandleArray(PERIOD_M1, CandleBarsPerTimeframe, serverUtcOffset);
    string m5 = BuildCandleArray(PERIOD_M5, CandleBarsPerTimeframe, serverUtcOffset);
    string m15 = BuildCandleArray(PERIOD_M15, CandleBarsPerTimeframe, serverUtcOffset);
    string h1 = BuildCandleArray(PERIOD_H1, CandleBarsPerTimeframe, serverUtcOffset);
    string h4 = BuildCandleArray(PERIOD_H4, CandleBarsPerTimeframe, serverUtcOffset);
-   if(m5 == "" || m15 == "" || h1 == "" || h4 == "")
+   if(m1 == "" || m5 == "" || m15 == "" || h1 == "" || h4 == "")
    {
       Print("GoldAI candle batch not sent: one or more timeframes have insufficient history.");
       return false;
    }
 
    string body = StringFormat(
-      "{\"symbol\":\"%s\",\"m5\":%s,\"m15\":%s,\"h1\":%s,\"h4\":%s}",
-      RequiredSymbol, m5, m15, h1, h4);
+      "{\"symbol\":\"%s\",\"m1\":%s,\"m5\":%s,\"m15\":%s,\"h1\":%s,\"h4\":%s}",
+      RequiredSymbol, m1, m5, m15, h1, h4);
    if(PostJson(CandleDataUrl, body))
    {
       Print("GoldAI closed candle batch sent. Bars per timeframe: ", CandleBarsPerTimeframe);
