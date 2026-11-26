@@ -202,6 +202,7 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
     monkeypatch.setattr(main, "gold_decision_analysis", fake_gold_decision)
     payload = {
         "symbol": "GOLD",
+        "m1": _candles(120, 60),
         "m5": _candles(80, 300),
         "m15": _candles(80, 900),
         "h1": _candles(80, 3600),
