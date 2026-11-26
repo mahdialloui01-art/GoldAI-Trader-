@@ -58,6 +58,7 @@ def test_expert_endpoint_returns_explainable_paper_only_dossier(monkeypatch):
     monkeypatch.setattr(main, "gold_decision_analysis", fake_gold_decision)
     payload = {
         "symbol": "GOLD",
+        "m1": _candles(120, 60),
         "m5": _candles(80, 300),
         "m15": _candles(80, 900),
         "h1": _candles(80, 3600),
@@ -221,7 +222,7 @@ def test_authenticated_mt5_candles_power_live_expert_endpoint(monkeypatch):
     )
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["accepted"] is True
-    assert accepted.json()["candle_counts"] == {"M5": 80, "M15": 80, "H1": 80, "H4": 80}
+    assert accepted.json()["candle_counts"] == {"M1": 120, "M5": 80, "M15": 80, "H1": 80, "H4": 80}
     assert accepted.json()["data_quality"]["H4"]["h4_session_reopen_gap"] is True
 
     live = client.get("/api/v1/analysis/expert/live")
