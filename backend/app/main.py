@@ -26,6 +26,7 @@ from .xoomar_calendar import load_xoomar_high_impact_events
 from .reversal_detector import detect_early_reversal
 from .market_regime import analyze_market_regime
 from .support_resistance_reversal import analyze_support_resistance_reversal
+from .micro_scalp_reversal import analyze_micro_scalp_reversal
 
 logger = logging.getLogger(__name__)
 
@@ -3684,6 +3685,8 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
     # Separate support/resistance reversal alerts; this result never mutates
     # primary decision, confluence, blockers, or execution permissions.
     sr_reversal_signal = analyze_support_resistance_reversal(range_analysis, quote, m5_report)
+    # Independent short-horizon reversal lane; informational only, never changes primary gates.
+    micro_scalp_signal = analyze_micro_scalp_reversal(frames, quote)
     range_signal = {"status": "NO_SETUP", "score": 0, "entry_authorized": False}
     range_candidates = range_analysis.get("range_entry_candidates", [])
     if range_candidates:
@@ -3892,6 +3895,7 @@ async def expert_technical_analysis(request: MultiTimeframeAnalysisRequest) -> d
             "market_regime": range_analysis,
             "range_signal": range_signal,
             "support_resistance_reversal_signal": sr_reversal_signal,
+            "micro_scalp_reversal_signal": micro_scalp_signal,
             "entry_quality": {
                 "m5_price_extension_from_ema20_atr": round(m5_extension, 3),
                 "m5_extension_limit_atr": 1.5,
